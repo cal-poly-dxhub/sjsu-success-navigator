@@ -22,10 +22,15 @@ import pytest
 from infra.config import (
     DEFAULT_CONFIG_PATH,
     load_config,
+    resolve_chat,
     resolve_chunking,
     resolve_cors_allow_origins,
     resolve_data_source_name,
+    resolve_generation,
+    resolve_guardrail,
     resolve_knowledge_base,
+    resolve_request,
+    resolve_retrieval,
     resolve_scraper,
     resolve_seed_pages,
     resolve_vector_store,
@@ -131,6 +136,190 @@ def test_seed_list_path_is_repo_root_relative(config):
 def test_cors_allow_origins_resolves_to_a_list(config):
     origins = resolve_cors_allow_origins(config)
     assert origins == ["http://localhost:4321"]
+
+
+def test_guardrail_resolves_to_one_input_only_prompt_attack_filter(config):
+    """The decided shape: ONE filter, PROMPT_ATTACK, input side only. Anything else in this
+    list would screen the student's message before the system prompt saw it, pre-empting the
+    crisis handling the prompt owns (docs/synthesis.md)."""
+    guardrail = resolve_guardrail(config)
+    assert guardrail["name"] == "sjsu-navigator-input-guardrail"
+    assert guardrail["content_filters"] == [
+        {"type": "PROMPT_ATTACK", "input_strength": "HIGH", "output_strength": "NONE"}
+    ]
+    assert guardrail["blocked_input_messaging"].startswith("I can't help with that request.")
+
+
+def test_guardrail_output_strength_is_forced_not_configured(config):
+    """output_strength is not a knob. This guardrail is only ever applied with source=INPUT,
+    so a config value here would be a claim the deployment does not make - the resolver
+    overwrites whatever is in the file."""
+    config["guardrail"]["content_filters"][0]["output_strength"] = "HIGH"
+    assert resolve_guardrail(config)["content_filters"][0]["output_strength"] == "NONE"
+
+
+def test_generation_resolves_the_cross_region_inference_profile(config):
+    """base_model_id and is_inference_profile drive the IAM shape in the stack, so they are
+    pinned here rather than inferred from a string test at the call site."""
+    generation = resolve_generation(config)
+    assert generation["model_id"] == "us.anthropic.claude-sonnet-4-6"
+    assert generation["is_inference_profile"] is True
+    assert generation["base_model_id"] == "anthropic.claude-sonnet-4-6"
+    assert generation["max_tokens"] == 1200
+    assert generation["temperature"] == 0.2
+
+
+def test_bare_model_id_is_not_treated_as_an_inference_profile(config):
+    """The other branch: a bare on-demand id needs ONE foundation-model ARN, and granting it
+    the profile shape instead would be AccessDenied on every generation."""
+    config["generation"]["model_id"] = "anthropic.claude-sonnet-4-6"
+    generation = resolve_generation(config)
+    assert generation["is_inference_profile"] is False
+    assert generation["base_model_id"] is None
+
+
+def test_retrieval_and_request_resolve_to_camps_tuned_values(config):
+    retrieval = resolve_retrieval(config)
+    assert retrieval["number_of_results"] == 8
+    # Tuned against a corpus that no longer exists; retune with the eval (docs/build-plan.md).
+    assert retrieval["min_score"] == 0.35
+    assert resolve_request(config)["max_query_chars"] == 2000
+
+
+def test_chat_resolves_the_loop_caps(config):
+    """Camp's values, but knobs rather than literals: the iteration cap is what stops a
+    runaway tool-use loop inside a 29-second budget."""
+    chat = resolve_chat(config)
+    assert chat["max_converse_iterations"] == 6
+    assert chat["max_history_messages"] == 12
+
+
+# --- Rejections: guardrail ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "sjsu navigator guardrail",   # space: outside Bedrock's [0-9a-zA-Z-_]+
+        "sjsu.navigator.guardrail",   # dot: legal in S3 Vectors names, not here
+        "a" * 51,                     # over the 50-char cap
+        "",
+    ],
+)
+def test_invalid_guardrail_name_is_rejected(config, name):
+    """Every one of these synthesizes fine on the L1 CfnGuardrail and fails at deploy."""
+    config["guardrail"]["name"] = name
+    with pytest.raises(ValueError, match="guardrail.name"):
+        resolve_guardrail(config)
+
+
+def test_over_long_blocked_input_messaging_is_rejected(config):
+    """Bedrock caps this at 500 characters. It is the text a student actually sees when the
+    screen blocks, so a truncation is a broken message, not a cosmetic one."""
+    config["guardrail"]["blocked_input_messaging"] = "x" * 501
+    with pytest.raises(ValueError, match="at most 500"):
+        resolve_guardrail(config)
+
+
+def test_empty_content_filters_is_rejected(config):
+    """A guardrail with no policy is billed on every request and screens nothing."""
+    config["guardrail"]["content_filters"] = []
+    with pytest.raises(ValueError, match="non-empty list"):
+        resolve_guardrail(config)
+
+
+def test_unknown_filter_type_is_rejected(config):
+    """PROMPT_INJECTION is the name everyone reaches for; Bedrock's category is
+    PROMPT_ATTACK, and the wrong one is a deploy-time ValidationException."""
+    config["guardrail"]["content_filters"] = [
+        {"type": "PROMPT_INJECTION", "input_strength": "HIGH"}
+    ]
+    with pytest.raises(ValueError, match="content_filters\\[0\\].type"):
+        resolve_guardrail(config)
+
+
+def test_unknown_filter_strength_is_rejected(config):
+    """Strengths are an enum (NONE/LOW/MEDIUM/HIGH), not a number."""
+    config["guardrail"]["content_filters"] = [
+        {"type": "PROMPT_ATTACK", "input_strength": "MAXIMUM"}
+    ]
+    with pytest.raises(ValueError, match="input_strength"):
+        resolve_guardrail(config)
+
+
+def test_duplicate_filter_category_is_rejected(config):
+    """Bedrock allows one filter per category; a duplicate is rejected at deploy."""
+    config["guardrail"]["content_filters"] = [
+        {"type": "PROMPT_ATTACK", "input_strength": "HIGH"},
+        {"type": "PROMPT_ATTACK", "input_strength": "LOW"},
+    ]
+    with pytest.raises(ValueError, match="more than once"):
+        resolve_guardrail(config)
+
+
+def test_other_bedrock_filter_categories_are_accepted(config):
+    """The resolver must not hardcode PROMPT_ATTACK. The project only configures that one,
+    but rejecting the rest would be a validator lying about what Bedrock supports."""
+    config["guardrail"]["content_filters"] = [
+        {"type": "VIOLENCE", "input_strength": "MEDIUM"}
+    ]
+    assert resolve_guardrail(config)["content_filters"][0]["type"] == "VIOLENCE"
+
+
+# --- Rejections: generation, retrieval, request, chat ------------------------------------
+
+
+@pytest.mark.parametrize("temperature", [-0.1, 1.5, "0.2", True])
+def test_out_of_range_temperature_is_rejected(config, temperature):
+    config["generation"]["temperature"] = temperature
+    with pytest.raises(ValueError, match="generation.temperature"):
+        resolve_generation(config)
+
+
+@pytest.mark.parametrize("number_of_results", [0, 101, -1])
+def test_number_of_results_outside_bedrocks_range_is_rejected(config, number_of_results):
+    """1-100 is Bedrock's own range for Retrieve. Out of range does not fail the deploy - it
+    fails every query afterwards, which is the whole reason it is checked at synth."""
+    config["retrieval"]["number_of_results"] = number_of_results
+    with pytest.raises(ValueError, match="number_of_results"):
+        resolve_retrieval(config)
+
+
+def test_hundred_results_is_accepted(config):
+    """Boundary: 100 is the limit, not one under it."""
+    config["retrieval"]["number_of_results"] = 100
+    assert resolve_retrieval(config)["number_of_results"] == 100
+
+
+@pytest.mark.parametrize("min_score", [-0.1, 1.1, 35, "0.35"])
+def test_min_score_outside_the_normalized_range_is_rejected(config, min_score):
+    """The nastiest of these is 35 - a plausible "percent" reading of 0.35. Bedrock scores
+    are normalized to 0-1, so it silently discards EVERY chunk and the bot answers from
+    nothing, with no error anywhere."""
+    config["retrieval"]["min_score"] = min_score
+    with pytest.raises(ValueError, match="min_score"):
+        resolve_retrieval(config)
+
+
+def test_missing_chat_block_is_rejected(config):
+    """The loop caps have no safe default: without a cap a tool-use loop can spend the whole
+    29-second budget on Converse calls."""
+    del config["chat"]
+    with pytest.raises(ValueError, match="missing the `chat` block"):
+        resolve_chat(config)
+
+
+@pytest.mark.parametrize("iterations", [0, -1, 2.5, "6"])
+def test_non_positive_iteration_cap_is_rejected(config, iterations):
+    config["chat"]["max_converse_iterations"] = iterations
+    with pytest.raises(ValueError, match="max_converse_iterations"):
+        resolve_chat(config)
+
+
+def test_non_positive_query_char_cap_is_rejected(config):
+    config["request"]["max_query_chars"] = 0
+    with pytest.raises(ValueError, match="max_query_chars"):
+        resolve_request(config)
 
 
 # --- Rejections: knowledge_base ----------------------------------------------------------
@@ -459,4 +648,13 @@ def test_validate_config_catches_an_error_in_an_unbuilt_section(config):
     though the API section that consumes cors.allow_origins has not been written yet."""
     config["cors"]["allow_origins"] = ["*"]
     with pytest.raises(ValueError, match="must not contain"):
+        validate_config(config)
+
+
+def test_validate_config_covers_the_chat_path_blocks(config):
+    """Same reason, one section further on: the values the chat Lambda reads at RUNTIME
+    (min_score, the iteration cap) are validated at synth, so a bad one fails the build
+    rather than every request after the deploy."""
+    config["retrieval"]["min_score"] = 35
+    with pytest.raises(ValueError, match="min_score"):
         validate_config(config)

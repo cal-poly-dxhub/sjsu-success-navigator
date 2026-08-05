@@ -79,6 +79,7 @@ def test_config_loads_with_expected_sections():
         "cors",
         "request",
         "retrieval",
+        "chat",
         "generation",
         "guardrail",
     ):
@@ -572,6 +573,252 @@ def test_scraper_logs_are_retained_and_removable():
     assert log_group["DeletionPolicy"] == "Delete"
 
 
+# --- Section 3: input guardrail ------------------------------------------------------------
+
+
+def test_guardrail_screens_prompt_attack_on_input_only():
+    """ONE filter, PROMPT_ATTACK, and OutputStrength NONE. Not cosmetic on either count: a
+    content filter here runs BEFORE the system prompt, so a VIOLENCE or SEXUAL filter would
+    block a student describing a crisis and hand back the refusal string instead of the
+    handoff panel. OutputStrength is NONE because nothing is attached to Converse."""
+    from infra.config import resolve_guardrail
+
+    guardrail = resolve_guardrail(load_config())
+    template = _template()
+    template.has_resource_properties(
+        "AWS::Bedrock::Guardrail",
+        {
+            "Name": guardrail["name"],
+            "BlockedInputMessaging": guardrail["blocked_input_messaging"],
+            "ContentPolicyConfig": {
+                "FiltersConfig": [
+                    {
+                        "Type": "PROMPT_ATTACK",
+                        "InputStrength": "HIGH",
+                        "OutputStrength": "NONE",
+                    }
+                ]
+            },
+        },
+    )
+    properties = _resource(template, "AWS::Bedrock::Guardrail")["Properties"]
+    # No PII policy: anonymization would rewrite the student's message before the model read
+    # it, replacing the details that make an urgent message legible with {NAME}/{ADDRESS}.
+    assert "SensitiveInformationPolicyConfig" not in properties
+    # Bedrock requires a blocked-outputs message on every guardrail. Unreachable here, so it
+    # reuses the input string rather than carrying a second one to maintain.
+    assert properties["BlockedOutputsMessaging"] == guardrail["blocked_input_messaging"]
+    assert len(properties["Description"]) <= 200
+
+
+def test_guardrail_version_description_changes_when_the_config_does():
+    """The load-bearing hack in this section. CfnGuardrailVersion has NO property that
+    changes when config.yaml does, so without a content hash in the description a guardrail
+    edit updates the DRAFT and never publishes a new version - and the Lambda, pinned to the
+    old number, keeps screening with the old policy. Nothing about that failure is visible in
+    a diff or a changeset."""
+    from infra.infra_stack import _config_hash
+
+    version = _resource(_template(), "AWS::Bedrock::GuardrailVersion")
+    description = version["Properties"]["Description"]
+    assert version["Properties"]["GuardrailIdentifier"] == {
+        "Fn::GetAtt": ["InputGuardrail", "GuardrailId"]
+    }
+    assert _config_hash({"a": 1}) != _config_hash({"a": 2})
+    assert description.startswith("input config-")
+    # And it is a real hash of the deployed definition, not a fixed string someone can edit
+    # the policy underneath.
+    assert len(description.removeprefix("input config-")) == 12
+
+
+# --- Section 4: chat Lambda + role + deps layer --------------------------------------------
+
+
+def test_chat_function_runs_the_bare_handler_on_the_pinned_runtime():
+    """handler.lambda_handler, not a Mangum adapter - camp's FastAPI app and its routers are
+    replaced by this file (docs/build-plan.md).
+
+    Timeout 29 is a CEILING, not a preference: an HTTP API integration's timeoutInMillis maxes
+    at 30,000 ms and cannot be raised by a quota request, so a longer Lambda timeout would
+    only keep the function running and billing after the gateway had already returned 504.
+    One second under, so the function's own timeout wins and shows up in ITS logs."""
+    _template().has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "Handler": "handler.lambda_handler",
+            "Runtime": "python3.13",
+            "Architectures": ["x86_64"],
+            "MemorySize": 1024,
+            "Timeout": 29,
+        },
+    )
+
+
+def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
+    """The runtime contract between the stack and app/settings.py. The KB id, guardrail id
+    and guardrail VERSION arrive by GetAtt - a literal would break the no-hardcoded-names
+    rule and point a redeployed stack at the previous guardrail version.
+
+    The version matters most: pinning to DRAFT instead would be mutable, with no rollback."""
+    from infra.config import resolve_chat, resolve_generation, resolve_retrieval
+
+    config = load_config()
+    env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+
+    assert env["KNOWLEDGE_BASE_ID"] == {"Fn::GetAtt": ["KnowledgeBase", "KnowledgeBaseId"]}
+    assert env["INPUT_GUARDRAIL_ID"] == {"Fn::GetAtt": ["InputGuardrail", "GuardrailId"]}
+    assert env["INPUT_GUARDRAIL_VERSION"] == {
+        "Fn::GetAtt": ["InputGuardrailVersion", "Version"]
+    }
+    assert env["GENERATION_MODEL_ID"] == resolve_generation(config)["model_id"]
+    assert env["BEDROCK_REGION"] == {"Ref": "AWS::Region"}
+    assert env["NUMBER_OF_RESULTS"] == str(resolve_retrieval(config)["number_of_results"])
+    assert env["RETRIEVE_MIN_SCORE"] == str(resolve_retrieval(config)["min_score"])
+    assert env["MAX_CONVERSE_ITERATIONS"] == str(
+        resolve_chat(config)["max_converse_iterations"]
+    )
+    assert env["MAX_HISTORY_MESSAGES"] == str(resolve_chat(config)["max_history_messages"])
+    # AWS_REGION is RESERVED - Lambda sets it and rejects it in a function's configuration -
+    # so the region has to travel under our own key.
+    assert "AWS_REGION" not in env
+    # Nothing is attached to Converse, so there is no output guardrail and no trace to set.
+    assert "OUTPUT_GUARDRAIL_ID" not in env
+    assert "GUARDRAIL_TRACE" not in env
+
+
+def test_chat_role_can_apply_the_input_guardrail():
+    """The grant whose absence is the least obvious. Without ApplyGuardrail the screen raises
+    AccessDeniedException at runtime - and the temptation in a hurry is to catch that and
+    continue, which turns the input screen off while the stack still looks like it has one.
+    Scoped to THIS guardrail's ARN by GetAtt rather than a wildcard."""
+    _template().has_resource_properties(
+        "AWS::IAM::Policy",
+        {
+            "PolicyDocument": {
+                "Statement": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "Action": "bedrock:ApplyGuardrail",
+                                "Effect": "Allow",
+                                "Resource": {
+                                    "Fn::GetAtt": ["InputGuardrail", "GuardrailArn"]
+                                },
+                            }
+                        )
+                    ]
+                )
+            }
+        },
+    )
+
+
+def test_chat_role_can_retrieve_and_invoke_through_the_inference_profile():
+    """Cross-region inference needs THREE resources, not one: the account-scoped profile, the
+    underlying foundation model in this region, and the same model id under a region wildcard
+    for wherever the profile routes. Grant only the profile ARN and every generation fails
+    AccessDenied while the deploy stays green.
+
+    Match.array_with matches IN ORDER, so these are in policy-document order."""
+    from infra.config import resolve_generation
+
+    generation = resolve_generation(load_config())
+    assert generation["is_inference_profile"], "this test covers the profile branch"
+    policy = _resource_named(_template(), "AWS::IAM::Policy", "ChatFunctionRole")
+    statements = policy["Properties"]["PolicyDocument"]["Statement"]
+
+    retrieve = statements[0]
+    assert retrieve["Action"] == "bedrock:Retrieve"
+    assert retrieve["Resource"] == {"Fn::GetAtt": ["KnowledgeBase", "KnowledgeBaseArn"]}
+
+    invoke = statements[1]
+    assert invoke["Action"] == "bedrock:InvokeModel*"
+    rendered = json.dumps(invoke["Resource"])
+    assert f":inference-profile/{generation['model_id']}" in rendered
+    assert f"::foundation-model/{generation['base_model_id']}" in rendered
+    assert f":bedrock:*::foundation-model/{generation['base_model_id']}" in rendered
+
+
+def test_chat_role_grants_no_gav_specific_or_write_access():
+    """Gav's query Lambda also reads its catalog bucket and writes feedback to DynamoDB.
+    Neither exists here. A leftover grant is exactly the kind of thing that survives a port
+    unnoticed, and this role should be able to write nothing at all."""
+    policy = _resource_named(_template(), "AWS::IAM::Policy", "ChatFunctionRole")
+    actions = json.dumps(policy["Properties"]["PolicyDocument"]["Statement"])
+    for absent in ("dynamodb:", "s3:PutObject", "s3:GetObject", "CATALOG", "primo"):
+        assert absent not in actions, f"{absent} is granted to the chat role"
+
+
+def test_chat_function_carries_the_deps_layer_built_for_its_runtime():
+    """pydantic is not in the Lambda runtime, and pydantic_core is a COMPILED Rust extension:
+    the wheel lands as _pydantic_core.cpython-313-x86_64-linux-gnu.so, so a plain local pip
+    install would ship a macOS binary that fails at import on the first request. Hence the
+    manylinux bundler, and hence the runtime/arch assertion - a layer whose compatibility
+    does not match the function is rejected at UpdateFunctionConfiguration."""
+    template = _template()
+    layers = _resource_named(template, "AWS::Lambda::Function", "ChatFunction")["Properties"][
+        "Layers"
+    ]
+    layer_id = next(iter(_layer_ids(template, "ChatDepsLayer")))
+    assert layers == [{"Ref": layer_id}]
+
+    props = _resource_named(template, "AWS::Lambda::LayerVersion", "ChatDepsLayer")[
+        "Properties"
+    ]
+    assert props["CompatibleRuntimes"] == ["python3.13"]
+    assert props["CompatibleArchitectures"] == ["x86_64"]
+
+
+def _layer_ids(template: Template, prefix: str) -> list:
+    return [
+        lid
+        for lid in template.find_resources("AWS::Lambda::LayerVersion")
+        if lid.startswith(prefix)
+    ]
+
+
+def test_chat_deps_layer_ships_only_the_installed_packages():
+    """The bundler writes pip's --target into python/, the path Lambda puts on sys.path.
+    Anything else at the top level means app/ leaked past the exclude - and app/ is where a
+    .venv and a .pytest_cache will appear the moment anyone runs the app's own tests."""
+    assert _staged_listing("ChatDepsLayer") == ["python"]
+
+
+def test_chat_function_ships_the_handler_and_its_service_modules_only():
+    """Listed file by file rather than by a directory glob, so a stray script in app/ cannot
+    ride into a deployed function - plus ".*" for the dotfile trap the scraper section
+    documents (a leading-wildcard exclude does not match hidden entries).
+
+    requirements.txt is deliberately absent: it belongs to the LAYER's asset, and shipping it
+    twice would be a second copy to drift."""
+    listing = _staged_listing("ChatFunction")
+    assert listing == [
+        "cards.py",
+        "handler.py",
+        "models.py",
+        "orchestrator.py",
+        "prompts.py",
+        "retrieve.py",
+        "safety.py",
+        "settings.py",
+        "tools.py",
+    ]
+    assert "requirements.txt" not in listing
+
+
+def test_chat_function_waits_for_the_knowledge_base_it_queries():
+    function = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")
+    assert "KnowledgeBase" in function["DependsOn"]
+
+
+def test_chat_logs_are_retained_and_removable():
+    log_group = _resource_named(_template(), "AWS::Logs::LogGroup", "ChatFunctionLogGroup")
+    assert log_group["Properties"]["RetentionInDays"] == 90
+    assert log_group["DeletionPolicy"] == "Delete"
+
+
 def test_no_global_name_is_hardcoded_in_the_stack_source():
     """The naming convention, enforced against the source rather than the template: every
     global name in the template must have come from config.yaml. Checks the stack FILE for
@@ -582,7 +829,13 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
     filename in particular is read TWICE - once to pick the layer's asset and once for the
     URL_LIST_FILE env var - so a hardcoded copy is how the bundled file and the opened file
     drift apart."""
-    from infra.config import resolve_knowledge_base, resolve_scraper, resolve_vector_store
+    from infra.config import (
+        resolve_generation,
+        resolve_guardrail,
+        resolve_knowledge_base,
+        resolve_scraper,
+        resolve_vector_store,
+    )
 
     config = load_config()
     source = (Path(__file__).resolve().parents[2] / "infra" / "infra_stack.py").read_text()
@@ -593,6 +846,11 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
         resolve_scraper(config)["url_list_file"],
         resolve_scraper(config)["schedule_cron"],
         resolve_scraper(config)["user_agent"],
+        # The guardrail name is a global name in the account. The model id is not, but it
+        # reaches THREE IAM ARNs and the Lambda's environment, so an inline copy is how the
+        # granted model and the invoked model drift apart.
+        resolve_guardrail(config)["name"],
+        resolve_generation(config)["model_id"],
     ):
         assert name not in source, (
             f"{name!r} is hardcoded in infra_stack.py - it must come from config.yaml"

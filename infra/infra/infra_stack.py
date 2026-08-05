@@ -19,6 +19,8 @@ also validates the file at synth - the L1 Cfn* constructs used below do not chec
 property constraints themselves.
 """
 
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -45,9 +47,14 @@ from aws_cdk import (
 from constructs import Construct
 
 from infra.config import (
+    resolve_chat,
     resolve_chunking,
     resolve_data_source_name,
+    resolve_generation,
+    resolve_guardrail,
     resolve_knowledge_base,
+    resolve_request,
+    resolve_retrieval,
     resolve_scraper,
     resolve_seed_pages,
     resolve_vector_store,
@@ -59,34 +66,63 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # The scraper Lambda's source (scraper.py + lambda_function.py) and its requirements.txt (the
 # deps built into the layer below).
 _SCRAPER_DIR = _REPO_ROOT / "scraper"
+# The chat Lambda's source: the bare handler plus camp's service modules, moved in as files.
+# No FastAPI and no Mangum (docs/build-plan.md) - camp's main.py and routers are replaced by
+# handler.py, and everything else in this directory is framework-free Python already.
+_APP_DIR = _REPO_ROOT / "app"
 
-# The scraper Lambda's architecture and the MATCHING manylinux wheel tag. trafilatura pulls in
-# lxml and regex - compiled C extensions - so the layer must contain Linux (x86_64) wheels, not
-# the macOS wheels a plain `pip install` produces on a dev Mac. Keep these two in lockstep.
+# Both Lambdas' architecture and the MATCHING manylinux wheel tag. trafilatura pulls in lxml
+# and regex, pydantic pulls in pydantic-core - all compiled extensions - so the layers must
+# contain Linux (x86_64) wheels, not the macOS wheels a plain `pip install` produces on a dev
+# Mac. Keep these two in lockstep.
 _LAMBDA_PYTHON = _lambda.Runtime.PYTHON_3_13
 _LAMBDA_ARCH = _lambda.Architecture.X86_64
 _MANYLINUX_TAG = "manylinux2014_x86_64"
 _LAMBDA_PY_TAG = "3.13"
 
 
+def _config_hash(payload: Dict[str, Any]) -> str:
+    """A short, stable content hash of a resolved config block.
+
+    Used where a CloudFormation resource has no property that changes when config.yaml does -
+    specifically CfnGuardrailVersion, which would otherwise never publish a new version after
+    a guardrail edit. sort_keys makes it order-independent, so re-arranging config.yaml without
+    changing a value does not churn the resource.
+    """
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+
+
 @jsii.implements(ILocalBundling)
 class _PipManylinuxLayerBundler:
-    """Builds the scraper's deps as a Lambda layer using prebuilt manylinux wheels via
+    """Builds one requirements.txt into a Lambda layer using prebuilt manylinux wheels via
     `pip --platform ... --only-binary=:all:` - NO Docker, NO compiler. This is AWS's documented
-    method for compiled deps (lxml/regex): --platform + --only-binary forces pip to download the
-    Linux wheel matching the Lambda architecture instead of building a macOS binary that would
-    fail at runtime with an ELF/Mach-O error.
+    method for compiled deps: --platform + --only-binary forces pip to download the Linux wheel
+    matching the Lambda architecture instead of building a macOS binary that would fail at
+    runtime with an ELF/Mach-O error.
+
+    Both deps layers use this. The scraper's trafilatura pulls in lxml and regex; the chat
+    Lambda's pydantic pulls in pydantic-core, a compiled Rust extension - same trap, same fix
+    (verified: the wheel lands as _pydantic_core.cpython-313-x86_64-linux-gnu.so).
+
+    `requirements` is a constructor argument rather than a module constant because the two
+    layers build different files; a shared hardcoded path would have quietly built the
+    scraper's deps into the chat layer.
 
     Returns False on any failure so CDK falls back to the BundlingOptions Docker `image`/`command`
     (the required fallback if a transitive dep ever lacks a manylinux wheel).
     """
+
+    def __init__(self, requirements: Path) -> None:
+        self._requirements = requirements
 
     def try_bundle(self, output_dir: str, *, image=None, **_kwargs) -> bool:
         try:
             subprocess.run(
                 [
                     sys.executable, "-m", "pip", "install",
-                    "-r", str(_SCRAPER_DIR / "requirements.txt"),
+                    "-r", str(self._requirements),
                     "--platform", _MANYLINUX_TAG,
                     "--python-version", _LAMBDA_PY_TAG,
                     "--implementation", "cp",
@@ -126,6 +162,11 @@ class NavigatorStack(Stack):
         kb_cfg = resolve_knowledge_base(config)
         vs_cfg = resolve_vector_store(config)
         chunking_cfg = resolve_chunking(config)
+        guardrail_cfg = resolve_guardrail(config)
+        generation_cfg = resolve_generation(config)
+        retrieval_cfg = resolve_retrieval(config)
+        request_cfg = resolve_request(config)
+        chat_cfg = resolve_chat(config)
 
         # The embedding model, region-scoped. Titan v2 at 1024 dimensions is inherited from
         # gav, not chosen against this corpus (docs/synthesis.md). Region and partition are
@@ -327,7 +368,7 @@ class NavigatorStack(Stack):
                 exclude=["*", ".*", "!requirements.txt"],
                 bundling=BundlingOptions(
                     image=_LAMBDA_PYTHON.bundling_image,
-                    local=_PipManylinuxLayerBundler(),
+                    local=_PipManylinuxLayerBundler(_SCRAPER_DIR / "requirements.txt"),
                     # Docker fallback: inside the Linux bundling image, a plain install yields
                     # correct Linux wheels natively. platform pins x86_64 even on an ARM Mac.
                     command=[
@@ -538,8 +579,284 @@ class NavigatorStack(Stack):
         )
 
         # --- 3. Guardrail: PROMPT_ATTACK input screen (after safety intercept) ---
+        #
+        # ONE guardrail, screening PROMPT_ATTACK on the input side. It is applied via
+        # ApplyGuardrail(source=INPUT) on the bare query in the handler; nothing is attached to
+        # Converse, so there is no output guardrail here to find.
+        #
+        # THE ORDERING IS LOAD-BEARING (docs/synthesis.md, docs/architecture-v1.py:146): the
+        # deterministic safety intercept runs FIRST, in-Lambda, before this screen and before any
+        # model call. A guardrail block returns a fixed refusal string - so if it ran first, a
+        # student in crisis whose message also tripped the screen would get the refusal instead of
+        # the crisis panel. app/handler.py enforces the order and
+        # test_safety_intercept_runs_before_the_guardrail pins it.
+        #
+        # Everything else was left out deliberately. The screen runs ahead of the system prompt,
+        # so a content filter or a silent PII rewrite would pre-empt the prompt's crisis handling.
+        # The prompt owns safety; PROMPT_ATTACK stays because it is an attack on the prompt itself.
+
+        # Canonical definition of the guardrail. It drives BOTH the CfnGuardrail props and the
+        # version-description hash, so the hash covers exactly what is deployed and any config
+        # change forces a new published version.
+        guardrail_def = {
+            "name": guardrail_cfg["name"],
+            "contentFilters": [
+                {
+                    "type": f["type"],
+                    "inputStrength": f["input_strength"],
+                    # Forced NONE by resolve_guardrail, not read from config: this guardrail is
+                    # only ever applied to input, and Bedrock requires NONE for PROMPT_ATTACK.
+                    "outputStrength": f["output_strength"],
+                }
+                for f in guardrail_cfg["content_filters"]
+            ],
+            "blockedInputMessaging": guardrail_cfg["blocked_input_messaging"],
+        }
+
+        input_guardrail = bedrock.CfnGuardrail(
+            self,
+            "InputGuardrail",
+            name=guardrail_def["name"],
+            # Bedrock caps this at 200 characters and rejects the change set at deploy if it is
+            # longer (the L1 does not validate it at synth). The reasoning that does not fit
+            # lives in the comment block above, not here.
+            description=(
+                "Input screen for the SJSU Student Success Navigator: "
+                "ApplyGuardrail(source=INPUT) on the bare student query, PROMPT_ATTACK only. "
+                "No other filter and no PII policy - the system prompt owns safety."
+            ),
+            blocked_input_messaging=guardrail_def["blockedInputMessaging"],
+            # Bedrock requires a blocked-outputs message on every guardrail. This one is
+            # unreachable by construction - the guardrail is never applied to output - so it
+            # reuses the input message rather than carrying a second string to maintain.
+            blocked_outputs_messaging=guardrail_def["blockedInputMessaging"],
+            content_policy_config=bedrock.CfnGuardrail.ContentPolicyConfigProperty(
+                filters_config=[
+                    bedrock.CfnGuardrail.ContentFilterConfigProperty(
+                        type=f["type"],
+                        input_strength=f["inputStrength"],
+                        output_strength=f["outputStrength"],
+                    )
+                    for f in guardrail_def["contentFilters"]
+                ],
+            ),
+            # NO sensitive_information_policy_config: PII anonymization would rewrite the
+            # student's message before the model ever read it, replacing the details that make
+            # an urgent message legible with {NAME} and {ADDRESS}.
+        )
+
+        # Numbered, immutable version the Lambda pins to. The description carries a content hash
+        # of the resolved guardrail config, because CfnGuardrailVersion has no other property
+        # that changes when config.yaml does: without it, a guardrail edit updates the DRAFT but
+        # never publishes a new version, and the Lambda goes on using the stale one. Pinning to
+        # DRAFT instead would be mutable, with no rollback and no reproducibility.
+        input_guardrail_version = bedrock.CfnGuardrailVersion(
+            self,
+            "InputGuardrailVersion",
+            guardrail_identifier=input_guardrail.attr_guardrail_id,
+            description=f"input config-{_config_hash(guardrail_def)}",
+        )
 
         # --- 4. Chat Lambda: bare handler + role + deps layer --------------------
+        #
+        # The query path: one Lambda running the deterministic safety intercept, the guardrail
+        # screen, and camp's Converse agent loop. A BARE handler - no FastAPI, no Mangum
+        # (docs/build-plan.md): camp's service modules are framework-free Python and move in as
+        # files, so only main.py and the routers are replaced.
+        #
+        # The HTTP API that fronts this arrives at bullet 5. Until then the function is
+        # deployable and directly invocable but has no route.
+
+        generation_model_id = generation_cfg["model_id"]
+
+        # Its OWN execution role, distinct from the KB role and the scraper role. Basic
+        # execution (CloudWatch Logs) via the managed policy; Bedrock grants added narrowly.
+        chat_lambda_role = iam.Role(
+            self,
+            "ChatFunctionRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            description="Execution role for the chat Lambda (retrieve + guardrail + converse).",
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
+            ],
+        )
+        # Retrieve chunks from the KB. Scoped to the one knowledge base.
+        chat_lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:Retrieve"],
+                resources=[knowledge_base.attr_knowledge_base_arn],
+            )
+        )
+        # Invoke the generation model (Converse maps to bedrock:InvokeModel*). Modern Claude
+        # models are invoked through a CROSS-REGION INFERENCE PROFILE - a geographic-prefixed id
+        # like "us.anthropic..." - which needs a different IAM shape than a bare on-demand
+        # foundation-model id. resolve_generation decides which form this is, so the branch is
+        # config-driven rather than a string test inline here.
+        if generation_cfg["is_inference_profile"]:
+            base_model_id = generation_cfg["base_model_id"]
+            chat_lambda_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock:InvokeModel*"],
+                    resources=[
+                        # The account+region-scoped profile itself.
+                        f"arn:{self.partition}:bedrock:{self.region}:{self.account}"
+                        f":inference-profile/{generation_model_id}",
+                        # The underlying foundation model in the SOURCE region (this stack's).
+                        f"arn:{self.partition}:bedrock:{self.region}"
+                        f"::foundation-model/{base_model_id}",
+                        # ...and in every destination region the profile may route to. Those
+                        # cannot be enumerated without hardcoding a region list, so this is a
+                        # region wildcard on the SAME single model id - the AWS-recommended
+                        # grant for cross-region inference.
+                        f"arn:{self.partition}:bedrock:*::foundation-model/{base_model_id}",
+                    ],
+                )
+            )
+            # Resolve the profile's metadata/routing at runtime. ListInferenceProfiles has no
+            # resource-level scoping (must be "*"); GetInferenceProfile is read-only metadata.
+            chat_lambda_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=[
+                        "bedrock:GetInferenceProfile",
+                        "bedrock:ListInferenceProfiles",
+                    ],
+                    resources=["*"],
+                )
+            )
+        else:
+            chat_lambda_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock:InvokeModel"],
+                    resources=[
+                        f"arn:{self.partition}:bedrock:{self.region}"
+                        f"::foundation-model/{generation_model_id}"
+                    ],
+                )
+            )
+        # ApplyGuardrail on the ONE guardrail: the standalone input screen (source=INPUT).
+        # Nothing is attached to Converse, so there is no second ARN to grant.
+        chat_lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:ApplyGuardrail"],
+                resources=[input_guardrail.attr_guardrail_arn],
+            )
+        )
+
+        # Dependency LAYER: pydantic as manylinux x86_64 wheels. pydantic_core is a compiled
+        # Rust extension, so this needs the same --platform treatment as the scraper's lxml
+        # (verified: the wheel lands as _pydantic_core.cpython-313-x86_64-linux-gnu.so, an ELF
+        # binary, where a plain local install would produce a macOS .so that fails at import).
+        # boto3 comes from the runtime; there is no FastAPI and no Mangum to carry.
+        chat_deps_layer = _lambda.LayerVersion(
+            self,
+            "ChatDepsLayer",
+            description="pydantic (manylinux x86_64) for the chat Lambda's wire contract.",
+            compatible_runtimes=[_LAMBDA_PYTHON],
+            compatible_architectures=[_LAMBDA_ARCH],
+            code=_lambda.Code.from_asset(
+                str(_APP_DIR),
+                asset_hash_type=AssetHashType.OUTPUT,
+                exclude=["*", ".*", "!requirements.txt"],
+                bundling=BundlingOptions(
+                    image=_LAMBDA_PYTHON.bundling_image,
+                    local=_PipManylinuxLayerBundler(_APP_DIR / "requirements.txt"),
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install -r requirements.txt --target /asset-output/python",
+                    ],
+                    platform="linux/amd64",
+                ),
+            ),
+        )
+
+        # Explicit log group so retention is bounded and it is torn down with the stack, rather
+        # than the implicit never-expiring group Lambda would create on first invoke and leave
+        # orphaned on destroy.
+        chat_log_group = logs.LogGroup(
+            self,
+            "ChatFunctionLogGroup",
+            retention=logs.RetentionDays.THREE_MONTHS,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        chat_lambda = _lambda.Function(
+            self,
+            "ChatFunction",
+            runtime=_LAMBDA_PYTHON,
+            architecture=_LAMBDA_ARCH,
+            handler="handler.lambda_handler",
+            # The handler plus the service modules it imports. Listed file by file rather than
+            # by a directory glob so a stray script in app/ cannot ride along, and ".*" for the
+            # dotfile trap the scraper section documents: without it app/.venv and
+            # .pytest_cache would end up inside the deployed function.
+            code=_lambda.Code.from_asset(
+                str(_APP_DIR),
+                exclude=[
+                    "*",
+                    ".*",
+                    "!handler.py",
+                    "!settings.py",
+                    "!models.py",
+                    "!prompts.py",
+                    "!tools.py",
+                    "!retrieve.py",
+                    "!cards.py",
+                    "!safety.py",
+                    "!orchestrator.py",
+                ],
+            ),
+            layers=[chat_deps_layer],
+            role=chat_lambda_role,
+            # 29 seconds against camp's 30, and this is a CEILING rather than a choice: an HTTP
+            # API integration's timeoutInMillis maxes out at 30,000 ms (verified against the
+            # apigatewayv2 CreateIntegration reference, 2026-08-05) and cannot be raised by a
+            # quota request. A longer Lambda timeout would just let the function keep running
+            # and billing after API Gateway had already returned 504 to the student. One second
+            # under, so the function's own timeout wins and the failure is diagnosable in ITS
+            # logs rather than only as a gateway 504.
+            #
+            # This is the "raise timeout/memory above their 30s/256MB" item in
+            # docs/synthesis.md, and it is HALF DONE deliberately: memory rises, the timeout
+            # cannot. If the agent loop turns out not to fit in 29s, the fix is architectural
+            # (streaming, or an async job) rather than a bigger number - recorded in
+            # docs/build-plan.md under Open.
+            timeout=Duration.seconds(29),
+            # 1024 MB, up from camp's 256. Lambda scales CPU with memory, and this function
+            # imports pydantic and boto3 and then makes several sequential Bedrock calls inside
+            # a 29-second budget, so cold-start import time comes directly out of the time the
+            # loop has to work in. Untuned against a real invocation (no account), so it is a
+            # deliberate over-provision rather than a measured value.
+            memory_size=1024,
+            log_group=chat_log_group,
+            environment={
+                "KNOWLEDGE_BASE_ID": knowledge_base.attr_knowledge_base_id,
+                "GENERATION_MODEL_ID": generation_model_id,
+                # Lambda auto-sets AWS_REGION and it is RESERVED (it cannot be set in a
+                # function's configuration), so the region is passed under our own key.
+                "BEDROCK_REGION": self.region,
+                "NUMBER_OF_RESULTS": str(retrieval_cfg["number_of_results"]),
+                "RETRIEVE_MIN_SCORE": str(retrieval_cfg["min_score"]),
+                "GENERATION_MAX_TOKENS": str(generation_cfg["max_tokens"]),
+                "GENERATION_TEMPERATURE": str(generation_cfg["temperature"]),
+                "MAX_QUERY_CHARS": str(request_cfg["max_query_chars"]),
+                # The agent loop's caps. MAX_CONVERSE_ITERATIONS is camp's 6, but from config
+                # and logged when reached (see resolve_chat).
+                "MAX_CONVERSE_ITERATIONS": str(chat_cfg["max_converse_iterations"]),
+                "MAX_HISTORY_MESSAGES": str(chat_cfg["max_history_messages"]),
+                # The input screen, pinned to its published numbered version. There is no
+                # OUTPUT_GUARDRAIL_* pair and no GUARDRAIL_TRACE: nothing is attached to
+                # Converse, so there is no trace to configure.
+                "INPUT_GUARDRAIL_ID": input_guardrail.attr_guardrail_id,
+                "INPUT_GUARDRAIL_VERSION": input_guardrail_version.attr_version,
+            },
+        )
+        # The function retrieves from the KB at runtime, so it must not exist before the KB.
+        chat_lambda.node.add_dependency(knowledge_base)
+        # Held for bullet 5, which routes the HTTP API at it.
+        self._chat_lambda = chat_lambda
 
         # --- 5. Auth + API: Cognito pool/client + JWT authorizer + HTTP API ------
 

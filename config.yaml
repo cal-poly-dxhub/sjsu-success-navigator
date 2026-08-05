@@ -68,6 +68,16 @@ retrieval:
   # eval (build-plan: "retune retrieve_min_score").
   min_score: 0.35
 
+chat:
+  # The agent loop's safety cap on Converse round trips. Camp's value (6), but a config
+  # knob rather than a literal default, and the handler LOGS when it hits: camp fell
+  # through to its non-agentic fallback silently, so a request that spent six model calls
+  # looked identical to one that answered on the first.
+  max_converse_iterations: 6
+  # Conversation turns kept from a request, trimmed SERVER-SIDE (camp's value). The client
+  # is never trusted to cap its own history - that is a paid-token control.
+  max_history_messages: 12
+
 generation:
   # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.
   model_id: us.anthropic.claude-sonnet-4-6

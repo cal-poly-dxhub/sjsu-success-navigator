@@ -15,7 +15,7 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull gav config skeleton and synth validators, renamed with no hardcoded global names
 - [x] pull gav kb section, repointed at our source bucket and chunking values
 - [x] pull gav scraper shell, crawling the curated url list from config on a single daily schedule (no tiers); sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
-- [ ] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases
+- [x] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases (the guardrail rides with it; handler is a validate-only stub until the next two bullets)
 - [ ] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced
 - [ ] pull camp card parsing and the pre-model safety intercept as-is
 - [ ] pull gav api gateway: cognito gate on the billable route, our origins, our throttle numbers, route to /chat, Authorization in allow_headers
@@ -35,6 +35,13 @@ distribution domain into its cors allowlist. Not frozen after its commit.
 ## Open
 
 - [ ] astro build: bundle at deploy, or commit dist/
+- [ ] the chat lambda's 29s timeout is a ceiling, not a choice: an HTTP API
+      integration's `timeoutInMillis` maxes at 30,000 ms and is not raisable by a
+      quota request, so the synthesis item "raise timeout/memory above their
+      30s/256MB" is half done on purpose (memory rose to 1024MB, the timeout
+      cannot rise). If the agent loop does not fit in 29s the fix is
+      architectural - streaming, or an async job with a poll - not a bigger
+      number. Unmeasured without an account.
 - [ ] content-hash stability is unmeasured on sjsu.edu: gav's corpus scraped
       byte-identical twice, ours has never been scraped at all (needs account).
       A per-render nonce or a rotating banner inside an extracted body would

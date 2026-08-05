@@ -77,6 +77,40 @@ _CHUNKING_STRATEGIES = ("FIXED_SIZE", "NONE", "HIERARCHICAL", "SEMANTIC")
 # and loses its tailored follow-up), which is why it is required here rather than defaulted.
 _SEED_COLUMNS = ("url", "section", "title")
 
+# Bedrock guardrail constraints, verified against the CreateGuardrail /
+# GuardrailContentFilterConfig API reference (2026-08-05). Every one of these is enforced by
+# the service and NOT by the L1 CfnGuardrail, so without these checks a bad value first
+# surfaces as a failed change set:
+#   - name:                  1-50 chars matching [0-9a-zA-Z-_]+ (note: no dots, unlike the
+#                            S3 Vectors pattern, and shorter than the Bedrock KB pattern)
+#   - blockedInputMessaging: 1-500 chars, and it is REQUIRED
+#   - filter type:           one of the six harmful categories
+#   - filter strength:       NONE | LOW | MEDIUM | HIGH
+_GUARDRAIL_NAME_RE = re.compile(r"^[0-9a-zA-Z_-]+$")
+_GUARDRAIL_NAME_MAX = 50
+_GUARDRAIL_MESSAGE_MAX = 500
+_GUARDRAIL_FILTER_TYPES = (
+    "SEXUAL",
+    "VIOLENCE",
+    "HATE",
+    "INSULTS",
+    "MISCONDUCT",
+    "PROMPT_ATTACK",
+)
+_GUARDRAIL_FILTER_STRENGTHS = ("NONE", "LOW", "MEDIUM", "HIGH")
+
+# Bedrock's own range for Retrieve's numberOfResults (verified against
+# KnowledgeBaseVectorSearchConfiguration, 2026-08-05). Out of range is a runtime
+# ValidationException on every single query - not a deploy failure, which makes it worse:
+# the stack comes up clean and every request 502s.
+_NUMBER_OF_RESULTS_MIN = 1
+_NUMBER_OF_RESULTS_MAX = 100
+
+# Geographic prefixes that mark a model id as a CROSS-REGION INFERENCE PROFILE rather than a
+# bare on-demand foundation model. The two need different IAM shapes (see the chat Lambda's
+# role in infra_stack.py), so the distinction is resolved here, once.
+_INFERENCE_PROFILE_PREFIXES = ("us", "eu", "apac", "us-gov")
+
 
 def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
     """Parse config.yaml into a dict. Defaults to the repo-root config.yaml."""
@@ -410,6 +444,187 @@ def resolve_seed_pages(config: Dict[str, Any]) -> List[Dict[str, str]]:
     return pages
 
 
+def resolve_guardrail(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `guardrail` block: ONE guardrail, PROMPT_ATTACK on input only.
+
+    The shape is deliberately narrow (docs/synthesis.md): the deterministic safety intercept
+    runs FIRST, then this screens the bare query, then the loop starts. A content filter for
+    anything but prompt injection would pre-empt the intercept and the system prompt's crisis
+    handling, so the config is allowed to name any of Bedrock's six categories but the
+    project only configures the one that is an attack on the prompt itself.
+
+    Output strength is NOT a config knob and is forced to NONE below: this guardrail is only
+    ever applied with source=INPUT, so a non-zero output strength would be a claim the
+    deployment does not make.
+    """
+    guardrail_cfg = _require_mapping(config, "guardrail")
+
+    name = _non_empty_str(guardrail_cfg, "guardrail", "name")
+    if len(name) > _GUARDRAIL_NAME_MAX or not _GUARDRAIL_NAME_RE.match(name):
+        raise ValueError(
+            f"guardrail.name must be 1-{_GUARDRAIL_NAME_MAX} characters of letters, digits, "
+            f"'-' or '_' (got {name!r}, {len(name)} chars). Bedrock enforces this at deploy; "
+            "the L1 CfnGuardrail does not check it at synth."
+        )
+
+    blocked_input_messaging = _non_empty_str(
+        guardrail_cfg, "guardrail", "blocked_input_messaging"
+    )
+    if len(blocked_input_messaging) > _GUARDRAIL_MESSAGE_MAX:
+        raise ValueError(
+            f"guardrail.blocked_input_messaging must be at most {_GUARDRAIL_MESSAGE_MAX} "
+            f"characters (got {len(blocked_input_messaging)}). This is the text a student "
+            "sees when the screen blocks, so it cannot be silently truncated."
+        )
+
+    filters = guardrail_cfg.get("content_filters")
+    if not isinstance(filters, list) or not filters:
+        raise ValueError(
+            "guardrail.content_filters must be a non-empty list. A guardrail with no policy "
+            "is billed on every request and screens nothing."
+        )
+
+    resolved_filters: List[Dict[str, str]] = []
+    seen_types: set = set()
+    for index, entry in enumerate(filters):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"guardrail.content_filters[{index}] must be a mapping with `type` and "
+                f"`input_strength` (got {entry!r})."
+            )
+        filter_type = _non_empty_str(entry, f"guardrail.content_filters[{index}]", "type")
+        if filter_type not in _GUARDRAIL_FILTER_TYPES:
+            raise ValueError(
+                f"guardrail.content_filters[{index}].type must be one of "
+                f"{', '.join(_GUARDRAIL_FILTER_TYPES)} (got {filter_type!r})."
+            )
+        if filter_type in seen_types:
+            raise ValueError(
+                f"guardrail.content_filters lists {filter_type} more than once. Bedrock "
+                "allows one filter per category, so the duplicate is rejected at deploy."
+            )
+        seen_types.add(filter_type)
+
+        input_strength = _non_empty_str(
+            entry, f"guardrail.content_filters[{index}]", "input_strength"
+        )
+        if input_strength not in _GUARDRAIL_FILTER_STRENGTHS:
+            raise ValueError(
+                f"guardrail.content_filters[{index}].input_strength must be one of "
+                f"{', '.join(_GUARDRAIL_FILTER_STRENGTHS)} (got {input_strength!r})."
+            )
+        # outputStrength is REQUIRED by the API but meaningless here (input-only screen), so
+        # it is set rather than read. NONE is also what Bedrock requires for PROMPT_ATTACK.
+        resolved_filters.append(
+            {
+                "type": filter_type,
+                "input_strength": input_strength,
+                "output_strength": "NONE",
+            }
+        )
+
+    return {
+        "name": name,
+        "blocked_input_messaging": blocked_input_messaging,
+        "content_filters": resolved_filters,
+    }
+
+
+def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `generation` block: the Converse model and its inference knobs.
+
+    `is_inference_profile` is resolved HERE rather than in the stack because it decides the
+    IAM shape: a geographic-prefixed id ("us.anthropic...") is a cross-region inference
+    profile, which needs InvokeModel on the profile ARN PLUS the underlying foundation-model
+    ARNs, while a bare id needs one foundation-model ARN. Getting it wrong is an
+    AccessDeniedException on every generation - a stack that deploys clean and never answers.
+    """
+    generation_cfg = _require_mapping(config, "generation")
+    model_id = _non_empty_str(generation_cfg, "generation", "model_id")
+
+    head = model_id.split(".", 1)[0]
+    is_inference_profile = "." in model_id and head in _INFERENCE_PROFILE_PREFIXES
+
+    temperature = generation_cfg.get("temperature")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        raise ValueError(
+            f"generation.temperature must be a number (got {temperature!r})."
+        )
+    if not 0 <= temperature <= 1:
+        raise ValueError(
+            f"generation.temperature must be between 0 and 1 inclusive (got {temperature})."
+        )
+
+    return {
+        "model_id": model_id,
+        # The foundation-model id behind a profile is the id minus its geographic prefix.
+        # None for a bare id, where the model id already IS the foundation model.
+        "base_model_id": model_id.split(".", 1)[1] if is_inference_profile else None,
+        "is_inference_profile": is_inference_profile,
+        "max_tokens": _positive_int(generation_cfg, "generation", "max_tokens"),
+        "temperature": float(temperature),
+    }
+
+
+def resolve_retrieval(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `retrieval` block: how many chunks to ask the KB for, and the relevance floor.
+
+    Both are runtime knobs rather than deploy-time ones, which is exactly why they are
+    validated here: a numberOfResults out of Bedrock's 1-100 range does not fail the deploy,
+    it fails every query afterwards.
+    """
+    retrieval_cfg = _require_mapping(config, "retrieval")
+    number_of_results = _positive_int(retrieval_cfg, "retrieval", "number_of_results")
+    if not _NUMBER_OF_RESULTS_MIN <= number_of_results <= _NUMBER_OF_RESULTS_MAX:
+        raise ValueError(
+            f"retrieval.number_of_results must be between {_NUMBER_OF_RESULTS_MIN} and "
+            f"{_NUMBER_OF_RESULTS_MAX} - Bedrock's own range for Retrieve (got "
+            f"{number_of_results}). Out of range is a ValidationException per query, not a "
+            "failed deploy."
+        )
+
+    min_score = retrieval_cfg.get("min_score")
+    if isinstance(min_score, bool) or not isinstance(min_score, (int, float)):
+        raise ValueError(f"retrieval.min_score must be a number (got {min_score!r}).")
+    if not 0 <= min_score <= 1:
+        raise ValueError(
+            f"retrieval.min_score must be between 0 and 1 inclusive (got {min_score}). "
+            "Bedrock relevance scores are normalized to that range, so a value above 1 "
+            "silently discards EVERY chunk and the bot answers from nothing."
+        )
+
+    return {"number_of_results": number_of_results, "min_score": float(min_score)}
+
+
+def resolve_request(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `request` block: the server-side query length cap.
+
+    The client's maxlength is advisory UX; this is the real control. The platform limits
+    (API Gateway 10 MB, Lambda 6 MB) are far too high to protect a paid Bedrock call.
+    """
+    request_cfg = _require_mapping(config, "request")
+    return {
+        "max_query_chars": _positive_int(request_cfg, "request", "max_query_chars"),
+    }
+
+
+def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `chat` block: the agent loop's own limits.
+
+    `max_converse_iterations` is the loop's safety cap. Camp capped at 6 with a literal
+    default and no log line when it was reached, so a request that burned six Converse calls
+    and fell through to the non-agentic fallback was indistinguishable from a normal answer.
+    It is config here, and the handler logs when it hits (docs/build-plan.md).
+    """
+    chat_cfg = _require_mapping(config, "chat")
+    return {
+        "max_converse_iterations": _positive_int(
+            chat_cfg, "chat", "max_converse_iterations"
+        ),
+        "max_history_messages": _positive_int(chat_cfg, "chat", "max_history_messages"),
+    }
+
+
 def validate_config(config: Dict[str, Any]) -> None:
     """Run every validator, discarding the results.
 
@@ -428,6 +643,11 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_scraper(config)
     resolve_seed_pages(config)
     resolve_cors_allow_origins(config)
+    resolve_guardrail(config)
+    resolve_generation(config)
+    resolve_retrieval(config)
+    resolve_request(config)
+    resolve_chat(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:
