@@ -1163,3 +1163,37 @@ def test_astro_emits_directory_format_so_the_routing_function_matches():
     ).read_text()
     assert "format: 'directory'" in config
     assert "output: 'static'" in config
+
+
+def test_every_app_module_reaches_the_staged_lambda_asset():
+    """THE list-drift test, and it exists because this list has failed silently three
+    times: dotfiles staging .git into a layer, the bundler's hardcoded requirements path
+    building the wrong deps, and section_presets.py missing from the includes entirely.
+    Every one of those synthed clean while the DEPLOYED function would have died at
+    import - which is the worst shape a failure can take here, because there is no
+    account to catch it before a student does.
+
+    The expectation is read off the FILESYSTEM, never restated here. A test that repeats
+    the include list is just a second copy of the thing that keeps going stale."""
+    app_dir = Path(__file__).resolve().parents[3] / "app"
+    on_disk = {
+        path.name
+        for path in app_dir.glob("*.py")
+        # tests/ live in their own directory and are excluded from the asset on purpose.
+        if not path.name.startswith("test_")
+    }
+    staged = set(_staged_listing("ChatFunction"))
+
+    missing = on_disk - staged
+    assert missing == set(), (
+        f"app modules that never reach the deployed function: {sorted(missing)}. "
+        "Add each to the ChatFunction asset's include list in infra_stack.py - the "
+        "function imports them at cold start, so an omission is an ImportError on the "
+        "first real request, not a synth failure."
+    )
+
+    extra = staged - on_disk
+    assert extra == set(), (
+        f"staged files with no module on disk: {sorted(extra)}. The include list is "
+        "stale, or something unintended is riding along into the function bundle."
+    )
