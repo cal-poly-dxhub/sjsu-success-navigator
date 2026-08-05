@@ -165,6 +165,17 @@ def _astro_bundling() -> BundlingOptions:
     )
 
 
+def _requirements_hash(layer: str, requirements: Path) -> str:
+    """A stable asset hash for a deps layer, keyed on its OWN requirements file.
+
+    Exists to keep the two deps layers from colliding in CDK's asset cache - see the long
+    note on the chat layer. The layer name is folded in as well as the file contents, so
+    two layers would stay distinct even if their requirements were byte-identical.
+    """
+    digest = hashlib.sha256(requirements.read_bytes()).hexdigest()[:32]
+    return f"{layer}-{digest}"
+
+
 def _config_hash(payload: Dict[str, Any]) -> str:
     """A short, stable content hash of a resolved config block.
 
@@ -439,8 +450,8 @@ class NavigatorStack(Stack):
 
         # Dependency LAYER: trafilatura + lxml + regex + httpx as manylinux x86_64 wheels. Built
         # locally with pip --platform (no Docker); Docker bundling is the fallback if a wheel is
-        # ever missing. asset_hash_type=OUTPUT so the hash tracks the built layer, not the source
-        # dir (which carries tests and a .venv). See _PipManylinuxLayerBundler.
+        # ever missing. The asset hash is keyed on this layer's own requirements.txt (see
+        # _requirements_hash and the note on the chat layer). See _PipManylinuxLayerBundler.
         scraper_deps_layer = _lambda.LayerVersion(
             self,
             "ScraperDepsLayer",
@@ -449,7 +460,9 @@ class NavigatorStack(Stack):
             compatible_architectures=[_LAMBDA_ARCH],
             code=_lambda.Code.from_asset(
                 str(_SCRAPER_DIR),
-                asset_hash_type=AssetHashType.OUTPUT,
+                # DISTINCT PER LAYER, and load-bearing - see the note on the chat layer.
+                asset_hash=_requirements_hash("scraper", _SCRAPER_DIR / "requirements.txt"),
+                asset_hash_type=AssetHashType.CUSTOM,
                 exclude=["*", ".*", "!requirements.txt"],
                 bundling=BundlingOptions(
                     image=_LAMBDA_PYTHON.bundling_image,
@@ -842,7 +855,31 @@ class NavigatorStack(Stack):
             compatible_architectures=[_LAMBDA_ARCH],
             code=_lambda.Code.from_asset(
                 str(_APP_DIR),
-                asset_hash_type=AssetHashType.OUTPUT,
+                asset_hash=_requirements_hash("chat", _APP_DIR / "requirements.txt"),
+                asset_hash_type=AssetHashType.CUSTOM,
+                # WITHOUT THIS, THIS LAYER SHIPS THE SCRAPER'S PACKAGES. Verified against
+                # aws-cdk-lib 2.260.0's asset-staging.js: an asset's cacheKey is a sha256
+                # over its staging props, the staged result comes from
+                # `assetCache.obtain(cacheKey, ...)`, and under AssetHashType.OUTPUT the
+                # bundle directory is `bundling-temp-${cacheKey}` - which `bundle()`
+                # SKIPS ENTIRELY if it already exists. Both deps layers hashed to the same
+                # key (same bundling image, same command, same platform, same one-file
+                # `exclude`), so the second one silently reused the first one's bundle.
+                #
+                # The failure mode is as bad as it gets: synth is clean, both layers
+                # publish, the deploy succeeds, and the chat Lambda dies at cold start on
+                # `No module named 'pydantic'` - which is only visible in CloudWatch,
+                # because API Gateway turns it into a 502 and the UI into a blank bubble.
+                #
+                # A distinct asset_hash is the lever `Code.from_asset` actually exposes
+                # (extra_hash is not), and customFingerprint is one of those cache-key
+                # props - so it separates the cache keys AND the bundle directories.
+                #
+                # The tradeoff of CUSTOM over OUTPUT, accepted deliberately: the hash now
+                # tracks the requirements FILE rather than the built tree, so a floating
+                # dependency resolving to a newer patch does not by itself publish a new
+                # layer. Editing requirements.txt does. That is the more reproducible of
+                # the two, and it is the only one that keeps the layers apart.
                 exclude=["*", ".*", "!requirements.txt"],
                 bundling=BundlingOptions(
                     image=_LAMBDA_PYTHON.bundling_image,

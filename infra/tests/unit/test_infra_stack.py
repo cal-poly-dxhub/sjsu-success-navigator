@@ -386,8 +386,8 @@ def test_both_layers_are_built_for_the_functions_runtime_and_architecture():
 
 
 @functools.lru_cache(maxsize=1)
-def _staged_assets() -> dict:
-    """{logical id -> sorted listing of that resource's staged asset directory}.
+def _staged_asset_dirs() -> dict:
+    """{logical id -> Path of that resource's staged asset directory}.
 
     Synths into a temp outdir and reads the directories CDK actually staged, because the template
     records only an asset HASH - what went into the zip is invisible to a template matcher. Cached
@@ -412,8 +412,24 @@ def _staged_assets() -> dict:
             continue
         staged = Path(outdir) / ("asset." + s3_key.removesuffix(".zip"))
         if staged.is_dir():
-            listings[logical_id] = sorted(os.listdir(staged))
+            listings[logical_id] = staged
     return listings
+
+
+def _staged_assets() -> dict:
+    """{logical id -> sorted top-level listing}, derived from the cached directories so
+    the expensive synth happens once."""
+    return {lid: sorted(os.listdir(d)) for lid, d in _staged_asset_dirs().items()}
+
+
+def _staged_asset_dir(logical_id_prefix: str) -> Path:
+    """The staged asset DIRECTORY, for assertions that need to look inside it rather than
+    just list its top level."""
+    matches = [
+        d for lid, d in _staged_asset_dirs().items() if lid.startswith(logical_id_prefix)
+    ]
+    assert len(matches) == 1, f"expected one staged asset for {logical_id_prefix}*"
+    return matches[0]
 
 
 def _staged_listing(logical_id_prefix: str) -> list:
@@ -1284,3 +1300,44 @@ def test_the_inherited_gav_pieces_that_are_load_bearing_are_still_here():
     # The seed-list layer: the crawl list cannot travel in an env var (Lambda's 4 KB
     # aggregate cap), so this is the mechanism, not a gav leftover.
     _resource_named(template, "AWS::Lambda::LayerVersion", "ScraperSeedListLayer")
+
+
+def test_the_two_deps_layers_are_distinct_assets():
+    """THE bug this test exists for, and it cost a green deploy with a dead chat endpoint.
+
+    Under AssetHashType.OUTPUT both deps layers hashed to the same CDK cache key (same
+    bundling image, command, platform and one-file exclude). aws-cdk-lib 2.260.0 stages
+    via `assetCache.obtain(cacheKey, ...)` and bundles into `bundling-temp-${cacheKey}`,
+    which `bundle()` skips outright if it already exists - so the chat layer silently
+    reused the scraper's bundle and shipped trafilatura instead of pydantic.
+
+    Nothing caught it: synth was clean, both layers published, the deploy went green, and
+    the only symptom was `No module named 'pydantic'` in CloudWatch behind a 502 that the
+    UI rendered as an empty chat bubble."""
+    template = _template()
+    scraper = _resource_named(template, "AWS::Lambda::LayerVersion", "ScraperDepsLayer")
+    chat = _resource_named(template, "AWS::Lambda::LayerVersion", "ChatDepsLayer")
+    assert (
+        scraper["Properties"]["Content"]["S3Key"]
+        != chat["Properties"]["Content"]["S3Key"]
+    ), "both deps layers resolved to ONE asset - the chat Lambda will not have pydantic"
+
+
+def test_each_deps_layer_ships_its_own_packages():
+    """The stronger form: distinct assets are necessary but not sufficient, since two
+    distinct assets could still hold the wrong contents. Asserted against what was staged."""
+    scraper = _staged_listing("ScraperDepsLayer")
+    chat = _staged_listing("ChatDepsLayer")
+    assert scraper == ["python"] and chat == ["python"]
+
+    def _packages(prefix):
+        staged = _staged_asset_dir(prefix)
+        return set(os.listdir(staged / "python"))
+
+    chat_packages = _packages("ChatDepsLayer")
+    assert any(p.startswith("pydantic") for p in chat_packages), sorted(chat_packages)[:10]
+
+    scraper_packages = _packages("ScraperDepsLayer")
+    assert not any(p.startswith("pydantic") for p in scraper_packages), (
+        "the scraper layer should not carry the chat Lambda's deps"
+    )
