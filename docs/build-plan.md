@@ -23,7 +23,12 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token (site content is a placeholder until bullet 10; camp's app is MULTI-PAGE, so directory-index rewriting, not an SPA fallback)
 - [x] bundle astro in a container at synth (minimal placeholder app; dist/ never committed)
 - [x] pull camp frontend ui as astro dist/, mock sidebar fixtures deleted; gav-style InitiateAuth with the token in memory, expiry checked before the fetch because an authorizer 401 carries no cors headers (/login and /auth/callback removed: both existed only for the Hosted UI OAuth redirect)
-- [ ] strip gav-specific surface as each section lands: primo tools, catalog bucket, feedback path, dual hosting
+- [x] strip gav-specific surface: primo tools, catalog bucket, feedback path, dual
+      hosting. Nothing to remove - none of the four were ever ported, because each
+      section was pulled by hand rather than copied wholesale. Now pinned by
+      test_no_gav_specific_resources_were_inherited so a later pull cannot
+      reintroduce them, with the deliberately-inherited pieces (PROMPT_ATTACK
+      guardrail, Cognito gate, config validators, seed-list layer) pinned alongside.
 
 The api gateway section reopens when the frontend lands, to take the
 distribution domain into its cors allowlist. Not frozen after its commit.

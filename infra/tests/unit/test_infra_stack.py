@@ -1222,3 +1222,49 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
         f"staged files with no module on disk: {sorted(extra)}. The include list is "
         "stale, or something unintended is riding along into the function bundle."
     )
+
+
+# --- Gav-specific surface: absent, and staying absent ------------------------------------
+
+
+def test_no_gav_specific_resources_were_inherited():
+    """Gav's stack carries four things this one has no use for, and none of them were ever
+    ported: the Primo catalog tools, the dedicated catalog bucket, the SNS feedback path,
+    and DUAL HOSTING (gav serves an embeddable widget AND a demo site from two separate
+    bucket + distribution pairs; this app is one site).
+
+    Asserted against the synthesized template rather than the source, because the failure
+    this guards against is a future pull copying a gav section wholesale."""
+    template = _template()
+
+    assert template.find_resources("AWS::SNS::Topic") == {}, "the feedback path is gav's"
+    assert template.find_resources("AWS::SNS::Subscription") == {}
+    assert template.find_resources("AWS::DynamoDB::Table") == {}
+
+    # ONE distribution. Gav has two (widget CDN + demo site); a second here would mean
+    # dual hosting came along with the frontend section.
+    assert len(template.find_resources("AWS::CloudFront::Distribution")) == 1
+
+    # Exactly two buckets, both named: the KB source bucket and the site bucket. Gav's
+    # catalog and widget buckets would show up here.
+    buckets = sorted(template.find_resources("AWS::S3::Bucket"))
+    assert len(buckets) == 2, buckets
+    assert any(b.startswith("KnowledgeBaseSourceBucket") for b in buckets), buckets
+    assert any(b.startswith("SiteBucket") for b in buckets), buckets
+
+
+def test_the_inherited_gav_pieces_that_are_load_bearing_are_still_here():
+    """The other half of the same decision. These came from gav and STAY, so a cleanup
+    pass that reads 'remove gav-specific surface' too broadly fails here rather than
+    quietly removing the guardrail or the auth gate."""
+    template = _template()
+
+    # The PROMPT_ATTACK input screen and its pinned version.
+    assert len(template.find_resources("AWS::Bedrock::Guardrail")) == 1
+    assert len(template.find_resources("AWS::Bedrock::GuardrailVersion")) == 1
+    # The Cognito gate on the billable route.
+    assert len(template.find_resources("AWS::Cognito::UserPool")) == 1
+    assert len(template.find_resources("AWS::ApiGatewayV2::Authorizer")) == 1
+    # The seed-list layer: the crawl list cannot travel in an env var (Lambda's 4 KB
+    # aggregate cap), so this is the mechanism, not a gav leftover.
+    _resource_named(template, "AWS::Lambda::LayerVersion", "ScraperSeedListLayer")
