@@ -1129,14 +1129,39 @@ def test_the_amended_cors_block_keeps_the_authorization_header():
 def test_the_site_content_is_the_container_built_astro_output():
     """The deployment must carry the BUILT site, not a placeholder or a committed dist/.
     Asserted against the staged asset, so a bundling change that silently produced nothing
-    fails here rather than deploying an empty bucket."""
+    fails here rather than deploying an empty bucket.
+
+    Checked against what camp's build ACTUALLY emits rather than the three pages the
+    placeholder had: camp's UI is one page of React islands, so the give-away that the
+    bundler really ran is the hashed _astro/ directory and camp's own public assets - a
+    placeholder would have neither."""
     listing = _staged_listing("SiteContentDeployment")
     assert "index.html" in listing, listing
+    assert "_astro" in listing, (
+        f"no hashed asset directory in the staged site: {listing}. camp's UI mounts React "
+        "islands, so a build with no _astro/ means the bundler emitted a bare page."
+    )
+    # Camp's own static assets, copied from its public/ - present only if camp's source
+    # was what got built.
+    assert "sammy.riv" in listing, listing
 
-    # The placeholder that preceded this bullet was a hand-written one-liner; real Astro
-    # output is a full document. Asserting on the CONTENT is what distinguishes "the
-    # bundler ran" from "something got staged".
-    assert listing == ["index.html"], listing
+
+def test_the_routing_function_matches_the_pages_the_build_emits():
+    """The viewer-request function rewrites directory paths to index.html, which is only
+    correct if Astro emits directory-format pages. The OAuth routes camp had (/login,
+    /auth/callback) are deliberately gone, so the emitted set is the single root page -
+    and the rewrite still matters for it, because "/" is served by default_root_object
+    while any other path a student types must resolve or 404 honestly."""
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    pages = sorted(p.name for p in (frontend / "src" / "pages").glob("*.astro"))
+    assert pages == ["index.astro"], (
+        f"unexpected pages: {pages}. /login and /auth/callback were removed with Google "
+        "OAuth; a new page needs the routing and the 404 behaviour re-checked."
+    )
+    assert not (frontend / "src" / "pages" / "auth").exists()
+
+    config = (frontend / "astro.config.mjs").read_text()
+    assert "format: 'directory'" in config
 
 
 def test_dist_is_not_committed():

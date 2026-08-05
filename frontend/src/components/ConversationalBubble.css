@@ -1,0 +1,42 @@
+.conversational-bubble-wrap {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	width: 100%;
+}
+
+.conversational-bubble__fab {
+	display: flex;
+	justify-content: center;
+	width: 100%;
+	max-width: 28rem;
+	margin-top: 0.85rem;
+}
+
+.conversational-bubble {
+	width: 100%;
+	max-width: 28rem;
+	transform-origin: top left;
+	will-change: transform;
+}
+
+.conversational-bubble .speech-bubble {
+	position: relative;
+	top: auto;
+	left: auto;
+	right: auto;
+	width: 100%;
+	max-width: none;
+	border-radius: 1.35rem 1.35rem 1.35rem 0.55rem;
+}
+
+.conversational-bubble .speech-bubble__tail {
+	left: auto;
+	right: 1.15rem;
+	bottom: -11px;
+	border-left: 11px solid transparent;
+	border-right: 5px solid transparent;
+	border-top: 14px solid #f8f6f1;
+	transform: rotate(-18deg);
+	transform-origin: top center;
+}

@@ -1,0 +1,88 @@
+.pressable {
+	--pressable-face: var(--btn-primary-face);
+	--pressable-edge: var(--btn-primary-edge);
+	--pressable-text: var(--btn-primary-text);
+
+	position: relative;
+	display: inline-flex;
+	align-items: stretch;
+	justify-content: center;
+	margin: 0;
+	padding: 0;
+	border: none;
+	background: var(--pressable-edge);
+	border-radius: 14px;
+	color: var(--pressable-text);
+	font: inherit;
+	font-weight: 700;
+	font-size: 0.85rem;
+	letter-spacing: 0.02em;
+	text-decoration: none;
+	cursor: pointer;
+	user-select: none;
+	-webkit-tap-highlight-color: transparent;
+	box-shadow: 0 4px 0 var(--pressable-edge);
+	transform: translateY(0);
+	transition: box-shadow 80ms ease, filter 120ms ease;
+}
+
+.pressable:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+	box-shadow: 0 2px 0 var(--pressable-edge);
+}
+
+.pressable:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 3px;
+}
+
+.pressable:not(:disabled):active,
+.pressable:not(:disabled)[data-pressed='true'] {
+	box-shadow: 0 0 0 var(--pressable-edge);
+}
+
+.pressable__face {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.4rem;
+	width: 100%;
+	padding: 0.7rem 1.05rem;
+	border-radius: 14px;
+	background: var(--pressable-face);
+	border: 2px solid color-mix(in srgb, var(--pressable-face) 70%, white 30%);
+	border-bottom-color: transparent;
+	line-height: 1.15;
+	text-align: center;
+}
+
+.pressable--primary {
+	--pressable-face: var(--btn-primary-face);
+	--pressable-edge: var(--btn-primary-edge);
+	--pressable-text: var(--btn-primary-text);
+}
+
+.pressable--secondary {
+	--pressable-face: var(--btn-secondary-face);
+	--pressable-edge: var(--btn-secondary-edge);
+	--pressable-text: var(--btn-secondary-text);
+}
+
+.pressable--safety {
+	--pressable-face: var(--btn-safety-face);
+	--pressable-edge: var(--btn-safety-edge);
+	--pressable-text: var(--btn-safety-text);
+}
+
+.pressable--ghost {
+	--pressable-face: var(--btn-ghost-face);
+	--pressable-edge: var(--btn-ghost-edge);
+	--pressable-text: var(--btn-ghost-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.pressable {
+		transition: none;
+	}
+}

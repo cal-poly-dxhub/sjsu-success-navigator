@@ -1,0 +1,32 @@
+.card-stack-animator {
+	position: relative;
+	width: 100%;
+	min-height: 14rem;
+}
+
+.card-stack-animator__layer {
+	position: absolute;
+	inset: 0 auto auto 0;
+	width: 100%;
+	transform-origin: top center;
+	pointer-events: none;
+}
+
+.card-stack-animator__layer--front {
+	position: relative;
+	pointer-events: auto;
+}
+
+.card-stack-animator__card {
+	width: 100%;
+	transform-origin: top center;
+}
+
+.card-stack-animator__layer:not(.card-stack-animator__layer--front) .card-stack-animator__card {
+	filter: saturate(0.92);
+	opacity: 0.92;
+}
+
+.card-stack-animator__layer--front .card-stack-animator__card {
+	box-shadow: 0 12px 28px rgba(8, 90, 163, 0.08);
+}

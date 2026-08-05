@@ -22,7 +22,7 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull gav api gateway: cognito gate on the billable route, our origins, our throttle numbers, route to /chat, Authorization in allow_headers (plus reserved concurrency: rate bounds invocations started, not how many run at once)
 - [x] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token (site content is a placeholder until bullet 10; camp's app is MULTI-PAGE, so directory-index rewriting, not an SPA fallback)
 - [x] bundle astro in a container at synth (minimal placeholder app; dist/ never committed)
-- [ ] pull camp frontend ui as astro dist/, mock sidebar fixtures deleted; gav-style InitiateAuth with the token in memory, expiry checked before the fetch because an authorizer 401 carries no cors headers
+- [x] pull camp frontend ui as astro dist/, mock sidebar fixtures deleted; gav-style InitiateAuth with the token in memory, expiry checked before the fetch because an authorizer 401 carries no cors headers (/login and /auth/callback removed: both existed only for the Hosted UI OAuth redirect)
 - [ ] strip gav-specific surface as each section lands: primo tools, catalog bucket, feedback path, dual hosting
 
 The api gateway section reopens when the frontend lands, to take the

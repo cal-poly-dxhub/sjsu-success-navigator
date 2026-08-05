@@ -1,0 +1,54 @@
+.pulse-fab {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 3.5rem;
+	height: 3.5rem;
+	margin: 0;
+	padding: 0;
+	border: 1px solid #b8c0ca;
+	border-bottom-width: 4px;
+	border-bottom-color: #8f9aab;
+	border-radius: 0.9rem;
+	background: #f3f5f8;
+	color: var(--accent-blue);
+	box-shadow: 0 5px 0 #5c6775;
+	cursor: pointer;
+	transform: translateY(0);
+	animation: pulse-fab-bounce 1.65s ease-in-out infinite;
+}
+
+.pulse-fab:hover,
+.pulse-fab:focus-visible {
+	background: #f8f9fb;
+	outline: 2px solid #085aa3;
+	outline-offset: 3px;
+	animation-play-state: paused;
+	transform: translateY(-2px);
+	box-shadow: 0 7px 0 #5c6775;
+}
+
+.pulse-fab:active {
+	animation: none;
+	transform: translateY(3px);
+	border-bottom-width: 2px;
+	box-shadow: 0 2px 0 #5c6775;
+}
+
+@keyframes pulse-fab-bounce {
+	0%,
+	100% {
+		transform: translateY(0);
+		box-shadow: 0 5px 0 #5c6775;
+	}
+	50% {
+		transform: translateY(-6px);
+		box-shadow: 0 9px 0 #5c6775;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.pulse-fab {
+		animation: none;
+	}
+}

@@ -126,6 +126,13 @@ def _astro_bundling() -> BundlingOptions:
     """
     return BundlingOptions(
         image=DockerImage.from_registry(_NODE_BUILD_IMAGE),
+        # PINNED, like the Lambda layers: without it the image resolves to the host's
+        # architecture, so an arm64 Mac and an x64 CI runner build the site with different
+        # native toolchains. The committed lockfile carries every platform's rolldown
+        # binding (npm records them all when the lock is generated with
+        # --package-lock-only), so `npm ci` resolves on either - but the OUTPUT should not
+        # depend on who ran the deploy.
+        platform="linux/amd64",
         # OUTPUT hashing: the asset hash tracks the BUILT site, so an edit that does not
         # change the output (a comment in a source file) does not churn the deployment.
         command=[
@@ -141,9 +148,19 @@ def _astro_bundling() -> BundlingOptions:
             #   npm_config_cache - same writability problem, npm's cache defaults to
             #                $HOME/.npm.
             "export HOME=/tmp ASTRO_TELEMETRY_DISABLED=1 npm_config_cache=/tmp/.npm && "
+            # BUILD IN A CONTAINER-LOCAL COPY, never in /asset-input. CDK bind-mounts the
+            # real frontend/ directory READ-WRITE, so an `npm ci` run here replaces the
+            # developer's node_modules with the container's linux/amd64 binaries and
+            # breaks their next local build (observed, not theoretical). Copying the
+            # inputs out first also keeps the host's node_modules and dist/ from leaking
+            # into the build, so what is produced depends only on the committed sources
+            # and the lockfile.
+            "mkdir -p /tmp/build && cd /asset-input && "
+            "cp -R package.json package-lock.json astro.config.mjs tsconfig.json "
+            "src public /tmp/build/ && cd /tmp/build && "
             "npm ci --no-audit --no-fund && "
             "npm run build && "
-            "cp -r dist/. /asset-output/",
+            "cp -R dist/. /asset-output/",
         ],
     )
 
