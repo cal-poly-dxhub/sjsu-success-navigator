@@ -859,3 +859,127 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
         assert name not in source, (
             f"{name!r} is hardcoded in infra_stack.py - it must come from config.yaml"
         )
+
+
+# --- Section 5: Cognito gate + HTTP API -------------------------------------------------
+
+
+def _logical_id(template: Template, type_name: str) -> str:
+    """The one logical id of a type, for asserting a Ref points where it should."""
+    found = template.find_resources(type_name)
+    assert len(found) == 1, f"expected exactly one {type_name}, found {len(found)}"
+    return next(iter(found))
+
+
+def test_only_the_billable_route_exists_and_it_is_jwt_gated():
+    """POST /chat is the one route that spends Bedrock tokens, so it is the one that is
+    gated. An ungated route here would be an open paid endpoint."""
+    props = _resource(_template(), "AWS::ApiGatewayV2::Route")["Properties"]
+    assert props["RouteKey"] == "POST /chat"
+    assert props["AuthorizationType"] == "JWT"
+
+
+def test_the_authorizer_is_native_and_reads_the_authorization_header():
+    """A native JWT authorizer - no authorizer Lambda, so nothing to cold-start and none
+    of our code in the auth decision."""
+    authorizer = _resource(_template(), "AWS::ApiGatewayV2::Authorizer")["Properties"]
+    assert authorizer["AuthorizerType"] == "JWT"
+    assert authorizer["IdentitySource"] == ["$request.header.Authorization"]
+
+
+def test_the_authorizer_audience_is_the_app_client_id():
+    """A Cognito ACCESS token carries no `aud` claim, only `client_id`, and API Gateway
+    validates client_id only when aud is absent. Do not 'fix' this to an ID token."""
+    template = _template()
+    authorizer = _resource(template, "AWS::ApiGatewayV2::Authorizer")["Properties"]
+    assert authorizer["JwtConfiguration"]["Audience"] == [
+        {"Ref": _logical_id(template, "AWS::Cognito::UserPoolClient")}
+    ]
+
+
+def test_authorization_is_in_the_cors_allow_headers():
+    """The frontend sets Authorization from JavaScript, which makes every /chat call
+    preflighted. Without this the request dies at the OPTIONS and the symptom is a CORS
+    error, which reads like a config problem rather than the auth problem it is."""
+    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
+
+
+def test_cors_never_allows_a_wildcard_origin():
+    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    assert "*" not in api["CorsConfiguration"]["AllowOrigins"]
+
+
+def test_the_stage_throttle_renders_cloudformation_property_names():
+    """THE finding this test exists for: a RouteSettingsProperty passed as a map VALUE
+    renders camelCase keys (throttlingRateLimit) that CloudFormation does not recognise,
+    so the throttle would deploy silently unapplied. DefaultRouteSettings renders
+    PascalCase. With no billing alarm in v1, an unapplied throttle is half the cost fence."""
+    from infra.config import resolve_http_api
+
+    expected = resolve_http_api(load_config())
+    settings = _resource(_template(), "AWS::ApiGatewayV2::Stage")["Properties"][
+        "DefaultRouteSettings"
+    ]
+    assert settings["ThrottlingRateLimit"] == expected["throttling_rate_limit"]
+    assert settings["ThrottlingBurstLimit"] == expected["throttling_burst_limit"]
+
+
+def test_the_chat_function_reserves_concurrency_from_config():
+    """The control the request-rate throttle cannot provide: rate bounds invocations
+    STARTED, and at 10 rps against a 29-second budget hundreds run at once."""
+    from infra.config import resolve_http_api
+
+    fn = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")["Properties"]
+    assert (
+        fn["ReservedConcurrentExecutions"]
+        == resolve_http_api(load_config())["chat_reserved_concurrency"]
+    )
+
+
+def test_only_the_chat_function_reserves_concurrency():
+    """Reserved concurrency takes capacity OUT of the account pool, so putting it on the
+    scraper too would fence the two against each other for no benefit."""
+    reserved = [
+        v["Properties"].get("ReservedConcurrentExecutions")
+        for v in _template().find_resources("AWS::Lambda::Function").values()
+    ]
+    from infra.config import resolve_http_api
+
+    expected = resolve_http_api(load_config())["chat_reserved_concurrency"]
+    assert [r for r in reserved if r is not None] == [expected]
+
+
+def test_the_user_pool_refuses_self_signup():
+    """The pool exists to keep strangers out of a paid endpoint; self-enrolment would
+    defeat the entire gate."""
+    pool = _resource(_template(), "AWS::Cognito::UserPool")["Properties"]
+    assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
+
+
+def test_the_pool_signs_in_by_plain_username_not_email():
+    """UsernameAttributes: ['email'] would require the pilot login to be an address, and
+    AliasAttributes would reject one that looks like an address. Sign-in options are
+    IMMUTABLE after creation - changing this later replaces the pool, and the pool id the
+    frontend is built with."""
+    pool = _resource(_template(), "AWS::Cognito::UserPool")["Properties"]
+    assert "UsernameAttributes" not in pool
+    assert "AliasAttributes" not in pool
+
+
+def test_the_app_client_is_public_and_password_auth_only():
+    """A client secret would be readable by anyone who views source, and Cognito rejects
+    the unsigned browser call unless the client is public."""
+    client = _resource(_template(), "AWS::Cognito::UserPoolClient")["Properties"]
+    assert client.get("GenerateSecret") in (None, False)
+    assert set(client["ExplicitAuthFlows"]) == {
+        "ALLOW_USER_PASSWORD_AUTH",
+        "ALLOW_REFRESH_TOKEN_AUTH",
+    }
+
+
+def test_no_password_is_baked_into_the_template():
+    """A password in a template is a password in the console, the change set and the stack
+    events. The stack prints CLI commands with a placeholder instead."""
+    rendered = json.dumps(_template().to_json())
+    assert "CHOOSE-A-PASSWORD" in rendered, "the setup command should carry a placeholder"

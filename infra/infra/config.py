@@ -649,6 +649,38 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def resolve_http_api(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `http_api` block: the v1 cost fence.
+
+    With no billing alarm until v2, these three numbers plus the Cognito gate are the only
+    thing between a public endpoint and an unbounded Bedrock bill. They are validated
+    rather than defaulted for that reason - a missing throttle is not "unlimited by
+    choice", it is an unfenced paid endpoint.
+
+    They bound DIFFERENT things, which is why all three exist:
+      - rate/burst bound how many invocations START per second.
+      - reserved concurrency bounds how many run AT ONCE, which rate alone does not: at
+        10 rps against a 29-second budget, ~290 invocations can be in flight.
+    Neither bounds a single runaway invocation; the loop's deadline and iteration cap do.
+    """
+    http_cfg = _require_mapping(config, "http_api")
+    rate = _positive_int(http_cfg, "http_api", "throttling_rate_limit")
+    burst = _positive_int(http_cfg, "http_api", "throttling_burst_limit")
+    if burst < rate:
+        raise ValueError(
+            f"http_api.throttling_burst_limit ({burst}) is below throttling_rate_limit "
+            f"({rate}). Burst is the token bucket's CAPACITY, so a burst under the "
+            "steady-state rate throttles below the rate it is supposed to allow."
+        )
+    return {
+        "throttling_rate_limit": rate,
+        "throttling_burst_limit": burst,
+        "chat_reserved_concurrency": _positive_int(
+            http_cfg, "http_api", "chat_reserved_concurrency"
+        ),
+    }
+
+
 def validate_config(config: Dict[str, Any]) -> None:
     """Run every validator, discarding the results.
 
@@ -667,6 +699,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_scraper(config)
     resolve_seed_pages(config)
     resolve_cors_allow_origins(config)
+    resolve_http_api(config)
     resolve_guardrail(config)
     resolve_generation(config)
     resolve_retrieval(config)

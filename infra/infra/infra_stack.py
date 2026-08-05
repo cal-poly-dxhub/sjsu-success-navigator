@@ -30,11 +30,16 @@ import jsii
 from aws_cdk import (
     AssetHashType,
     BundlingOptions,
+    CfnOutput,
     Duration,
     ILocalBundling,
     RemovalPolicy,
     Stack,
+    aws_apigatewayv2 as apigwv2,
+    aws_apigatewayv2_authorizers as apigwv2_authorizers,
+    aws_apigatewayv2_integrations as apigwv2_integrations,
     aws_bedrock as bedrock,
+    aws_cognito as cognito,
     aws_events as events,
     aws_events_targets as events_targets,
     aws_iam as iam,
@@ -52,7 +57,9 @@ from infra.config import (
     resolve_chunking,
     resolve_data_source_name,
     resolve_generation,
+    resolve_cors_allow_origins,
     resolve_guardrail,
+    resolve_http_api,
     resolve_knowledge_base,
     resolve_request,
     resolve_retrieval,
@@ -80,6 +87,12 @@ _LAMBDA_PYTHON = _lambda.Runtime.PYTHON_3_13
 _LAMBDA_ARCH = _lambda.Architecture.X86_64
 _MANYLINUX_TAG = "manylinux2014_x86_64"
 _LAMBDA_PY_TAG = "3.13"
+
+# The ONE shared pilot login's username, spelled into the two setup commands the stack
+# prints so they are copy-paste runnable. It is a NAME, not a credential - the password is
+# chosen by the deployer at step 2 and never appears here or anywhere in the repo. The pool
+# signs in by plain username, so this needs no @ and carries no email attribute.
+_PILOT_USERNAME = "sjsupilot" 
 
 
 def _config_hash(payload: Dict[str, Any]) -> str:
@@ -168,6 +181,7 @@ class NavigatorStack(Stack):
         retrieval_cfg = resolve_retrieval(config)
         request_cfg = resolve_request(config)
         chat_cfg = resolve_chat(config)
+        cors_allow_origins = resolve_cors_allow_origins(config)
 
         # The embedding model, region-scoped. Titan v2 at 1024 dimensions is inherited from
         # gav, not chosen against this corpus (docs/synthesis.md). Region and partition are
@@ -871,5 +885,228 @@ class NavigatorStack(Stack):
         self._chat_lambda = chat_lambda
 
         # --- 5. Auth + API: Cognito pool/client + JWT authorizer + HTTP API ------
+        #
+        # HTTP API (v2), DECIDED - not a REST API. A REST API would buy WAF attachment and
+        # response streaming, and neither changes the outcome here: the 30-second
+        # integration ceiling is the same on both, and if the loop ever needs longer the
+        # answer is streaming, which leaves API Gateway entirely (Function URL). So the
+        # cheaper, simpler v2 it is, and no WAF follows from that rather than being an
+        # oversight (docs/synthesis.md).
+        #
+        # THE COST FENCE, in full, because there is no billing alarm until v2:
+        #   1. the Cognito gate on POST /chat  - the only billable route
+        #   2. route throttling                - bounds invocations STARTED per second
+        #   3. reserved concurrency            - bounds invocations running AT ONCE
+        #   4. the loop's deadline + iteration cap (app/orchestrator.py) - bounds ONE run
+        # Numbers 2 and 3 are not redundant: at 10 rps against a 29-second budget, ~290
+        # invocations can be in flight, all of them spending Bedrock tokens. And neither
+        # bounds a single runaway invocation, which is what number 4 is for.
+
+        http_api_cfg = resolve_http_api(config)
+
+        # A Cognito user pool holding ONE shared pilot login, created by hand after deploy.
+        # This is gav's pattern carried over deliberately: campus-affiliated accounts are a
+        # v2 item (docs/synthesis.md), and a shared login is the cheapest thing that keeps
+        # a public URL from spending Bedrock tokens for anyone who finds it.
+        #
+        # No credential appears here, in CDK, or in the template - a password in a template
+        # is a password in the console, the change set and the stack events. The stack
+        # prints the two CLI commands instead and a human runs them once.
+        auth_pool = cognito.UserPool(
+            self,
+            "ChatUserPool",
+            # SELF-SIGNUP OFF. The pool exists to keep strangers OUT of a paid endpoint;
+            # letting them enrol themselves would defeat the entire gate.
+            self_sign_up_enabled=False,
+            # PLAIN USERNAME, not email. `username=True` alone emits neither
+            # UsernameAttributes nor AliasAttributes, which is what lets a plain name like
+            # "sjsupilot" be created: an email-only pool rejects a name that is not an
+            # address. This is a shared pilot login handed over in a sentence, not a
+            # person's account, so a fake address would be one more thing to explain.
+            #
+            # SIGN-IN OPTIONS ARE IMMUTABLE AFTER CREATION. Changing this later REPLACES
+            # the pool, which changes the pool id the frontend is built with - so it is
+            # settled here, before the first deploy, or not cheaply at all.
+            sign_in_aliases=cognito.SignInAliases(username=True),
+            # No self-service recovery: there is no verified email or phone on this account
+            # to send a code to, and nobody but the deployer should be able to move its
+            # password. NONE synthesizes admin_only.
+            account_recovery=cognito.AccountRecovery.NONE,
+            password_policy=cognito.PasswordPolicy(
+                min_length=12,
+                require_lowercase=True,
+                require_uppercase=True,
+                require_digits=True,
+                require_symbols=True,
+            ),
+            # One-click install implies one-click uninstall.
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        # PUBLIC client, no secret: the frontend is JavaScript in a browser, so a client
+        # secret would be readable by anyone who views source - theatre, and Cognito
+        # rejects the unsigned browser call unless the client is public anyway.
+        #
+        # USER_PASSWORD_AUTH rather than SRP: the frontend does ONE unsigned fetch to
+        # cognito-idp with no SDK and no build step. SRP needs big-integer crypto no
+        # dependency-free client is going to carry. The tradeoff is that the password
+        # crosses the wire inside TLS instead of never leaving the browser; for a shared
+        # pilot login behind a link that is the right trade, and it is NOT a pattern for
+        # real student accounts (which is the v2 item).
+        auth_client = auth_pool.add_client(
+            "ChatUserPoolClient",
+            generate_secret=False,
+            auth_flows=cognito.AuthFlow(user_password=True),
+            # One day, matching "one sign-in covers the session", and Cognito's maximum for
+            # an access token. The frontend holds the token in memory only, so a reload
+            # signs in again regardless.
+            access_token_validity=Duration.days(1),
+            # The frontend never uses the refresh token it is handed; pinning its validity
+            # to the access token's means the copy it discards cannot outlive the session
+            # by the 30-day default.
+            refresh_token_validity=Duration.days(1),
+            id_token_validity=Duration.days(1),
+            prevent_user_existence_errors=True,
+            disable_o_auth=True,
+        )
+
+        # CORS is locked to the origins in config.yaml, never "*" (rejected at synth).
+        # Note what this is and is not: CORS is enforced by BROWSERS ONLY, so it is not a
+        # security boundary - curl ignores it entirely, and the throttle plus the JWT gate
+        # remain the real controls. What it does buy is stopping a third-party page from
+        # driving this billable endpoint from its visitors' browsers.
+        #
+        # The CloudFront distribution's own origin is appended at bullet 9, as a deploy-time
+        # token rather than a hardcoded domain (docs/build-plan.md: this section is not
+        # frozen at its commit).
+        #
+        # `Authorization` is in allow_headers because POST /chat is gated: the frontend sets
+        # that header from JavaScript, which makes every /chat call PREFLIGHTED. Leave it
+        # out and the browser fails at the OPTIONS before the POST is ever sent - and the
+        # symptom is a CORS error, which reads like a configuration problem rather than the
+        # auth problem it is.
+        self._cors_allow_origins = list(cors_allow_origins)
+
+        http_api = apigwv2.HttpApi(
+            self,
+            "ChatHttpApi",
+            cors_preflight=apigwv2.CorsPreflightOptions(
+                allow_origins=self._cors_allow_origins,
+                allow_methods=[
+                    apigwv2.CorsHttpMethod.POST,
+                    apigwv2.CorsHttpMethod.GET,
+                    apigwv2.CorsHttpMethod.OPTIONS,
+                ],
+                allow_headers=["Content-Type", "Authorization"],
+            ),
+        )
+
+        chat_integration = apigwv2_integrations.HttpLambdaIntegration(
+            "ChatIntegration", chat_lambda
+        )
+
+        # NATIVE JWT authorizer - no authorizer Lambda, so nothing to cold-start, nothing
+        # extra to pay for, and none of our code in the auth decision. API Gateway fetches
+        # the pool's JWKS and validates signature, issuer, audience and expiry itself.
+        #
+        # THE AUDIENCE IS THE APP CLIENT ID, which works because of a documented quirk: a
+        # Cognito ACCESS token carries no `aud` claim, it carries `client_id`, and API
+        # Gateway validates client_id only when aud is absent. The frontend deliberately
+        # sends the access token, not the ID token (which carries account attributes for no
+        # benefit here). Do not "fix" this to an ID token.
+        jwt_authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
+            "ChatJwtAuthorizer",
+            f"https://cognito-idp.{self.region}.amazonaws.com/{auth_pool.user_pool_id}",
+            jwt_audience=[auth_client.user_pool_client_id],
+            identity_source=["$request.header.Authorization"],
+        )
+
+        # POST /chat is THE billable route: every Bedrock call, every guardrail unit and
+        # every retrieval hangs off it, so it is the one that is gated.
+        http_api.add_routes(
+            path="/chat",
+            methods=[apigwv2.HttpMethod.POST],
+            integration=chat_integration,
+            authorizer=jwt_authorizer,
+        )
+
+        # Throttling via the stage's DEFAULT route settings, which apply to every route on
+        # the stage - /chat today and anything added later, which is the safer default for
+        # a paid endpoint than an allowlist of routes somebody has to remember to extend.
+        #
+        # NOT the per-route `RouteSettings` map, and that is a finding rather than a
+        # preference: passing a RouteSettingsProperty as a map VALUE renders its keys in
+        # camelCase (`throttlingRateLimit`) instead of CloudFormation's PascalCase, so the
+        # throttle would deploy silently unapplied. Verified in the synthesized template
+        # against aws-cdk-lib 2.260.0; DefaultRouteSettings renders correctly.
+        # test_the_stage_throttle_renders_cloudformation_property_names pins it.
+        default_stage = http_api.default_stage.node.default_child
+        default_stage.default_route_settings = apigwv2.CfnStage.RouteSettingsProperty(
+            throttling_rate_limit=http_api_cfg["throttling_rate_limit"],
+            throttling_burst_limit=http_api_cfg["throttling_burst_limit"],
+        )
+
+        # RESERVED CONCURRENCY on the chat function. This is the control the request-rate
+        # throttle cannot provide: rate bounds how many invocations START, and with a
+        # 29-second budget a sustained 10 rps leaves hundreds running at once. It also
+        # reserves capacity from the account pool, so the scraper cannot starve chat and
+        # chat cannot starve the scraper.
+        cfn_chat = chat_lambda.node.default_child
+        cfn_chat.reserved_concurrent_executions = http_api_cfg[
+            "chat_reserved_concurrency"
+        ]
+
+        self._http_api = http_api
+        chat_url = f"{http_api.api_endpoint}/chat"
+        self._chat_url = chat_url
+
+        CfnOutput(
+            self,
+            "ChatApiUrl",
+            value=chat_url,
+            description="HTTP API POST /chat endpoint (requires a Cognito access token).",
+        )
+        CfnOutput(
+            self,
+            "ChatUserPoolId",
+            value=auth_pool.user_pool_id,
+            description="Cognito user pool gating POST /chat.",
+        )
+        CfnOutput(
+            self,
+            "ChatUserPoolClientId",
+            value=auth_client.user_pool_client_id,
+            description="Cognito app client id the frontend signs in with (public, no secret).",
+        )
+        # The pilot account is created by CLI, with the deployer's own credentials, because
+        # CDK cannot do it without putting a password in the template. Printed spelled out
+        # so the commands run as-is.
+        CfnOutput(
+            self,
+            "ChatCreateUserCommand",
+            value=(
+                "aws cognito-idp admin-create-user"
+                f" --region {self.region}"
+                f" --user-pool-id {auth_pool.user_pool_id}"
+                f" --username {_PILOT_USERNAME}"
+                " --message-action SUPPRESS"
+            ),
+            description="Step 1 of 2, run once after deploy with your own AWS credentials.",
+        )
+        CfnOutput(
+            self,
+            "ChatSetPasswordCommand",
+            value=(
+                "aws cognito-idp admin-set-user-password"
+                f" --region {self.region}"
+                f" --user-pool-id {auth_pool.user_pool_id}"
+                f" --username {_PILOT_USERNAME}"
+                " --password 'CHOOSE-A-PASSWORD' --permanent"
+            ),
+            description=(
+                "Step 2 of 2. --permanent is REQUIRED: without it the account stays in "
+                "FORCE_CHANGE_PASSWORD and sign-in returns a challenge instead of a token."
+            ),
+        )
 
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------

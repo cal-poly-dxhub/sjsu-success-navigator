@@ -47,10 +47,22 @@ scraper:
 # --- Query path (Lambda + HTTP API) ---
 
 http_api:
-  # Stage-level throttling: a v1 cost-abuse control alongside the Cognito gate
-  # (no WAF: it cannot attach to HTTP API v2; no billing alarm until v2).
+  # HTTP API (v2), DECIDED - not a REST API. The 30s integration ceiling is permanent
+  # either way, and if this ever needs longer the answer is streaming, which leaves API
+  # Gateway entirely. No WAF follows from that choice (it cannot attach to HTTP API v2).
+  #
+  # Route-level throttling: with no billing alarm in v1, this and reserved concurrency
+  # below are the ONLY cost fence. Note what each one does NOT do: a request-rate
+  # throttle bounds how many invocations start, not how long or how expensive one is.
+  # A single runaway invocation is bounded by the loop's deadline and iteration cap.
   throttling_rate_limit: 10
   throttling_burst_limit: 20
+  # Hard ceiling on CONCURRENT chat invocations. Rate limiting alone cannot bound spend
+  # if each request is slow: 10 rps against a 29-second budget is ~290 in flight, all
+  # billing Bedrock tokens. This caps the fleet regardless of how long each one runs.
+  # It also RESERVES this many from the account pool, so the chat function cannot be
+  # starved by the scraper - and cannot starve it either.
+  chat_reserved_concurrency: 20
 
 cors:
   # Browser origin allowlist for the HTTP API. Never "*" - synth rejects it.
