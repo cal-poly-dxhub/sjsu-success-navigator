@@ -658,3 +658,24 @@ def test_validate_config_covers_the_chat_path_blocks(config):
     config["retrieval"]["min_score"] = 35
     with pytest.raises(ValueError, match="min_score"):
         validate_config(config)
+
+
+def test_the_converse_deadline_must_sit_under_the_lambda_timeout():
+    """The wall-clock cap only works if it fires BEFORE the function is killed. A deadline
+    at or past the timeout never fires: the invocation is billed and the student gets a
+    gateway 504 carrying no answer at all."""
+    from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
+
+    config = copy.deepcopy(load_config())
+    config["chat"]["converse_deadline_seconds"] = CHAT_LAMBDA_TIMEOUT_SECONDS
+    with pytest.raises(ValueError, match="must be less than"):
+        resolve_chat(config)
+
+
+def test_the_configured_converse_deadline_leaves_room_after_the_loop():
+    """Not just under the timeout - far enough under that card shaping and serialisation,
+    which run after the loop returns, still fit."""
+    from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
+
+    deadline = resolve_chat(load_config())["converse_deadline_seconds"]
+    assert deadline <= CHAT_LAMBDA_TIMEOUT_SECONDS - 5

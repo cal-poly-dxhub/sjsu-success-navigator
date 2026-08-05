@@ -17,11 +17,6 @@ Request order is LOAD-BEARING and is enforced here rather than anywhere downstre
                    returns the configured message with no retrieval and no generation.
   4. agent loop  - the Bedrock Converse tool-use loop under Sammy's system prompt.
 
-Step 4 lands at build-plan bullet 6, together with the safety intercept it must run behind:
-orchestrator.py imports cards and safety, so the loop is not callable until those arrive.
-That is deliberate rather than incidental - wiring the loop first would put a commit in
-history whose handler calls the model with no safety intercept ahead of it.
-
 Wiring comes from env vars set by the CDK stack (see settings.py). The response body is the
 camelCase wire contract the frontend expects, produced by the pydantic aliases in models.py.
 """
@@ -34,6 +29,9 @@ import time
 import boto3
 from botocore.config import Config
 
+from models import ChatRequest
+from orchestrator import classify_response_mode, run_chat
+from safety import try_safety_response
 from settings import load_settings
 
 logger = logging.getLogger()
@@ -155,10 +153,17 @@ def apply_input_guardrail(query):
     return text
 
 
+def _chat_response(response):
+    """Serialise a ChatResponse through its pydantic aliases - the camelCase wire
+    contract camp's frontend reads."""
+    return _response(200, response.model_dump(by_alias=True))
+
+
 def lambda_handler(event, context):
-    """POST /chat. Steps 1 and 3 are wired; step 2 (safety) and step 4 (the agent loop)
-    land together at bullet 6, and the safety intercept goes AHEAD of the guardrail call
-    below when it does."""
+    """POST /chat, in the order the module docstring fixes: validate, safety, guardrail,
+    loop. The safety intercept is FIRST and is deterministic - no model, no AWS call - so
+    a crisis message cannot be pre-empted by a guardrail block or by anything the model
+    decides."""
     data = _parse_body(event)
     query = (data or {}).get("query")
     if not isinstance(query, str) or not query.strip():
@@ -169,6 +174,15 @@ def lambda_handler(event, context):
             {"error": f"Query exceeds {SETTINGS.max_query_chars} characters."},
         )
 
+    # STEP 2 - the deterministic intercept, ahead of every AWS call. Camp's phrase gate
+    # and its fixed contact panel, unchanged: on a match the student gets the panel and
+    # the request ends here.
+    safety_response = try_safety_response(query)
+    if safety_response is not None:
+        logger.info("chat route=safety")
+        return _chat_response(safety_response)
+
+    # STEP 3 - the guardrail screen, only for messages the intercept did not claim.
     blocked_text = apply_input_guardrail(query)
     if blocked_text is not None:
         return _response(
@@ -181,7 +195,26 @@ def lambda_handler(event, context):
             },
         )
 
-    return _response(
-        501,
-        {"error": "The chat agent loop is not wired yet (docs/build-plan.md bullet 6)."},
-    )
+    # STEP 4 - the agent loop, under both caps (iterations and wall clock).
+    try:
+        request = ChatRequest(
+            query=query,
+            followup=bool((data or {}).get("followup", False)),
+            sessionId=(data or {}).get("sessionId"),
+            history=(data or {}).get("history"),
+        )
+    except Exception:
+        logger.exception("Invalid chat request body")
+        return _response(400, {"error": "Invalid request body."})
+
+    try:
+        response = run_chat(request, SETTINGS, deadline=loop_deadline(context))
+    except Exception:
+        # The student gets a plain failure, never a partial or invented answer. The
+        # exception itself is logged, not returned: a botocore message can quote the
+        # request, and the request here is the student's own words.
+        logger.exception("Chat orchestration failed")
+        return _response(502, {"error": "The assistant is unavailable right now."})
+
+    logger.info("chat route=%s", classify_response_mode(response))
+    return _chat_response(response)

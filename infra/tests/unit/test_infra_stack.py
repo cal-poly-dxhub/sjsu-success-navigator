@@ -680,6 +680,9 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
         resolve_chat(config)["max_converse_iterations"]
     )
     assert env["MAX_HISTORY_MESSAGES"] == str(resolve_chat(config)["max_history_messages"])
+    assert env["CONVERSE_DEADLINE_SECONDS"] == str(
+        resolve_chat(config)["converse_deadline_seconds"]
+    )
     # AWS_REGION is RESERVED - Lambda sets it and rejects it in a function's configuration -
     # so the region has to travel under our own key.
     assert "AWS_REGION" not in env
