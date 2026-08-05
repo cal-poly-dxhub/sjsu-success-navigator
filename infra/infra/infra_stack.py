@@ -1268,12 +1268,30 @@ function handler(event) {
             # ListBucket). Both are mapped to a real 404 STATUS - deliberately NOT to
             # index.html with a 200, which is the blanket-fallback anti-pattern: it would
             # make every typo look like a working page that failed to render.
+            # BOTH response_http_status AND response_page_path, always. CloudFront
+            # rejects a status without a page outright - "Both or neither of ResponseCode
+            # and ResponsePagePath must be specified" - and it rejects it at CREATE time,
+            # not at synth, so this cost a failed deploy and a rollback before it was
+            # caught. The L1 does not validate it and neither did the first version of
+            # test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback, which asserted
+            # ResponsePagePath was ABSENT and so pinned the broken shape in place.
+            #
+            # /404.html is a real page Astro builds (frontend/src/pages/404.astro), served
+            # WITH a 404 status. That is still not the blanket fallback: the distinction
+            # that matters is the status code, not whether a page is named. Serving
+            # index.html with a 200 would tell the browser the typo'd URL is a real page.
             error_responses=[
                 cloudfront.ErrorResponse(
-                    http_status=403, response_http_status=404, ttl=Duration.minutes(5)
+                    http_status=403,
+                    response_http_status=404,
+                    response_page_path="/404.html",
+                    ttl=Duration.minutes(5),
                 ),
                 cloudfront.ErrorResponse(
-                    http_status=404, response_http_status=404, ttl=Duration.minutes(5)
+                    http_status=404,
+                    response_http_status=404,
+                    response_page_path="/404.html",
+                    ttl=Duration.minutes(5),
                 ),
             ],
         )

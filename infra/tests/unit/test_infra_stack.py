@@ -1047,15 +1047,30 @@ def test_a_directory_index_function_runs_on_viewer_request():
 def test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback():
     """THE anti-pattern this guards against: mapping 403/404 to index.html with a 200
     would make every typo look like a working page that failed to render, and would mask
-    real 404s. camp's app is multi-page, so it needs no shell fallback at all."""
+    real 404s. camp's app is multi-page, so it needs no shell fallback at all.
+
+    The distinction is the STATUS, not whether a page is named. An earlier version of this
+    test asserted ResponsePagePath was absent, which looked like the same principle but
+    encoded a shape CloudFront rejects outright - it requires ResponseCode and
+    ResponsePagePath together or neither, and enforces that at CREATE time. That mistake
+    cost a failed deploy and a rollback, so this now pins BOTH halves."""
     dist = _resource(_template(), "AWS::CloudFront::Distribution")["Properties"][
         "DistributionConfig"
     ]
     errors = {e["ErrorCode"]: e for e in dist["CustomErrorResponses"]}
-    assert errors[403]["ResponseCode"] == 404
-    assert errors[404]["ResponseCode"] == 404
-    for entry in errors.values():
-        assert "ResponsePagePath" not in entry, "no fallback page - a 404 stays a 404"
+    assert set(errors) == {403, 404}
+    for code, entry in errors.items():
+        assert entry["ResponseCode"] == 404, f"{code} must surface as a real 404"
+        # Both or neither - CloudFront rejects a status with no page.
+        assert entry["ResponsePagePath"] == "/404.html", code
+        assert entry["ResponseCode"] != 200, "a 200 here would be the blanket fallback"
+
+
+def test_the_error_page_is_actually_built_and_shipped():
+    """A ResponsePagePath pointing at a file the build does not emit would deploy fine and
+    then serve CloudFront's own generic error - the 404 behaviour would be silently
+    cosmetic. Asserted against the staged site."""
+    assert "404.html" in _staged_listing("SiteContentDeployment")
 
 
 def test_config_json_and_the_site_are_separate_deployments():
@@ -1154,9 +1169,10 @@ def test_the_routing_function_matches_the_pages_the_build_emits():
     while any other path a student types must resolve or 404 honestly."""
     frontend = Path(__file__).resolve().parents[3] / "frontend"
     pages = sorted(p.name for p in (frontend / "src" / "pages").glob("*.astro"))
-    assert pages == ["index.astro"], (
+    assert pages == ["404.astro", "index.astro"], (
         f"unexpected pages: {pages}. /login and /auth/callback were removed with Google "
-        "OAuth; a new page needs the routing and the 404 behaviour re-checked."
+        "OAuth; a new page needs the routing and the 404 behaviour re-checked. 404.astro "
+        "is required - CloudFront's custom error response points at the /404.html it builds."
     )
     assert not (frontend / "src" / "pages" / "auth").exists()
 
