@@ -1,0 +1,2 @@
+# Same pytest pin as gav lib so the pulled test suites behave identically.
+pytest==8.4.2

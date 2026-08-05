@@ -1,0 +1,8 @@
+# Pinned to match gav lib so pulled stack sections work unmodified
+# (build-plan: "Match gav's dependency pinning and its aws-cdk-lib version").
+# No cdklabs.generative-ai-cdk-constructs (deprecated Bedrock L2s) and no
+# aws-cdk.aws-bedrock-alpha (no KB constructs): the pulled sections are L1 Cfn*.
+aws-cdk-lib==2.260.0
+constructs>=10.5.0,<11.0.0
+# The CDK app reads the repo-root config.yaml at synth time.
+PyYAML>=6.0,<7.0

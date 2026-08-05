@@ -1,0 +1,4 @@
+# Dev/test deps. Tests need the runtime deps too:
+#     python -m pip install -r requirements.txt -r requirements-dev.txt
+# Same pytest pin as infra/ so both suites behave identically.
+pytest==8.4.2

@@ -1,0 +1,85 @@
+# SJSU Student Success Navigator - declarative configuration.
+#
+# Single source of truth for changeable knobs. The CDK app in infra/ reads this file
+# (resolved at the repo root, one level up from infra/) and wires the values into the
+# stack. Values here come from docs/synthesis.md "Decisions (2026-08-05)"; synth-time
+# validators land in the next commit (build-plan: "config skeleton and synth validators").
+
+knowledge_base:
+  name: sjsu-navigator-kb
+  # Titan Text Embeddings v2 -> 1024-dimension vectors (decision: gav's exact shape).
+  embedding_model_id: amazon.titan-embed-text-v2:0
+  vector_dimension: 1024
+
+vector_store:
+  # Amazon S3 Vectors store. Semantic-search-only; accepted tradeoff.
+  vector_bucket_name: sjsu-navigator-vectors
+  index_name: bedrock-knowledge-base-default-index
+  data_type: float32
+  distance_metric: cosine
+  # Bedrock-internal metadata keys marked NON-filterable at index creation (immutable
+  # afterward) or ingestion fails on S3 Vectors' filterable-metadata limit.
+  non_filterable_metadata_keys:
+    - AMAZON_BEDROCK_TEXT
+    - AMAZON_BEDROCK_METADATA
+    - x-amz-bedrock-kb-source-uri
+    - x-amz-bedrock-kb-chunk-id
+    - x-amz-bedrock-kb-data-source-id
+
+chunking:
+  # Gav baseline (decision); retune with the eval once an account exists. Changing this
+  # is a data-source REPLACEMENT (chunking is immutable in Bedrock).
+  strategy: FIXED_SIZE
+  max_tokens: 600
+  overlap_percentage: 20
+
+scraper:
+  # Single DAILY schedule, no tiers (decision; cost-checked in docs/build-plan.md).
+  # 11:30 UTC is ~3:30am Pacific, a low-traffic window.
+  schedule_cron: "cron(30 11 * * ? *)"
+  # The curated crawl list. Stays at the repo root (decision); columns
+  # url,section,title,static_html,body_text_chars. `section` must reach the metadata
+  # sidecars or cards.py deprioritization degrades silently.
+  url_list_file: url-list.csv
+  timeout_seconds: 20
+  user_agent: "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
+
+# --- Query path (Lambda + HTTP API) ---
+
+http_api:
+  # Stage-level throttling: a v1 cost-abuse control alongside the Cognito gate
+  # (no WAF: it cannot attach to HTTP API v2; no billing alarm until v2).
+  throttling_rate_limit: 10
+  throttling_burst_limit: 20
+
+cors:
+  # Browser origin allowlist for the HTTP API. Never "*" (validator lands next commit).
+  # The CloudFront distribution domain joins this list at deploy as a token.
+  allow_origins:
+    - http://localhost:4321   # DEV ONLY: astro dev server
+
+request:
+  # Server-side query length cap, checked before any retrieval or guardrail call.
+  max_query_chars: 2000
+
+retrieval:
+  number_of_results: 8
+  # Camp's tuned threshold, against a corpus that no longer exists. Retune with the
+  # eval (build-plan: "retune retrieve_min_score").
+  min_score: 0.35
+
+generation:
+  # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.
+  model_id: us.anthropic.claude-sonnet-4-6
+  # Camp's Converse inference knobs, carried over.
+  max_tokens: 1200
+  temperature: 0.2
+
+guardrail:
+  # ONE guardrail, PROMPT_ATTACK on input only, applied AFTER the deterministic safety
+  # intercept (ordering is load-bearing - docs/synthesis.md).
+  name: sjsu-navigator-input-guardrail
+  content_filters:
+    - type: PROMPT_ATTACK
+      input_strength: HIGH
+  blocked_input_messaging: "I can't help with that request. I'm here for questions about SJSU student services, like tutoring, financial aid, wellness, and campus resources."
