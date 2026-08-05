@@ -983,3 +983,139 @@ def test_no_password_is_baked_into_the_template():
     events. The stack prints CLI commands with a placeholder instead."""
     rendered = json.dumps(_template().to_json())
     assert "CHOOSE-A-PASSWORD" in rendered, "the setup command should carry a placeholder"
+
+
+# --- Section 6: site bucket + CloudFront -------------------------------------------------
+
+
+def _deployment_named(template: Template, prefix: str) -> dict:
+    found = {
+        lid: r
+        for lid, r in template.find_resources("Custom::CDKBucketDeployment").items()
+        if lid.startswith(prefix)
+    }
+    assert len(found) == 1, f"expected one {prefix}* deployment, found {sorted(found)}"
+    return next(iter(found.values()))
+
+
+def test_the_site_bucket_is_private_and_reachable_only_through_cloudfront():
+    """OAC requires a private bucket with ACLs disabled; a public bucket would make the
+    distribution decorative."""
+    bucket = _resource_named(_template(), "AWS::S3::Bucket", "SiteBucket")["Properties"]
+    assert bucket["PublicAccessBlockConfiguration"] == {
+        "BlockPublicAcls": True,
+        "BlockPublicPolicy": True,
+        "IgnorePublicAcls": True,
+        "RestrictPublicBuckets": True,
+    }
+    assert bucket["OwnershipControls"]["Rules"] == [
+        {"ObjectOwnership": "BucketOwnerEnforced"}
+    ]
+
+
+def test_the_distribution_uses_origin_access_control_not_legacy_oai():
+    template = _template()
+    assert len(template.find_resources("AWS::CloudFront::OriginAccessControl")) == 1
+    dist = _resource(template, "AWS::CloudFront::Distribution")["Properties"][
+        "DistributionConfig"
+    ]
+    assert dist["DefaultRootObject"] == "index.html"
+    assert dist["Origins"][0].get("S3OriginConfig", {}).get("OriginAccessIdentity") in (
+        None,
+        "",
+    ), "an OriginAccessIdentity would mean the deprecated OAI path"
+
+
+def test_a_directory_index_function_runs_on_viewer_request():
+    """A REST (OAC) origin does NOT resolve /login/ to /login/index.html the way an S3
+    website endpoint does - it 403s. camp's app is MULTI-PAGE (index, login,
+    auth/callback), so this rewrite is what makes its non-root pages reachable."""
+    template = _template()
+    assert len(template.find_resources("AWS::CloudFront::Function")) == 1
+    behavior = _resource(template, "AWS::CloudFront::Distribution")["Properties"][
+        "DistributionConfig"
+    ]["DefaultCacheBehavior"]
+    associations = behavior["FunctionAssociations"]
+    assert [a["EventType"] for a in associations] == ["viewer-request"]
+
+
+def test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback():
+    """THE anti-pattern this guards against: mapping 403/404 to index.html with a 200
+    would make every typo look like a working page that failed to render, and would mask
+    real 404s. camp's app is multi-page, so it needs no shell fallback at all."""
+    dist = _resource(_template(), "AWS::CloudFront::Distribution")["Properties"][
+        "DistributionConfig"
+    ]
+    errors = {e["ErrorCode"]: e for e in dist["CustomErrorResponses"]}
+    assert errors[403]["ResponseCode"] == 404
+    assert errors[404]["ResponseCode"] == 404
+    for entry in errors.values():
+        assert "ResponsePagePath" not in entry, "no fallback page - a 404 stays a 404"
+
+
+def test_config_json_and_the_site_are_separate_deployments():
+    """BucketDeployment prunes by default (`aws s3 sync --delete`), so one deployment per
+    bucket would delete the other's objects. They also need different cache-control, which
+    is the reason they cannot be merged."""
+    template = _template()
+    assert len(template.find_resources("Custom::CDKBucketDeployment")) == 2
+    _deployment_named(template, "SiteContentDeployment")
+    _deployment_named(template, "SiteConfigDeployment")
+
+
+def test_the_site_deployment_prunes_but_cannot_delete_config_json():
+    content = _deployment_named(_template(), "SiteContentDeployment")["Properties"]
+    assert content.get("Prune", True) is True
+    assert "config.json" in content["Exclude"]
+
+
+def test_the_config_deployment_does_not_prune():
+    """Its source is one file, so pruning would delete the entire site."""
+    config = _deployment_named(_template(), "SiteConfigDeployment")["Properties"]
+    assert config["Prune"] is False
+
+
+def test_config_json_is_never_cached():
+    """It carries the API URL. A cached copy pins a stale endpoint after a redeploy -
+    which is exactly what makes a one-click install stop being one."""
+    config = _deployment_named(_template(), "SiteConfigDeployment")["Properties"]
+    assert config["SystemMetadata"]["cache-control"] == "no-store"
+
+
+def test_the_site_content_is_revalidated_rather_than_served_stale():
+    content = _deployment_named(_template(), "SiteContentDeployment")["Properties"]
+    assert content["SystemMetadata"]["cache-control"] == "no-cache"
+
+
+def test_config_json_carries_deploy_time_tokens_not_hardcoded_values():
+    """Nothing in the committed frontend may name an account, region, API id or pool id,
+    or a fresh install in another account points at this one's stack.
+
+    Source.json_data stages the file with substitution markers and resolves them DURING
+    deployment, so the values live in SourceMarkers rather than inline in the template -
+    which is the mechanism working, not a gap."""
+    markers = _deployment_named(_template(), "SiteConfigDeployment")["Properties"][
+        "SourceMarkers"
+    ]
+    rendered = json.dumps(markers)
+    assert "ChatHttpApi" in rendered, "the API endpoint must be a deploy-time token"
+    assert "ChatUserPool" in rendered, "the pool + client ids must be deploy-time tokens"
+    assert "AWS::Region" in rendered
+
+
+def test_the_cloudfront_origin_joins_the_api_cors_allowlist_as_a_token():
+    """The app is served from the distribution, so the browser sends that origin on every
+    /chat call. Resolved at deploy, never hardcoded."""
+    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    origins_rendered = json.dumps(api["CorsConfiguration"]["AllowOrigins"])
+    assert "SiteDistribution" in origins_rendered
+    assert "*" not in api["CorsConfiguration"]["AllowOrigins"]
+
+
+def test_the_amended_cors_block_keeps_the_authorization_header():
+    """The escape hatch REPLACES the whole CORS block, so dropping a header here would
+    break every /chat call at the preflight - with a CORS error, which reads like a config
+    problem rather than the auth problem it would be."""
+    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
+    assert set(api["CorsConfiguration"]["AllowMethods"]) == {"POST", "GET", "OPTIONS"}

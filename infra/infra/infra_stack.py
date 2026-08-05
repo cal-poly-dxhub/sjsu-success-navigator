@@ -39,6 +39,8 @@ from aws_cdk import (
     aws_apigatewayv2_authorizers as apigwv2_authorizers,
     aws_apigatewayv2_integrations as apigwv2_integrations,
     aws_bedrock as bedrock,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
     aws_cognito as cognito,
     aws_events as events,
     aws_events_targets as events_targets,
@@ -46,6 +48,7 @@ from aws_cdk import (
     aws_lambda as _lambda,
     aws_logs as logs,
     aws_s3 as s3,
+    aws_s3_deployment as s3deploy,
     aws_s3vectors as s3vectors,
     triggers,
 )
@@ -985,7 +988,15 @@ class NavigatorStack(Stack):
         # out and the browser fails at the OPTIONS before the POST is ever sent - and the
         # symptom is a CORS error, which reads like a configuration problem rather than the
         # auth problem it is.
+        # Spelled ONCE. Section 6 re-emits the whole CORS block through the L1 escape
+        # hatch to append the CloudFront origin, and a second literal here would be a
+        # silent way for the two to drift - dropping Authorization on the amended block
+        # would break every /chat call at the preflight.
+        cors_allow_methods = ["POST", "GET", "OPTIONS"]
+        cors_allow_headers = ["Content-Type", "Authorization"]
         self._cors_allow_origins = list(cors_allow_origins)
+        self._cors_allow_methods = cors_allow_methods
+        self._cors_allow_headers = cors_allow_headers
 
         http_api = apigwv2.HttpApi(
             self,
@@ -993,11 +1004,9 @@ class NavigatorStack(Stack):
             cors_preflight=apigwv2.CorsPreflightOptions(
                 allow_origins=self._cors_allow_origins,
                 allow_methods=[
-                    apigwv2.CorsHttpMethod.POST,
-                    apigwv2.CorsHttpMethod.GET,
-                    apigwv2.CorsHttpMethod.OPTIONS,
+                    apigwv2.CorsHttpMethod[m] for m in cors_allow_methods
                 ],
-                allow_headers=["Content-Type", "Authorization"],
+                allow_headers=cors_allow_headers,
             ),
         )
 
@@ -1110,3 +1119,183 @@ class NavigatorStack(Stack):
         )
 
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------
+        #
+        # THE SEAM AT THIS COMMIT: camp's Astro app arrives at bullet 11 and there is no
+        # committed dist/, so the site deployment below takes an inline placeholder page.
+        # Bullet 10 swaps THAT ONE SOURCE for container-bundled Astro output and changes
+        # nothing else - the bucket, the distribution, the OAC, the routing function, the
+        # config.json stamping and the CORS wiring are all real and final here.
+        #
+        # ROUTING: camp's app is MULTI-PAGE, not a single shell. It has three Astro pages
+        # (index, login, auth/callback), and Astro's default build format emits them as
+        # directories - /index.html, /login/index.html, /auth/callback/index.html. So a
+        # blanket SPA fallback would be WRONG here twice over: it is not a single shell,
+        # and rewriting every miss to index.html with a 200 would mask real 404s as a
+        # blank-looking home page. What a REST (OAC) origin actually needs is directory
+        # -index resolution, because unlike an S3 website endpoint it does not resolve
+        # /login/ to /login/index.html on its own - it returns 403. That is what the
+        # CloudFront Function below does, and only that.
+
+        site_bucket = s3.Bucket(
+            self,
+            "SiteBucket",
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            # OAC requires ACLs disabled (bucket-owner-enforced). Default for new buckets;
+            # set explicitly so the OAC requirement is legible.
+            object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=True,
+            removal_policy=RemovalPolicy.DESTROY,
+            auto_delete_objects=True,
+        )
+
+        # Directory-index resolution at the edge. A REST origin (which OAC requires) has no
+        # index-document behaviour, so without this every path but "/" 403s.
+        #   "/"            -> handled by default_root_object, not here
+        #   "/login/"      -> "/login/index.html"
+        #   "/login"       -> "/login/index.html"   (extensionless, so not a real file)
+        #   "/_astro/x.js" -> untouched             (has an extension)
+        # A path that still does not exist 403s, and the error responses below turn that
+        # into an honest 404 rather than a 200 carrying the home page.
+        directory_index_function = cloudfront.Function(
+            self,
+            "SiteDirectoryIndexFunction",
+            comment="Resolve directory paths to index.html for the S3 REST (OAC) origin.",
+            code=cloudfront.FunctionCode.from_inline(
+                """
+function handler(event) {
+  var request = event.request;
+  var uri = request.uri;
+  if (uri.endsWith('/')) {
+    request.uri = uri + 'index.html';
+  } else if (!uri.includes('.')) {
+    request.uri = uri + '/index.html';
+  }
+  return request;
+}
+"""
+            ),
+        )
+
+        site_distribution = cloudfront.Distribution(
+            self,
+            "SiteDistribution",
+            comment="SJSU Student Success Navigator web app.",
+            default_root_object="index.html",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(site_bucket),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                function_associations=[
+                    cloudfront.FunctionAssociation(
+                        function=directory_index_function,
+                        event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                    )
+                ],
+            ),
+            # A missing key on a REST origin comes back as 403 (the bucket policy grants
+            # GetObject only, so S3 cannot distinguish "absent" from "forbidden" without
+            # ListBucket). Both are mapped to a real 404 STATUS - deliberately NOT to
+            # index.html with a 200, which is the blanket-fallback anti-pattern: it would
+            # make every typo look like a working page that failed to render.
+            error_responses=[
+                cloudfront.ErrorResponse(
+                    http_status=403, response_http_status=404, ttl=Duration.minutes(5)
+                ),
+                cloudfront.ErrorResponse(
+                    http_status=404, response_http_status=404, ttl=Duration.minutes(5)
+                ),
+            ],
+        )
+
+        site_url = f"https://{site_distribution.distribution_domain_name}"
+
+        # TWO DEPLOYMENTS INTO ONE BUCKET, and the split is load-bearing rather than tidy.
+        #
+        # BucketDeployment defaults to prune=True, which is `aws s3 sync --delete`: each
+        # deployment removes destination objects its own source does not contain. Two
+        # unscoped deployments therefore fight, and whichever CloudFormation runs last
+        # wins - so the site deployment excludes config.json from its prune, and the
+        # config deployment does not prune at all.
+        #
+        # They also need DIFFERENT cache-control, which is the actual reason they cannot be
+        # one deployment: config.json carries the API URL, so a cached copy pins a stale
+        # endpoint after a redeploy - exactly the failure that makes one-click install a
+        # lie. It is no-store; the site content is revalidated.
+        s3deploy.BucketDeployment(
+            self,
+            "SiteContentDeployment",
+            destination_bucket=site_bucket,
+            # Bullet 10 replaces THIS SOURCE with container-bundled Astro output.
+            sources=[
+                s3deploy.Source.data(
+                    "index.html",
+                    "<!doctype html><meta charset=utf-8>"
+                    "<title>SJSU Student Success Navigator</title>"
+                    "<p>Placeholder. The Astro app lands at build-plan bullet 10.</p>",
+                )
+            ],
+            distribution=site_distribution,
+            distribution_paths=["/*"],
+            # Scopes the prune so this deployment cannot delete the config.json the other
+            # one owns.
+            exclude=["config.json"],
+            # no-cache means REVALIDATE, not "do not store": the browser may keep the copy
+            # but must check it is current. HTML is cheap to revalidate and must never be
+            # served stale after a deploy. (Immutable caching for Astro's hashed /_astro/
+            # assets is a v2 performance item, not a correctness one.)
+            cache_control=[s3deploy.CacheControl.no_cache()],
+        )
+
+        # config.json - the ONLY thing that tells the frontend where its API is, stamped at
+        # DEPLOY time from stack tokens. Source.jsonData resolves those tokens during
+        # deployment, so nothing in the committed frontend names an account, a region, an
+        # API id or a pool id, and a fresh install in another account discovers its own.
+        s3deploy.BucketDeployment(
+            self,
+            "SiteConfigDeployment",
+            destination_bucket=site_bucket,
+            sources=[
+                s3deploy.Source.json_data(
+                    "config.json",
+                    {
+                        "chatApiUrl": chat_url,
+                        # The frontend signs in with these (bullet 11's InitiateAuth).
+                        "userPoolId": auth_pool.user_pool_id,
+                        "userPoolClientId": auth_client.user_pool_client_id,
+                        "region": self.region,
+                    },
+                )
+            ],
+            distribution=site_distribution,
+            distribution_paths=["/config.json"],
+            # PRUNE OFF: this deployment's source is one file, so pruning would delete the
+            # entire site the other deployment just wrote.
+            prune=False,
+            # no-store, not no-cache: this file pins the API endpoint, and a stale copy
+            # points the app at an endpoint that may no longer exist.
+            cache_control=[s3deploy.CacheControl.no_store()],
+        )
+
+        # THE API SECTION REOPENS HERE (docs/build-plan.md: it is not frozen at its
+        # commit). The app is served from the CloudFront domain, so the browser sends that
+        # origin on every /chat call - without it in the allowlist the API is unreachable
+        # from the only place it is meant to be reached from.
+        #
+        # It is a DEPLOY-TIME TOKEN, never a hardcoded domain, so a fresh install in
+        # another account allowlists its own distribution. The L1 escape hatch replaces the
+        # whole CorsConfiguration block, which is why the methods and headers above are
+        # spelled once and reused rather than re-typed here.
+        cfn_api = http_api.node.default_child
+        cfn_api.cors_configuration = apigwv2.CfnApi.CorsProperty(
+            allow_origins=[*self._cors_allow_origins, site_url],
+            allow_methods=self._cors_allow_methods,
+            allow_headers=self._cors_allow_headers,
+        )
+
+        CfnOutput(
+            self,
+            "SiteUrl",
+            value=site_url,
+            description="CloudFront URL for the web app.",
+        )

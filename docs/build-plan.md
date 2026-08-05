@@ -20,7 +20,7 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull camp card parsing and the pre-model safety intercept as-is
 - [x] map crawl-list sections to card presets (app/section_presets.py, explicit entry per section, no fallthrough); an unretrieved sourceUrl loses its link
 - [x] pull gav api gateway: cognito gate on the billable route, our origins, our throttle numbers, route to /chat, Authorization in allow_headers (plus reserved concurrency: rate bounds invocations started, not how many run at once)
-- [ ] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token
+- [x] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token (site content is a placeholder until bullet 10; camp's app is MULTI-PAGE, so directory-index rewriting, not an SPA fallback)
 - [ ] pull camp frontend ui as astro dist/, spa fallback, mock sidebar fixtures deleted; gav-style InitiateAuth with the token in memory, expiry checked before the fetch because an authorizer 401 carries no cors headers
 - [ ] strip gav-specific surface as each section lands: primo tools, catalog bucket, feedback path, dual hosting
 
