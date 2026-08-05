@@ -48,6 +48,32 @@ flux: validate against our pinned version.
 - also pull: `GET /warm` pre-warm route; install trigger that makes first
   ingestion happen during `cdk deploy`
 
+## Decisions (2026-08-05, resolving the diagram gaps)
+
+Gav lib is the reference where the plan was silent; its values verified against
+its config.yaml and stack.
+
+- generation model: `us.anthropic.claude-sonnet-4-6` (gav's; camp used the
+  same). Cross-region inference profile, so IAM needs profile ARN + underlying
+  foundation-model ARNs.
+- embedding model: `amazon.titan-embed-text-v2:0`, 1024-dim, cosine, float32
+  (gav's exact vector-store shape).
+- chunking: gav's FIXED_SIZE 600 tokens / 20% overlap as the starting baseline;
+  retune with the eval once an account exists. Chunking is immutable, so a
+  change is a data-source replacement (gav folds chunk config into the data
+  source name; keep that trick).
+- guardrail: ADOPT gav's single PROMPT_ATTACK input screen
+  (ApplyGuardrail source=INPUT). Ordering is load-bearing: our deterministic
+  safety intercept runs FIRST, then the guardrail, then the loop, so crisis
+  handling can never be pre-empted by a guardrail block.
+- scraper cadence: daily, single schedule, no tiers. Cost-checked in
+  build-plan.md (~$0.15/mo all-in).
+- billing alarm: v2.
+- cognito: v1 ships gav's shared username/password pilot login exactly;
+  campus-affiliated accounts are v2.
+- crawl list: url-list.csv is authoritative over the brief; three hosts
+  (www / careercenter / library .sjsu.edu), 203 pages.
+
 ## Open
 
 - Bedrock model-access opt-in state of the target AWS account. Check before the

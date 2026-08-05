@@ -35,3 +35,6 @@
 - eval harness against Student Affairs' 5-10 query test set (needs an account)
 - recursive crawl (v1 ships a curated URL list)
 - response streaming (HTTP API cannot stream; needs REST API or Function URL)
+- billing alarm (v1 relies on stage throttling + the Cognito gate as cost caps)
+- campus-affiliated Cognito accounts (v1 ships gav's single shared
+  username/password pilot login)

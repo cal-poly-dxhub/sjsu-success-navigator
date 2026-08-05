@@ -14,7 +14,7 @@ L1 property values. Nothing pre-flights those without an account.
 
 - [ ] pull gav config skeleton and synth validators, renamed with no hardcoded global names
 - [ ] pull gav kb section, repointed at our source bucket and chunking values
-- [ ] pull gav scraper shell, crawling the curated url list from config; sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
+- [ ] pull gav scraper shell, crawling the curated url list from config on a single daily schedule (no tiers); sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
 - [ ] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases
 - [ ] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced
 - [ ] pull camp card parsing and the pre-model safety intercept as-is
@@ -28,7 +28,6 @@ distribution domain into its cors allowlist. Not frozen after its commit.
 
 ## Build ourselves
 
-- [ ] billing alarm
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [ ] retune retrieve_min_score; 0.35 was tuned against a differently shaped corpus (needs account)
 - [ ] update the team repo's audit docs, which still say mangum and fan-out scraper
@@ -36,4 +35,15 @@ distribution domain into its cors allowlist. Not frozen after its commit.
 ## Open
 
 - [ ] astro build: bundle at deploy, or commit dist/
-- [ ] scraper ceiling: gav does 19 pages in 25-67s at 512MB, so one Lambda at a 15-min timeout caps around a few hundred pages. Planning bullet 1 tells us if the curated list fits
+
+## Resolved (2026-08-05)
+
+- scraper cadence: DAILY, single schedule, no tiers. Cheap by calculation: 203
+  pages scale gav's measured 19-pages-in-25-67s to ~4.5-12 min at 512MB
+  (~$0.12/mo of Lambda), a full corpus re-embed is ~190K Titan tokens (<$0.01),
+  and change gating means unchanged days pay only the Lambda run. Fits the
+  15-min timeout, but the top of the range is close: log run duration from the
+  first live run.
+- scraper ceiling: 203 pages fits one Lambda (see above); revisit only if runs
+  approach the cap.
+- billing alarm: deferred to v2 (see aws-port-draft.md).

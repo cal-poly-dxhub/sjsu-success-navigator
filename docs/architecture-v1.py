@@ -15,53 +15,45 @@ is no code yet. It exists to make the cross-project wiring reviewable: v1 is
 assembled by pulling sections out of the gav lib CDK project and the camp
 application, so the risk sits in the seams, not the components.
 
-Decisions reflected:
+Decisions reflected (the former gaps are resolved in docs/synthesis.md under
+"Decisions (2026-08-05)", with gav lib as the reference where the plan was silent):
   - v1 is authenticated. Cognito with a single InitiateAuth call replaces Google
     OAuth; a native JWT authorizer guards POST /chat, the one billable route.
-    GET /warm stays ungated (it spends no Bedrock tokens).
+    GET /warm stays ungated (it spends no Bedrock tokens). v1 ships gav's shared
+    username/password pilot login; campus-affiliated accounts are v2.
   - The chat Lambda is a bare handler - no FastAPI, no Mangum. The camp services
     (safety intercept, Converse agent loop, card parsing) move in as files;
     pydantic aliases carry the camelCase wire contract.
+  - Generation is Claude Sonnet 4.6 on Bedrock Converse via the us. cross-region
+    inference profile; embeddings are Titan Text Embeddings v2 (1024-dim, cosine,
+    float32); chunking starts at gav's FIXED_SIZE 600 tokens / 20% overlap,
+    retuned with the eval once an account exists.
+  - Gav's single PROMPT_ATTACK input guardrail is adopted. Ordering is
+    load-bearing: the deterministic safety intercept runs first, then
+    ApplyGuardrail(source=INPUT), then the Converse loop - crisis handling can
+    never be pre-empted by a guardrail block.
   - Ingestion scrapes a curated URL list from config (203 pages in url-list.csv,
-    hosts www/careercenter/library.sjsu.edu), no recursive crawl. Metadata
-    sidecars carry section alongside source_url and title.
+    hosts www/careercenter/library.sjsu.edu) on a single DAILY EventBridge
+    schedule, no tiers, plus the on-deploy install trigger. Metadata sidecars
+    carry section alongside source_url and title. Cost-checked in build-plan.md
+    (~$0.15/month all-in at daily cadence, change-gated).
   - No response streaming in v1: one JSON response per question.
   - Frontend is static Astro on S3 behind CloudFront (OAC). CDK bundles it in a
     container at synth; config.json is stamped with the API URL at deploy time,
     and the distribution domain joins the API's CORS allowlist.
-
-GAPS - ambiguities the plan documents do not resolve. Where one of these blocks
-an edge or a label, the diagram carries "undecided" rather than a guess:
-  1. Generation model ID is pinned nowhere in this repo's docs (camp defaulted to
-     us.anthropic.claude-sonnet-4-6; no decision is recorded here). Drawn generic.
-  2. Embedding model ID and vector dimension are unnamed ("kb: s3 vectors +
-     embedding model"), and chunking values are "ours" but unchosen. Drawn generic.
-  3. Guardrail: the plan is silent on whether gav lib's PROMPT_ATTACK input
-     guardrail comes along with the pulled lambda section or is stripped. Not
-     drawn; needs a decision (gav's lambda IAM carries ApplyGuardrail).
-  4. Scraper schedule shape: gav has fast/full tiers; our docs pull "schedules"
-     with no cadence or tier decision for the 203-URL list. One schedule drawn,
-     cadence unlabeled.
-  5. Billing alarm wiring: mechanism (AWS Budgets vs CloudWatch) and threshold
-     undecided. Node drawn with no edges.
-  6. Cognito account model: synthesis says "auth to campus-affiliated users";
-     gav's template is one shared demo login. Provisioning undecided; the pool is
-     drawn, the account model is not.
-  7. Domain count: the task brief says two domains; url-list.csv contains three
-     hosts (www.sjsu.edu 177, careercenter.sjsu.edu 21, library.sjsu.edu 5).
-     Drawn from the CSV.
+  - No billing alarm in v1 (deferred to v2); stage throttling and the Cognito
+    gate are the v1 cost controls.
 """
 
 import os
 
 from diagrams import Cluster, Diagram, Edge
 from diagrams.aws.compute import Lambda
-from diagrams.aws.cost import Budgets
 from diagrams.aws.general import InternetAlt1, Users
 from diagrams.aws.integration import Eventbridge
 from diagrams.aws.ml import Bedrock
 from diagrams.aws.network import APIGateway, CloudFront
-from diagrams.aws.security import Cognito
+from diagrams.aws.security import Cognito, Shield
 from diagrams.aws.storage import S3
 
 # Write the PNG next to this file (docs/) regardless of the current working directory.
@@ -82,8 +74,8 @@ with Diagram(
         "SJSU websites\n(curated URL list, 203 pages:\nwww / careercenter / library\n.sjsu.edu)"
     )
 
-    with Cluster("Ingestion  (scheduled + on-deploy install trigger)"):
-        schedule = Eventbridge("EventBridge schedule\n(cadence undecided)")
+    with Cluster("Ingestion  (daily schedule + on-deploy install trigger)"):
+        schedule = Eventbridge("EventBridge schedule\n(daily)")
         scraper = Lambda("Scraper Lambda\ncurated list from config\nchange gating + prune")
         source_bucket = S3(
             "KB source bucket\nmarkdown + metadata sidecars\n(section, source_url, title)"
@@ -91,12 +83,16 @@ with Diagram(
 
     # The KB + vector store are the hub shared by both flows.
     with Cluster("Shared RAG core  (Bedrock KB + S3 Vectors)"):
-        kb = Bedrock("Bedrock Knowledge Base\nS3 data source\n(chunking values undecided)")
-        embed = Bedrock("Embedding model\n(ID undecided - see gaps)")
-        vectors = S3("S3 Vectors\nbucket + index")
+        kb = Bedrock(
+            "Bedrock Knowledge Base\nS3 data source\nFIXED_SIZE 600t / 20%\n(gav baseline, retune w/ eval)"
+        )
+        embed = Bedrock("Titan Text\nEmbeddings v2\n(1024-dim, cosine, float32)")
+        vectors = S3("S3 Vectors\nbucket + index\n(1024-dim, cosine)")
 
     with Cluster("Auth  (pilot gate on the billable route)"):
-        cognito = Cognito("Cognito user pool\n+ public app client\n(account model undecided)")
+        cognito = Cognito(
+            "Cognito user pool\n+ public app client\n(shared pilot login,\ncampus accounts in v2)"
+        )
 
     with Cluster("Query path  (per request, runtime)"):
         student = Users("Student\n(browser, Astro UI)")
@@ -106,7 +102,12 @@ with Diagram(
         chat_fn = Lambda(
             "Chat Lambda (bare handler)\nsafety intercept -> Converse\nagent loop -> cards\npydantic camelCase contract"
         )
-        model = Bedrock("Bedrock Converse\ngeneration model\n(ID undecided - see gaps)")
+        guardrail = Shield(
+            "Bedrock Guardrail\ninput screen\n(PROMPT_ATTACK only)"
+        )
+        model = Bedrock(
+            "Claude Sonnet 4.6\n(Converse, via us.\ninference profile)"
+        )
 
     with Cluster("Site delivery  (S3 + CloudFront, OAC origin)"):
         cdn = CloudFront(
@@ -116,14 +117,8 @@ with Diagram(
             "Private site bucket\nAstro dist/ (container-bundled\nat synth) + config.json\n(API URL stamped at deploy)"
         )
 
-    with Cluster(
-        "Build ourselves  (wiring undecided)",
-        graph_attr={"style": "dashed", "bgcolor": "gray95"},
-    ):
-        billing = Budgets("Billing alarm\n(mechanism + threshold\nundecided - no edges drawn)")
-
     # --- Ingestion flow: schedule -> scrape -> S3 markdown -> KB ingest -> embed -> vectors ---
-    schedule >> Edge(color="darkorange", label="scheduled invoke\n(+ install trigger on deploy)") >> scraper
+    schedule >> Edge(color="darkorange", label="daily invoke\n(+ install trigger on deploy)") >> scraper
     sjsu_sites >> Edge(color="darkorange", label="fetch pages\n(static HTML)") >> scraper
     scraper >> Edge(color="darkorange", label="upload markdown\n+ sidecars (change-gated)") >> source_bucket
     scraper >> Edge(color="darkorange", style="dashed", label="StartIngestionJob\n(only when content changed)") >> kb
@@ -148,6 +143,11 @@ with Diagram(
     student >> Edge(color="darkblue", style="dotted", label="GET /warm\n(ungated, no JWT)") >> api
     api >> Edge(color="gray", style="dashed", label="JWT authorizer\nvalidates via pool JWKS") >> cognito
     api >> Edge(color="darkblue", label="proxy\n(payload 2.0)") >> chat_fn
+    # Ordering is load-bearing: safety intercept (in-Lambda, deterministic) runs FIRST,
+    # then the guardrail screens the bare query ONCE, then the Converse loop starts.
+    chat_fn >> Edge(
+        style="dashed", label="ApplyGuardrail\n(source=INPUT, once,\nAFTER safety intercept)"
+    ) >> guardrail
     chat_fn >> Edge(color="darkblue", label="retrieve_campus_resources\n(KB Retrieve)") >> kb
     kb >> Edge(color="darkblue", style="dashed", label="read vectors") >> vectors
     chat_fn >> Edge(style="dashed", dir="both", label="Converse\ntool-use loop") >> model
