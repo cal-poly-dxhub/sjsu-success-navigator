@@ -805,6 +805,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "prompts.py",
         "retrieve.py",
         "safety.py",
+        "section_presets.py",
         "settings.py",
         "tools.py",
     ]

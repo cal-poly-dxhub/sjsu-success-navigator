@@ -18,6 +18,7 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases (the guardrail rides with it; handler is a validate-only stub until the next two bullets)
 - [x] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced (the loop also carries a wall-clock deadline, not just the iteration cap)
 - [x] pull camp card parsing and the pre-model safety intercept as-is
+- [x] map crawl-list sections to card presets (app/section_presets.py, explicit entry per section, no fallthrough); an unretrieved sourceUrl loses its link
 - [ ] pull gav api gateway: cognito gate on the billable route, our origins, our throttle numbers, route to /chat, Authorization in allow_headers
 - [ ] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token
 - [ ] pull camp frontend ui as astro dist/, spa fallback, mock sidebar fixtures deleted; gav-style InitiateAuth with the token in memory, expiry checked before the fetch because an authorizer 401 carries no cors headers

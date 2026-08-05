@@ -1,14 +1,15 @@
-"""Card shaping - camp's behaviour, carried over unchanged.
+"""Card shaping, and the section-to-preset mapping that drives its follow-up buttons.
 
-Includes the section-to-preset check the build plan asks for: which of OUR crawl-list
-section values actually reach a follow-up preset today. The mismatch itself is fixed in
-its own later bullet, so this test RECORDS the current state rather than asserting a fix.
+The coverage test is the load-bearing one: it reads url-list.csv at test time, so a
+section added to the corpus without an explicit preset entry fails the build rather than
+silently shipping the generic follow-up.
 """
 
 import csv
 from pathlib import Path
 
 import cards
+import section_presets
 from retrieve import RetrievedChunk
 
 
@@ -76,38 +77,101 @@ def test_at_most_four_cards_per_batch():
 
 
 def test_a_known_section_gets_its_tailored_followup():
-    card = cards.build_statement_cards([_chunk(section="peerconnections")], "tutoring")[0]
+    card = cards.build_statement_cards([_chunk(section="tutoring-academic-support")], "tutoring")[0]
     followup = [a for a in card.actions if a.type == "followup"][0]
     assert followup.label == "Book tutor"
 
 
-def test_an_unknown_section_falls_back_to_a_generic_followup():
-    card = cards.build_statement_cards([_chunk(section="counseling-psych")], "help")[0]
+def test_an_unknown_section_falls_back_to_the_generic_followup():
+    """An unknown section at RUNTIME is not an error: it means a sidecar predates a
+    crawl-list change, and a student's answer must not fail over that."""
+    card = cards.build_statement_cards([_chunk(section="not-a-real-section")], "help")[0]
     followup = [a for a in card.actions if a.type == "followup"][0]
     assert followup.label == "Learn more"
 
 
-def test_which_crawl_list_sections_reach_a_followup_preset_today():
-    """RECORDED, NOT FIXED (docs/build-plan.md: the mismatch is its own later bullet).
-
-    camp's presets are keyed on ITS section vocabulary; our crawl list uses a different
-    one. This test pins the current overlap so the later bullet has a baseline and so an
-    accidental drive-by edit to either vocabulary shows up as a failure here.
-    """
+def test_every_crawl_list_section_has_an_explicit_entry():
+    """THE coverage test the mapping exists for. Reads url-list.csv at test time, so
+    adding a section to the corpus without deciding its follow-up fails the build instead
+    of silently shipping the generic one."""
     url_list = Path(__file__).resolve().parents[2] / "url-list.csv"
     with open(url_list, newline="", encoding="utf-8") as fh:
-        our_sections = {row["section"].strip() for row in csv.DictReader(fh)}
+        corpus_sections = {row["section"].strip() for row in csv.DictReader(fh)}
 
-    # The preset keys live inside _followup_actions; probe them through the public path
-    # rather than reaching into the function's literal.
-    matched = {
-        section
-        for section in our_sections
-        if cards._followup_actions("Some Page", section)[0] != "Learn more"
-    }
-
-    assert matched == set(), (
-        "expected NO crawl-list section to hit a preset today; if this fails the "
-        f"vocabularies have started to overlap: {sorted(matched)}"
+    missing = corpus_sections - section_presets.known_sections()
+    assert missing == set(), (
+        f"crawl-list sections with no explicit preset entry: {sorted(missing)}. "
+        "Add each to app/section_presets.py - map it to None for the generic follow-up "
+        "if there is no honest section-specific question."
     )
-    assert our_sections, "the crawl list must define sections at all"
+
+
+def test_the_table_carries_no_entry_the_corpus_does_not_use():
+    """The other direction: a stale key is a preset nothing can ever reach."""
+    url_list = Path(__file__).resolve().parents[2] / "url-list.csv"
+    with open(url_list, newline="", encoding="utf-8") as fh:
+        corpus_sections = {row["section"].strip() for row in csv.DictReader(fh)}
+
+    orphaned = section_presets.known_sections() - corpus_sections
+    assert orphaned == set(), f"presets for sections not in the corpus: {sorted(orphaned)}"
+
+
+def test_a_section_with_no_honest_match_maps_to_generic_explicitly():
+    """Rule 2: never a plausibly-related office. student-affairs-hub is a hub page, so any
+    specific follow-up would name an office the card did not come from."""
+    assert section_presets.SECTION_FOLLOWUPS["student-affairs-hub"] is None
+    label, prompt = section_presets.followup_for_section("student-affairs-hub", "Student Affairs")
+    assert label == "Learn more"
+    assert "Student Affairs" in prompt
+
+
+def test_every_preset_prompt_is_answerable_from_its_own_section():
+    """A follow-up that routes elsewhere is the referral mistake in another form. Checked
+    structurally: no preset prompt may name a DIFFERENT section's office."""
+    for section, preset in section_presets.SECTION_FOLLOWUPS.items():
+        if preset is None:
+            continue
+        label, prompt = preset
+        assert label and prompt, section
+        assert prompt.endswith("?"), f"{section}: a follow-up prompt should be a question"
+
+
+# --- Submitted-card link discipline (bullet 7) ------------------------------------------
+
+
+def _submission(source_url, title="Tutoring", body="Free tutoring for students."):
+    return {"title": title, "body": body, "sourceUrl": source_url}
+
+
+def test_a_submitted_card_keeps_its_link_when_the_url_was_retrieved():
+    chunk = _chunk()
+    result = cards.cards_from_submission(
+        [_submission(chunk.source_url)], known_chunks=[chunk]
+    )
+    assert [a.type for a in result[0].actions] == ["source", "followup"]
+
+
+def test_a_submitted_card_loses_its_link_when_the_url_was_never_retrieved(caplog):
+    """DELIBERATE CHANGE TO CAMP: camp linked whatever URL the model supplied, so an
+    invented one shipped as a clickable referral. The card survives without the anchor."""
+    chunk = _chunk()
+    with caplog.at_level("WARNING"):
+        result = cards.cards_from_submission(
+            [_submission("https://www.sjsu.edu/invented-by-the-model.php")],
+            known_chunks=[chunk],
+        )
+
+    card = result[0]
+    assert [a.type for a in card.actions] == ["followup"], "no source action, so no link"
+    assert card.title == "Tutoring", "the card itself survives"
+    assert "not retrieved" in caplog.text
+
+
+def test_the_unlinked_card_still_satisfies_the_wire_contract():
+    """sourceUrl stays a populated string - the frontend type requires it, and nothing
+    renders it without a source action. Removing the field would be a silent break."""
+    result = cards.cards_from_submission(
+        [_submission("https://www.sjsu.edu/invented.php")], known_chunks=[]
+    )
+    body = result[0].model_dump(by_alias=True)
+    assert isinstance(body["sourceUrl"], str) and body["sourceUrl"]

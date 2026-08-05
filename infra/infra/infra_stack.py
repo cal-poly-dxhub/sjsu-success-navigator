@@ -805,6 +805,7 @@ class NavigatorStack(Stack):
                     "!tools.py",
                     "!retrieve.py",
                     "!cards.py",
+                    "!section_presets.py",
                     "!safety.py",
                     "!orchestrator.py",
                 ],

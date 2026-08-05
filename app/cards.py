@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 import uuid
@@ -8,6 +9,9 @@ from urllib.parse import urlparse
 from settings import Settings
 from models import FollowupAction, SourceAction, StatementBatch, StatementCard
 from retrieve import RetrievedChunk, retrieve_chunks
+from section_presets import followup_for_section
+
+logger = logging.getLogger(__name__)
 
 MAX_CARDS_PER_BATCH = 4
 BODY_MAX_CHARS = 220
@@ -175,22 +179,11 @@ def _card_id(section: str | None, source_url: str) -> str:
 
 
 def _followup_actions(title: str, section: str | None) -> tuple[str, str]:
-    section_labels = {
-        "peerconnections": ("Book tutor", "How do I book a Peer Connections tutor?"),
-        "advising": ("Find advisor", "How do I find my academic advisor?"),
-        "sjsucares": ("Get assistance", "How do I request assistance from SJSU Cares?"),
-        "wellness": ("Same-day help", "How do I access same-day wellness support?"),
-        "aec": ("Register AEC", "How do I register with the Accessible Education Center?"),
-        "careercenter": ("Explore careers", "What Career Center services are available?"),
-        "faso": ("Financial aid help", "How do I get help from Financial Aid and Scholarships?"),
-    }
+    """Delegates to section_presets, which is keyed on OUR crawl-list vocabulary.
 
-    if section:
-        preset = section_labels.get(section.lower())
-        if preset:
-            return preset
-
-    return ("Learn more", f"Tell me more about {title}.")
+    Camp's inline table was keyed on its own section names and did not overlap ours on a
+    single value, so every card was silently taking the generic branch."""
+    return followup_for_section(section, title)
 
 
 def create_statement_batch(
@@ -240,16 +233,38 @@ def cards_from_submission(
         card_id = _card_id(section, source_url)
         followup_label, followup_prompt = _followup_actions(title, section)
 
+        # DELIBERATE CHANGE TO CAMP'S BEHAVIOUR (approved, docs/build-plan.md bullet 7).
+        # Camp attached "Open source" to every submitted card, linking whatever URL the
+        # model put in the field. It only ever looked the URL up to READ a section, and a
+        # miss fell through to guessing the section from the URL's own path - so a URL the
+        # model invented was never rejected, just linked.
+        #
+        # A card whose sourceUrl was not among the retrieved sources now loses its LINK.
+        # The card survives with its title, body and follow-up: the model's prose may
+        # still be right, and the frontend renders an anchor only when a `source` action
+        # is present (StatementCard.tsx), so dropping the action drops the link with no
+        # change to the wire contract.
+        #
+        # The sourceUrl FIELD stays populated because the type requires a string and
+        # camp's frontend reads it; nothing renders it without the action. Removing the
+        # field would be the silent break the port is explicitly avoiding.
+        actions: list = []
+        if known is not None:
+            actions.append(SourceAction(label="Open source"))
+        else:
+            logger.warning(
+                "Dropping the link on a submitted card whose sourceUrl was not retrieved: %r",
+                source_url,
+            )
+        actions.append(FollowupAction(label=followup_label, prompt=followup_prompt))
+
         cards.append(
             StatementCard(
                 id=card_id,
                 title=title,
                 body=body,
                 sourceUrl=source_url,
-                actions=[
-                    SourceAction(label="Open source"),
-                    FollowupAction(label=followup_label, prompt=followup_prompt),
-                ],
+                actions=actions,
             )
         )
 
