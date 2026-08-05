@@ -1,0 +1,23 @@
+---
+// Placeholder home page. Camp's chat UI replaces this at build-plan bullet 11; the build
+// pipeline that carries it is what this commit establishes.
+//
+// config.json is NOT imported or bundled: it is written to the bucket by a separate
+// deployment at deploy time and fetched at runtime, so the API URL is never baked into a
+// hashed asset (which a browser would then cache and pin to a stale endpoint).
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SJSU Student Success Navigator</title>
+  </head>
+  <body>
+    <main>
+      <h1>SJSU Student Success Navigator</h1>
+      <p>The chat interface lands at build-plan bullet 11.</p>
+    </main>
+  </body>
+</html>

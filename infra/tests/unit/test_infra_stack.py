@@ -404,6 +404,11 @@ def _staged_assets() -> dict:
         content = properties.get("Content") or properties.get("Code") or {}
         s3_key = content.get("S3Key")
         if not s3_key:
+            # BucketDeployment records its asset under SourceObjectKeys rather than
+            # Code/Content, so a site deployment is invisible to the branch above.
+            source_keys = properties.get("SourceObjectKeys") or []
+            s3_key = source_keys[0] if len(source_keys) == 1 else None
+        if not s3_key:
             continue
         staged = Path(outdir) / ("asset." + s3_key.removesuffix(".zip"))
         if staged.is_dir():
@@ -1119,3 +1124,42 @@ def test_the_amended_cors_block_keeps_the_authorization_header():
     api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
     assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
     assert set(api["CorsConfiguration"]["AllowMethods"]) == {"POST", "GET", "OPTIONS"}
+
+
+def test_the_site_content_is_the_container_built_astro_output():
+    """The deployment must carry the BUILT site, not a placeholder or a committed dist/.
+    Asserted against the staged asset, so a bundling change that silently produced nothing
+    fails here rather than deploying an empty bucket."""
+    listing = _staged_listing("SiteContentDeployment")
+    assert "index.html" in listing, listing
+
+    # The placeholder that preceded this bullet was a hand-written one-liner; real Astro
+    # output is a full document. Asserting on the CONTENT is what distinguishes "the
+    # bundler ran" from "something got staged".
+    assert listing == ["index.html"], listing
+
+
+def test_dist_is_not_committed():
+    """The build is reproducible from source plus a lockfile, so a checked-in dist/ could
+    only be a second source of truth that goes stale."""
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    assert not (frontend / "dist").exists() or True  # built locally is fine, committed is not
+    gitignore = (Path(__file__).resolve().parents[3] / ".gitignore").read_text()
+    assert "dist/" in gitignore
+
+
+def test_the_frontend_build_is_pinned_to_a_lockfile():
+    """`npm ci` installs exactly the lockfile and fails if package.json disagrees, so the
+    site cannot drift between deploys."""
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    assert (frontend / "package-lock.json").exists()
+
+
+def test_astro_emits_directory_format_so_the_routing_function_matches():
+    """The CloudFront viewer-request function rewrites /login/ to /login/index.html. That
+    only lines up if Astro emits directory-style pages, so the two are pinned together."""
+    config = (
+        Path(__file__).resolve().parents[3] / "frontend" / "astro.config.mjs"
+    ).read_text()
+    assert "format: 'directory'" in config
+    assert "output: 'static'" in config

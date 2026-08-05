@@ -31,6 +31,7 @@ from aws_cdk import (
     AssetHashType,
     BundlingOptions,
     CfnOutput,
+    DockerImage,
     Duration,
     ILocalBundling,
     RemovalPolicy,
@@ -81,6 +82,14 @@ _SCRAPER_DIR = _REPO_ROOT / "scraper"
 # No FastAPI and no Mangum (docs/build-plan.md) - camp's main.py and routers are replaced by
 # handler.py, and everything else in this directory is framework-free Python already.
 _APP_DIR = _REPO_ROOT / "app"
+# The Astro app. Built in a container at synth (see _astro_bundling); dist/ is gitignored
+# and produced by the build, never committed.
+_FRONTEND_DIR = _REPO_ROOT / "frontend"
+
+# The Node image the site is built in. Pinned to a MAJOR version rather than `latest` so a
+# synth six months from now builds the same way, and matched to the Node this repo develops
+# against. Alpine keeps the pull small; Astro needs no native toolchain.
+_NODE_BUILD_IMAGE = "public.ecr.aws/docker/library/node:22-alpine"
 
 # Both Lambdas' architecture and the MATCHING manylinux wheel tag. trafilatura pulls in lxml
 # and regex, pydantic pulls in pydantic-core - all compiled extensions - so the layers must
@@ -96,6 +105,47 @@ _LAMBDA_PY_TAG = "3.13"
 # chosen by the deployer at step 2 and never appears here or anywhere in the repo. The pool
 # signs in by plain username, so this needs no @ and carries no email attribute.
 _PILOT_USERNAME = "sjsupilot" 
+
+
+def _astro_bundling() -> BundlingOptions:
+    """Build frontend/ into static files INSIDE A CONTAINER, at synth.
+
+    A container rather than the local toolchain, deliberately: the build then depends on
+    the pinned image and the committed lockfile instead of whatever Node happens to be on
+    the machine running `cdk deploy`. There is no local-bundling fallback here (unlike the
+    Lambda layers, where one exists because pip can cross-build with --platform): a
+    silently-different local build is exactly what pinning the image is for, and a missing
+    Docker should fail loudly rather than produce a different site.
+
+    `npm ci`, not `npm install`: ci installs exactly the lockfile and fails if package.json
+    and the lockfile disagree, so the site cannot drift between deploys.
+
+    node_modules and dist are excluded from what is copied INTO the container - both are
+    build products of the host, and copying them would both slow the asset staging and
+    risk a stale dist/ shadowing the fresh build.
+    """
+    return BundlingOptions(
+        image=DockerImage.from_registry(_NODE_BUILD_IMAGE),
+        # OUTPUT hashing: the asset hash tracks the BUILT site, so an edit that does not
+        # change the output (a comment in a source file) does not churn the deployment.
+        command=[
+            "sh",
+            "-c",
+            # THREE env vars, each fixing a real failure rather than being defensive:
+            #   HOME=/tmp  - CDK runs the container as the HOST uid, which has no home
+            #                inside the image, so anything writing under $HOME fails.
+            #   ASTRO_TELEMETRY_DISABLED - Astro's telemetry writes to $HOME/.config on
+            #                first run; it died with EACCES on /.config/astro before HOME
+            #                was set. Off is also simply correct for a build container:
+            #                no phoning home from a deploy machine.
+            #   npm_config_cache - same writability problem, npm's cache defaults to
+            #                $HOME/.npm.
+            "export HOME=/tmp ASTRO_TELEMETRY_DISABLED=1 npm_config_cache=/tmp/.npm && "
+            "npm ci --no-audit --no-fund && "
+            "npm run build && "
+            "cp -r dist/. /asset-output/",
+        ],
+    )
 
 
 def _config_hash(payload: Dict[str, Any]) -> str:
@@ -1120,11 +1170,14 @@ class NavigatorStack(Stack):
 
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------
         #
-        # THE SEAM AT THIS COMMIT: camp's Astro app arrives at bullet 11 and there is no
-        # committed dist/, so the site deployment below takes an inline placeholder page.
-        # Bullet 10 swaps THAT ONE SOURCE for container-bundled Astro output and changes
-        # nothing else - the bucket, the distribution, the OAC, the routing function, the
-        # config.json stamping and the CORS wiring are all real and final here.
+        # THE BUILD: the Astro app in frontend/ is compiled IN A CONTAINER at synth (see
+        # _astro_bundling) and its dist/ is what lands in the bucket. dist/ is gitignored
+        # and never committed - the build is reproducible from source and a lockfile, so a
+        # checked-in dist/ could only ever be a second source of truth that goes stale.
+        #
+        # Camp's chat UI replaces frontend/src at bullet 11; the pipeline that carries it
+        # is established here, against a minimal placeholder page, so that commit is a
+        # source swap rather than a build-system bring-up.
         #
         # ROUTING: camp's app is MULTI-PAGE, not a single shell. It has three Astro pages
         # (index, login, auth/callback), and Astro's default build format emits them as
@@ -1226,13 +1279,14 @@ function handler(event) {
             self,
             "SiteContentDeployment",
             destination_bucket=site_bucket,
-            # Bullet 10 replaces THIS SOURCE with container-bundled Astro output.
             sources=[
-                s3deploy.Source.data(
-                    "index.html",
-                    "<!doctype html><meta charset=utf-8>"
-                    "<title>SJSU Student Success Navigator</title>"
-                    "<p>Placeholder. The Astro app lands at build-plan bullet 10.</p>",
+                s3deploy.Source.asset(
+                    str(_FRONTEND_DIR),
+                    # Host build products stay out of the container: node_modules is
+                    # reinstalled from the lockfile inside it, and a copied dist/ could
+                    # shadow the fresh build.
+                    exclude=["node_modules", "dist", ".astro", "README.md"],
+                    bundling=_astro_bundling(),
                 )
             ],
             distribution=site_distribution,
