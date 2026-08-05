@@ -47,6 +47,7 @@ from aws_cdk import (
 from constructs import Construct
 
 from infra.config import (
+    CHAT_LAMBDA_TIMEOUT_SECONDS,
     resolve_chat,
     resolve_chunking,
     resolve_data_source_name,
@@ -823,7 +824,12 @@ class NavigatorStack(Stack):
             # cannot. If the agent loop turns out not to fit in 29s, the fix is architectural
             # (streaming, or an async job) rather than a bigger number - recorded in
             # docs/build-plan.md under Open.
-            timeout=Duration.seconds(29),
+            #
+            # The constant lives in infra/config.py because the validator for
+            # chat.converse_deadline_seconds checks the deadline against it: the loop's
+            # wall-clock budget has to sit under this number, and a copy here would let the
+            # two drift.
+            timeout=Duration.seconds(CHAT_LAMBDA_TIMEOUT_SECONDS),
             # 1024 MB, up from camp's 256. Lambda scales CPU with memory, and this function
             # imports pydantic and boto3 and then makes several sequential Bedrock calls inside
             # a 29-second budget, so cold-start import time comes directly out of the time the
@@ -846,6 +852,11 @@ class NavigatorStack(Stack):
                 # and logged when reached (see resolve_chat).
                 "MAX_CONVERSE_ITERATIONS": str(chat_cfg["max_converse_iterations"]),
                 "MAX_HISTORY_MESSAGES": str(chat_cfg["max_history_messages"]),
+                # The loop's WALL-CLOCK budget. The iteration cap bounds how many model
+                # calls happen, not how long they take, so without this a slow run is
+                # killed mid-Converse - billed, with no response reaching the student.
+                # Validated at synth to sit under the function timeout above.
+                "CONVERSE_DEADLINE_SECONDS": str(chat_cfg["converse_deadline_seconds"]),
                 # The input screen, pinned to its published numbered version. There is no
                 # OUTPUT_GUARDRAIL_* pair and no GUARDRAIL_TRACE: nothing is attached to
                 # Converse, so there is no trace to configure.

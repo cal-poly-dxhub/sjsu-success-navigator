@@ -16,7 +16,7 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull gav kb section, repointed at our source bucket and chunking values
 - [x] pull gav scraper shell, crawling the curated url list from config on a single daily schedule (no tiers); sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
 - [x] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases (the guardrail rides with it; handler is a validate-only stub until the next two bullets)
-- [ ] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced
+- [x] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced (the loop also carries a wall-clock deadline, not just the iteration cap)
 - [ ] pull camp card parsing and the pre-model safety intercept as-is
 - [ ] pull gav api gateway: cognito gate on the billable route, our origins, our throttle numbers, route to /chat, Authorization in allow_headers
 - [ ] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token

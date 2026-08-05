@@ -1,0 +1,5 @@
+# Dev/test deps for the chat Lambda's modules. Runtime deps are in requirements.txt
+# (pydantic, which the tests need too):
+#     python -m pip install -r requirements.txt -r requirements-dev.txt
+# Same pytest pin as infra/ and scraper/ so all three suites behave identically.
+pytest==8.4.2

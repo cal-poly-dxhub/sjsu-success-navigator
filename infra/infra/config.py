@@ -77,6 +77,14 @@ _CHUNKING_STRATEGIES = ("FIXED_SIZE", "NONE", "HIERARCHICAL", "SEMANTIC")
 # and loses its tailored follow-up), which is why it is required here rather than defaulted.
 _SEED_COLUMNS = ("url", "section", "title")
 
+# The chat Lambda's own timeout, in seconds. NOT a config knob, and not arbitrary: an HTTP
+# API integration's timeoutInMillis maxes at 30,000 ms and cannot be raised by a quota
+# request, so 29 is the ceiling minus one - the function's own timeout wins, and the failure
+# is diagnosable in its logs rather than only as a gateway 504. It lives here, beside the
+# validator that checks chat.converse_deadline_seconds against it, so the deadline and the
+# timeout it must sit under cannot drift apart in two files.
+CHAT_LAMBDA_TIMEOUT_SECONDS = 29
+
 # Bedrock guardrail constraints, verified against the CreateGuardrail /
 # GuardrailContentFilterConfig API reference (2026-08-05). Every one of these is enforced by
 # the service and NOT by the L1 CfnGuardrail, so without these checks a bad value first
@@ -615,13 +623,29 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
     default and no log line when it was reached, so a request that burned six Converse calls
     and fell through to the non-agentic fallback was indistinguishable from a normal answer.
     It is config here, and the handler logs when it hits (docs/build-plan.md).
+
+    `converse_deadline_seconds` is the OTHER half of that cap, and the one that actually
+    bounds a request: iterations bound how many model calls happen, not how long they take.
+    It must leave room under the function's own timeout for the work that happens after the
+    loop returns, so it is validated against CHAT_LAMBDA_TIMEOUT_SECONDS rather than merely
+    being positive - a deadline at or past the timeout is the same as having none.
     """
     chat_cfg = _require_mapping(config, "chat")
+    deadline = _positive_int(chat_cfg, "chat", "converse_deadline_seconds")
+    if deadline >= CHAT_LAMBDA_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"chat.converse_deadline_seconds ({deadline}) must be less than the chat "
+            f"Lambda's own timeout ({CHAT_LAMBDA_TIMEOUT_SECONDS}s). A deadline at or past "
+            "the timeout never fires: the function is killed mid-Converse instead, which "
+            "bills the invocation and returns a gateway 504 with no answer at all. Leave "
+            "room for the card shaping and serialisation that run after the loop."
+        )
     return {
         "max_converse_iterations": _positive_int(
             chat_cfg, "chat", "max_converse_iterations"
         ),
         "max_history_messages": _positive_int(chat_cfg, "chat", "max_history_messages"),
+        "converse_deadline_seconds": deadline,
     }
 
 

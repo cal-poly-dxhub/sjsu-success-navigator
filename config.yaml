@@ -77,6 +77,18 @@ chat:
   # Conversation turns kept from a request, trimmed SERVER-SIDE (camp's value). The client
   # is never trusted to cap its own history - that is a paid-token control.
   max_history_messages: 12
+  # WALL-CLOCK budget for the whole Converse loop, in seconds. The iteration cap alone
+  # does not bound time: six iterations of a slow model, or one retrieval that stalls,
+  # can outlast the function. Past this the loop stops and returns the best answer it
+  # already has, instead of being killed mid-call - where the invocation is billed and
+  # the student gets a gateway 504 with no response at all.
+  #
+  # 22 against the function's 29-second timeout (itself the HTTP API integration's
+  # non-raisable 30s ceiling minus one): the remainder covers the final card shaping and
+  # JSON serialisation, which happen AFTER the loop returns. The handler additionally
+  # takes the minimum of this and Lambda's own remaining time, so a slow cold start
+  # shortens the budget rather than overrunning it.
+  converse_deadline_seconds: 22
 
 generation:
   # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.

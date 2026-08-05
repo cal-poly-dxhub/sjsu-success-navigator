@@ -17,8 +17,10 @@ Request order is LOAD-BEARING and is enforced here rather than anywhere downstre
                    returns the configured message with no retrieval and no generation.
   4. agent loop  - the Bedrock Converse tool-use loop under Sammy's system prompt.
 
-Steps 3 and 4 land at build-plan bullets 5 and 6. This file currently wires 1 only, and
-returns 501 rather than pretending to have answered.
+Step 4 lands at build-plan bullet 6, together with the safety intercept it must run behind:
+orchestrator.py imports cards and safety, so the loop is not callable until those arrive.
+That is deliberate rather than incidental - wiring the loop first would put a commit in
+history whose handler calls the model with no safety intercept ahead of it.
 
 Wiring comes from env vars set by the CDK stack (see settings.py). The response body is the
 camelCase wire contract the frontend expects, produced by the pydantic aliases in models.py.
@@ -26,6 +28,76 @@ camelCase wire contract the frontend expects, produced by the pydantic aliases i
 
 import base64
 import json
+import logging
+import time
+
+import boto3
+from botocore.config import Config
+
+from settings import load_settings
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Settings and clients at module scope: resolved once per container, not per request.
+# A missing environment variable raises here, on the first invocation, naming the
+# variable - rather than surfacing later as a 502 on a student's question.
+SETTINGS = load_settings()
+
+_BEDROCK_CLIENT = None
+
+
+def _bedrock_client():
+    """The bedrock-runtime client used for ApplyGuardrail. Same client family the agent
+    loop uses for Converse, but built here so the guardrail screen does not depend on the
+    loop module (which arrives at bullet 6)."""
+    global _BEDROCK_CLIENT
+    if _BEDROCK_CLIENT is None:
+        _BEDROCK_CLIENT = boto3.client(
+            "bedrock-runtime",
+            region_name=SETTINGS.bedrock_region,
+            config=Config(
+                retries={"max_attempts": 3, "mode": "adaptive"},
+                read_timeout=10,
+                connect_timeout=5,
+            ),
+        )
+    return _BEDROCK_CLIENT
+
+
+# Seconds held back from Lambda's remaining time when deriving the loop's deadline: the
+# response still has to be shaped and serialised after the loop returns.
+_POST_LOOP_RESERVE_SECONDS = 3
+
+
+def loop_deadline(context):
+    """A `time.monotonic()` timestamp the Converse loop must not start a call after.
+
+    The MINIMUM of two budgets, because each catches what the other misses:
+
+      - the configured one (chat.converse_deadline_seconds) is the intended budget, and
+        is what applies in a test or a local run where there is no Lambda context.
+      - Lambda's own `get_remaining_time_in_millis()` is the ground truth. It already
+        accounts for time this invocation has spent - a slow cold start, a long guardrail
+        call - which the static budget cannot see. Documented method, verified against the
+        Python context-object reference (2026-08-05).
+
+    Taking the smaller means a slow start SHORTENS the loop's budget rather than letting
+    it overrun the function.
+    """
+    budget = float(SETTINGS.converse_deadline_seconds)
+
+    remaining_ms = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(remaining_ms):
+        try:
+            lambda_budget = (remaining_ms() / 1000.0) - _POST_LOOP_RESERVE_SECONDS
+            budget = min(budget, lambda_budget)
+        except Exception:
+            logger.exception(
+                "Could not read Lambda remaining time; using the configured budget"
+            )
+
+    return time.monotonic() + budget
 
 
 def _parse_body(event):
@@ -51,16 +123,65 @@ def _response(status_code, payload):
     }
 
 
+def apply_input_guardrail(query):
+    """Screen the BARE student query with ApplyGuardrail(source=INPUT).
+
+    Returns the guardrail's replacement text when it blocks, or None to continue. The
+    query alone is screened - not the system prompt, not retrieved passages - because
+    PROMPT_ATTACK is about what the student sent.
+
+    A guardrail FAILURE is not a block: if the call itself errors, the request continues
+    to the loop rather than refusing a legitimate question over an infrastructure fault.
+    Bedrock is already the harder dependency behind it, and a student who hits a transient
+    guardrail outage should not be told their question was rejected.
+    """
+    try:
+        result = _bedrock_client().apply_guardrail(
+            guardrailIdentifier=SETTINGS.input_guardrail_id,
+            guardrailVersion=SETTINGS.input_guardrail_version,
+            source="INPUT",
+            content=[{"text": {"text": query}}],
+        )
+    except Exception:
+        logger.exception("ApplyGuardrail failed; continuing without the input screen")
+        return None
+
+    if result.get("action") != "GUARDRAIL_INTERVENED":
+        return None
+
+    outputs = result.get("outputs") or []
+    text = (outputs[0].get("text") if outputs else "") or ""
+    logger.info("Input guardrail intervened on a query")
+    return text
+
+
 def lambda_handler(event, context):
-    """POST /chat. Bullets 5 and 6 fill in the safety intercept, the guardrail screen and the
-    agent loop; until then this validates the request and returns 501 rather than an answer it
-    did not generate."""
+    """POST /chat. Steps 1 and 3 are wired; step 2 (safety) and step 4 (the agent loop)
+    land together at bullet 6, and the safety intercept goes AHEAD of the guardrail call
+    below when it does."""
     data = _parse_body(event)
     query = (data or {}).get("query")
     if not isinstance(query, str) or not query.strip():
         return _response(400, {"error": "Missing 'query' in request body."})
+    if len(query) > SETTINGS.max_query_chars:
+        return _response(
+            400,
+            {"error": f"Query exceeds {SETTINGS.max_query_chars} characters."},
+        )
+
+    blocked_text = apply_input_guardrail(query)
+    if blocked_text is not None:
+        return _response(
+            200,
+            {
+                "conversationalText": blocked_text,
+                "statementBatches": None,
+                "safetyHandoff": None,
+                "talkToPersonAvailable": True,
+            },
+        )
 
     return _response(
         501,
-        {"error": "The chat agent loop is not wired yet (docs/build-plan.md bullets 5-6)."},
+        {"error": "The chat agent loop is not wired yet (docs/build-plan.md bullet 6)."},
     )
