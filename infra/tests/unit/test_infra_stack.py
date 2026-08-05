@@ -12,6 +12,11 @@ resolve to infra/infra/).
 """
 
 import copy
+import functools
+import json
+import os
+import tempfile
+from pathlib import Path
 
 import aws_cdk as cdk
 import pytest
@@ -21,7 +26,13 @@ from infra.config import load_config
 from infra.infra_stack import NavigatorStack
 
 
+@functools.lru_cache(maxsize=1)
 def _template() -> Template:
+    """The synthesized template, built once per session.
+
+    Cached because synth bundles the scraper's manylinux deps layer, which costs a couple of
+    seconds per call - times every test. The assertions below only ever READ the template.
+    """
     app = cdk.App()
     stack = NavigatorStack(app, "SjsuNavigatorStack", config=load_config())
     return Template.from_stack(stack)
@@ -36,6 +47,24 @@ def _resource(template: Template, type_name: str) -> dict:
     """
     found = template.find_resources(type_name)
     assert len(found) == 1, f"expected exactly one {type_name}, found {len(found)}"
+    return next(iter(found.values()))
+
+
+def _resource_named(template: Template, type_name: str, logical_id_prefix: str) -> dict:
+    """The one resource of a type whose logical id starts with `logical_id_prefix`.
+
+    Needed where _resource cannot be used because the stack holds several of a type that are
+    not all ours: three Lambda functions (the scraper plus two CDK-provider handlers) and two
+    layer versions. The prefix is the construct id, which is stable; the hash suffix CDK
+    appends is not, so it is deliberately not matched.
+    """
+    found = {
+        lid: r for lid, r in template.find_resources(type_name).items()
+        if lid.startswith(logical_id_prefix)
+    }
+    assert len(found) == 1, (
+        f"expected exactly one {type_name} named {logical_id_prefix}*, found {sorted(found)}"
+    )
     return next(iter(found.values()))
 
 
@@ -272,13 +301,288 @@ def test_source_bucket_is_private_and_encrypted():
     )
 
 
+# --- Section 2: scraper Lambda + layers + daily schedule + install trigger ---------------
+
+
+def test_scraper_function_runs_the_handler_on_the_pinned_runtime():
+    template = _template()
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "Handler": "lambda_function.handler",
+            "Runtime": "python3.13",
+            "Architectures": ["x86_64"],
+            "MemorySize": 512,
+            # 900s, the Lambda maximum. The run is estimated at 4.5-12 minutes (gav's measured
+            # 19-pages-in-25-67s scaled to 203 pages), so gav's 5 minutes would time out at the
+            # slow end. Pinned because a timeout is the one scraper failure with no partial
+            # result: the invocation dies before ingestion and the corpus just goes stale.
+            "Timeout": 900,
+        },
+    )
+
+
+def test_scraper_gets_the_crawl_list_filename_not_the_crawl_list():
+    """The whole reason the seed list is a layer. Lambda caps environment variables at 4 KB in
+    AGGREGATE - not raisable - and the 203-page list is 19 KB as compact JSON, 2.9 KB even
+    gzipped and base64'd. So the environment carries the FILENAME and the file travels as an
+    asset. This asserts the divergence from gav's SCRAPER_TIERS transport is actually in place,
+    and that nothing has quietly grown back toward the cap."""
+    template = _template()
+    env = _resource_named(template, "AWS::Lambda::Function", "ScraperFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+
+    config = load_config()
+    from infra.config import resolve_scraper
+
+    assert env["URL_LIST_FILE"] == resolve_scraper(config)["url_list_file"]
+    # No variable carries the corpus itself. 512 bytes is far above any legitimate value here
+    # (the longest is the User-Agent) and far below the 4 KB aggregate cap.
+    for name, value in env.items():
+        if isinstance(value, str):
+            assert len(value) < 512, f"{name} is {len(value)} bytes - is the crawl list in it?"
+
+
+def test_scraper_env_wires_the_bucket_kb_and_data_source_by_reference():
+    template = _template()
+    env = _resource_named(template, "AWS::Lambda::Function", "ScraperFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+    # By Ref/GetAtt, never a literal: the names are stack outputs, and a literal would break the
+    # no-hardcoded-global-names rule and silently point a redeployed stack at the old resources.
+    assert env["SOURCE_BUCKET"] == {"Ref": "KnowledgeBaseSourceBucket3BE7549F"}
+    assert env["KNOWLEDGE_BASE_ID"] == {
+        "Fn::GetAtt": ["KnowledgeBase", "KnowledgeBaseId"]
+    }
+    assert env["DATA_SOURCE_ID"] == {"Fn::GetAtt": ["S3DataSource", "DataSourceId"]}
+
+
+def test_scraper_carries_both_layers_deps_and_crawl_list():
+    """Two layers, and the function is useless without either: the deps layer supplies
+    trafilatura/httpx (not in the runtime) and the seed-list layer supplies the corpus. A
+    missing seed-list layer is the nastier one - the handler raises SeedListError and the run
+    fails, which is by design, but it fails every single day until someone reads the logs."""
+    template = _template()
+    layers = _resource_named(template, "AWS::Lambda::Function", "ScraperFunction")["Properties"][
+        "Layers"
+    ]
+    assert {json.dumps(layer, sort_keys=True) for layer in layers} == {
+        json.dumps({"Ref": "ScraperDepsLayer10ED40CB"}, sort_keys=True),
+        json.dumps({"Ref": "ScraperSeedListLayer2F2BB950"}, sort_keys=True),
+    }
+
+
+def test_both_layers_are_built_for_the_functions_runtime_and_architecture():
+    # A layer whose compatible runtime/arch does not match the function is rejected at
+    # UpdateFunctionConfiguration - a deploy-time failure, and the deps layer's wheels are
+    # manylinux x86_64 regardless of the machine that ran synth.
+    template = _template()
+    for prefix in ("ScraperDepsLayer", "ScraperSeedListLayer"):
+        props = _resource_named(template, "AWS::Lambda::LayerVersion", prefix)["Properties"]
+        assert props["CompatibleRuntimes"] == ["python3.13"], prefix
+        assert props["CompatibleArchitectures"] == ["x86_64"], prefix
+
+
+@functools.lru_cache(maxsize=1)
+def _staged_assets() -> dict:
+    """{logical id -> sorted listing of that resource's staged asset directory}.
+
+    Synths into a temp outdir and reads the directories CDK actually staged, because the template
+    records only an asset HASH - what went into the zip is invisible to a template matcher. Cached
+    for the same reason _template is: this pays a full synth including the deps-layer bundle.
+    """
+    outdir = tempfile.mkdtemp()
+    app = cdk.App(outdir=outdir)
+    NavigatorStack(app, "SjsuNavigatorStack", config=load_config())
+    app.synth()
+    template = json.loads((Path(outdir) / "SjsuNavigatorStack.template.json").read_text())
+    listings = {}
+    for logical_id, resource in template["Resources"].items():
+        properties = resource.get("Properties") or {}
+        content = properties.get("Content") or properties.get("Code") or {}
+        s3_key = content.get("S3Key")
+        if not s3_key:
+            continue
+        staged = Path(outdir) / ("asset." + s3_key.removesuffix(".zip"))
+        if staged.is_dir():
+            listings[logical_id] = sorted(os.listdir(staged))
+    return listings
+
+
+def _staged_listing(logical_id_prefix: str) -> list:
+    matches = {
+        lid: listing
+        for lid, listing in _staged_assets().items()
+        if lid.startswith(logical_id_prefix)
+    }
+    assert len(matches) == 1, f"expected one staged asset for {logical_id_prefix}*, got {matches}"
+    return next(iter(matches.values()))
+
+
+def test_seed_list_layer_ships_only_the_crawl_list():
+    """Synths for real and lists the staged asset, because CDK's exclude globbing is not
+    intuitive: `exclude=["*", "!url-list.csv"]` alone leaves .git/, .gitignore and .DS_Store in
+    the asset - a leading-wildcard pattern does not match hidden entries - so this layer shipped
+    repo metadata into a deployed function. ".*" is what fixes it, and only a directory listing
+    proves it, since the template records just an asset hash."""
+    from infra.config import resolve_scraper
+
+    assert _staged_listing("ScraperSeedListLayer") == [
+        resolve_scraper(load_config())["url_list_file"]
+    ]
+
+
+def test_scraper_function_ships_only_its_two_source_files():
+    """Same dotfile trap, second site, and this one is worse: scraper/ grows a .venv (70 MB of
+    local test deps) and a .pytest_cache the moment anyone runs the scraper's own suite, and both
+    would ride into the deployed function. It reads as clean on a fresh clone, which is exactly
+    why it is asserted rather than eyeballed."""
+    assert _staged_listing("ScraperFunction") == ["lambda_function.py", "scraper.py"]
+
+
+def test_deps_layer_ships_only_the_installed_packages():
+    # The bundler writes pip's --target into python/, which is the path Lambda puts on sys.path.
+    # Anything else at the top level means the source dir leaked past the exclude.
+    assert _staged_listing("ScraperDepsLayer") == ["python"]
+
+
+def test_scraper_role_can_write_read_list_and_start_ingestion():
+    """The four grants the scraper cannot work without, and each one's absence is a different
+    silent failure: no PutObject and nothing refreshes; no DeleteObject and de-listing a page
+    becomes a no-op; no GetObject and change gating cannot HEAD the stored fingerprint, so every
+    page re-uploads every day; no ListBucket and the prune sees nothing to prune.
+
+    Match.array_with matches IN ORDER, so these are listed in policy-document order."""
+    template = _template()
+    template.has_resource_properties(
+        "AWS::IAM::Policy",
+        {
+            "PolicyDocument": {
+                "Statement": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "Action": ["s3:PutObject", "s3:DeleteObject"],
+                                "Effect": "Allow",
+                            }
+                        ),
+                        Match.object_like({"Action": "s3:GetObject", "Effect": "Allow"}),
+                        Match.object_like(
+                            {
+                                "Action": "s3:ListBucket",
+                                "Effect": "Allow",
+                                # The BUCKET arn, not arn/*: ListBucket on an object arn
+                                # silently authorizes nothing.
+                                "Resource": {
+                                    "Fn::GetAtt": ["KnowledgeBaseSourceBucket3BE7549F", "Arn"]
+                                },
+                            }
+                        ),
+                        Match.object_like(
+                            {
+                                "Action": [
+                                    "bedrock:StartIngestionJob",
+                                    "bedrock:ListIngestionJobs",
+                                ],
+                                "Effect": "Allow",
+                                # Scoped to THIS knowledge base by GetAtt, not a wildcard.
+                                "Resource": {
+                                    "Fn::GetAtt": ["KnowledgeBase", "KnowledgeBaseArn"]
+                                },
+                            }
+                        ),
+                    ]
+                )
+            }
+        },
+    )
+
+
+def test_scraper_role_grants_no_catalog_or_model_access():
+    """Gav's scraper also reads/writes a catalog bucket and calls InvokeModel through an
+    inference profile to enrich its database list. Neither exists here, and neither should be in
+    the policy - a leftover grant is the kind of thing that survives a port unnoticed."""
+    policy = _resource_named(_template(), "AWS::IAM::Policy", "ScraperFunctionRole")
+    actions = json.dumps(policy["Properties"]["PolicyDocument"]["Statement"])
+    assert "bedrock:InvokeModel" not in actions
+    assert "CATALOG" not in actions
+
+
+def test_exactly_one_daily_schedule_targets_the_scraper_with_no_payload():
+    """ONE rule, no tiers. Gav runs a daily fast tier plus a slower full sweep and passes the
+    tier name in the event payload; here every invocation is the complete sweep. A second rule
+    or an Input on the target would mean the tier machinery came along with the port - and the
+    handler reads nothing from the event, so a payload would be a lie about how it works."""
+    template = _template()
+    from infra.config import resolve_scraper
+
+    rule = _resource(template, "AWS::Events::Rule")
+    assert rule["Properties"]["ScheduleExpression"] == resolve_scraper(load_config())[
+        "schedule_cron"
+    ]
+    assert rule["Properties"]["State"] == "ENABLED"
+    targets = rule["Properties"]["Targets"]
+    assert len(targets) == 1
+    assert targets[0]["Arn"] == {"Fn::GetAtt": ["ScraperFunction9503A55F", "Arn"]}
+    assert "Input" not in targets[0]
+    # And EventBridge is actually allowed to invoke it - the rule alone is not enough.
+    template.has_resource_properties(
+        "AWS::Lambda::Permission",
+        {
+            "Action": "lambda:InvokeFunction",
+            "Principal": "events.amazonaws.com",
+            "FunctionName": {"Fn::GetAtt": ["ScraperFunction9503A55F", "Arn"]},
+        },
+    )
+
+
+def test_install_trigger_is_fire_and_forget_and_runs_after_its_targets():
+    """The trigger populates the KB during `cdk deploy`. Two properties matter.
+
+    InvocationType Event: the deploy must not wait on a scrape that can take 12 minutes, and
+    must not fail because a page 404'd. REQUEST_RESPONSE (the CDK default) would do both.
+
+    DependsOn: it writes to the source bucket and calls StartIngestionJob on the data source, so
+    firing before those exist is a guaranteed error. HandlerArn is a Ref to the function's
+    CURRENT VERSION, whose logical id hashes code plus configuration - which is what makes a
+    crawl-list edit (a new seed-list layer, hence new config) re-fire the trigger."""
+    trigger = _resource(_template(), "Custom::Trigger")
+    assert trigger["Properties"]["InvocationType"] == "Event"
+    assert trigger["Properties"]["ExecuteOnHandlerChange"] is True
+    handler_ref = trigger["Properties"]["HandlerArn"]["Ref"]
+    assert handler_ref.startswith("ScraperFunctionCurrentVersion"), handler_ref
+    depends = trigger["DependsOn"]
+    assert "S3DataSource" in depends
+    assert "KnowledgeBase" in depends
+    assert any(d.startswith("KnowledgeBaseSourceBucket") for d in depends), depends
+    assert any(d.startswith("ScraperFunctionCurrentVersion") for d in depends), depends
+
+
+def test_scraper_waits_for_the_data_source_it_will_ingest_into():
+    function = _resource_named(_template(), "AWS::Lambda::Function", "ScraperFunction")
+    assert "S3DataSource" in function["DependsOn"]
+
+
+def test_scraper_logs_are_retained_and_removable():
+    # An explicit log group, so retention is set (Lambda's implicit group keeps logs forever and
+    # is not managed by the stack) and `cdk destroy` actually cleans up.
+    log_group = _resource_named(_template(), "AWS::Logs::LogGroup", "ScraperFunctionLogGroup")
+    assert log_group["Properties"]["RetentionInDays"] == 90
+    assert log_group["DeletionPolicy"] == "Delete"
+
+
 def test_no_global_name_is_hardcoded_in_the_stack_source():
     """The naming convention, enforced against the source rather than the template: every
     global name in the template must have come from config.yaml. Checks the stack FILE for
-    the configured literals, so a name pasted inline fails even if the template looks right."""
-    from pathlib import Path
+    the configured literals, so a name pasted inline fails even if the template looks right.
 
-    from infra.config import resolve_knowledge_base, resolve_vector_store
+    The scraper's schedule and crawl-list filename are on the list for a related reason: a
+    literal there would let config.yaml and the deployed stack disagree, and the crawl-list
+    filename in particular is read TWICE - once to pick the layer's asset and once for the
+    URL_LIST_FILE env var - so a hardcoded copy is how the bundled file and the opened file
+    drift apart."""
+    from infra.config import resolve_knowledge_base, resolve_scraper, resolve_vector_store
 
     config = load_config()
     source = (Path(__file__).resolve().parents[2] / "infra" / "infra_stack.py").read_text()
@@ -286,6 +590,9 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
         resolve_knowledge_base(config)["name"],
         resolve_vector_store(config)["vector_bucket_name"],
         resolve_vector_store(config)["index_name"],
+        resolve_scraper(config)["url_list_file"],
+        resolve_scraper(config)["schedule_cron"],
+        resolve_scraper(config)["user_agent"],
     ):
         assert name not in source, (
             f"{name!r} is hardcoded in infra_stack.py - it must come from config.yaml"

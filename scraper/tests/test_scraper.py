@@ -1,0 +1,586 @@
+"""Unit tests for the local scraper. No live network calls: HTTP is mocked via httpx.MockTransport,
+and content extraction is exercised against static in-repo HTML fixtures.
+
+The crawl-list tests carry the most weight here. The list is the corpus - it decides what gets
+fetched AND what the Lambda's prune keeps - so `load_seed_pages` has to reject a bad list rather
+than return a short one, and every rejection below is a delete-the-knowledge-base bug it prevents.
+"""
+
+import csv
+import json
+import re
+from pathlib import Path
+
+import httpx
+import pytest
+
+import scraper
+
+# A realistic static page: boilerplate nav/header/footer/sidebar wrapping a real article body.
+# trafilatura should keep the article and drop the boilerplate.
+FIXTURE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Academic Advising | San Jose State University</title></head>
+<body>
+  <header><nav><ul>
+    <li><a href="/">Home</a></li>
+    <li><a href="/advising/">Advising</a></li>
+    <li><a href="/admissions/">Admissions</a></li>
+  </ul></nav></header>
+  <aside class="sidebar">
+    <h3>Quick Links</h3>
+    <ul><li><a href="/advising/appointments">Appointments</a></li><li><a href="/advising/contact">Contact</a></li></ul>
+  </aside>
+  <main>
+    <article>
+      <h1>Academic Advising</h1>
+      <p>Undergraduate Advising and Success is open Monday through Friday from 9:00 AM to 5:00 PM
+         in Clark Hall. Drop-in advising is available during the first two weeks of each semester,
+         and appointments can be scheduled online for the rest of the term.</p>
+      <p>Students on academic probation are required to meet with an advisor before registering
+         for the following semester. Bring an unofficial transcript to the appointment.</p>
+      <p>For questions about degree requirements or major changes, contact your college advising
+         center directly.</p>
+    </article>
+  </main>
+  <footer><p>&copy; 2026 San Jose State University. All rights reserved. Privacy policy. Accessibility.</p></footer>
+</body>
+</html>
+"""
+
+# Some pages carry replacement-char garbage baked into their SOURCE: the entities
+# &#239;&#191;&#189; (which decode to U+00EF U+00BF U+00BD = the 3-char sequence "ï¿½") stand where
+# an apostrophe or accented letter was lost to an upstream cp1252->UTF-8 mis-decode at authoring
+# time. This fixture reproduces that exactly - a clean UTF-8 page whose content carries the
+# baked-in garbage. The scraper cannot recover the lost chars (U+FFFD is information-free), only
+# strip the garbage.
+FIXTURE_MOJIBAKE_HTML = (
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Counseling Services</title></head>"
+    "<body><main><article><h1>Counseling Services</h1>"
+    "<p>Counseling and Psychological Services supports every student&#239;&#191;&#189;s "
+    "mental health through short-term therapy, crisis support and referral to community "
+    "providers when longer care is needed.</p>"
+    "</article></main></body></html>"
+)
+
+# University pages use tables for LAYOUT as well as for data. trafilatura renders them as mangled
+# markdown tables ("| cell | |" with empty cells). We want flat prose, not tables. This fixture
+# reproduces that: a one-content-cell row (empty 2nd cell) and a two-cell contact row.
+FIXTURE_TABLE_HTML = (
+    "<!DOCTYPE html><html><head><title>Financial Aid Deadlines</title></head><body><main><article>"
+    "<h1>Financial Aid Deadlines</h1>"
+    "<table>"
+    "<tr><td>FAFSA priority deadline -- March 2 for the following academic year.</td><td></td></tr>"
+    "<tr><td>Cal Grant GPA verification -- submitted by the high school or college.</td><td></td></tr>"
+    "</table>"
+    "<h2>Contact</h2>"
+    "<table>"
+    "<tr><td>Phone: (408) 283-7500</td><td>Email: fao@sjsu.edu</td></tr>"
+    "<tr><td>Address: One Washington Square</td><td>San Jose, CA 95192</td></tr>"
+    "</table>"
+    "</article></main></body></html>"
+)
+
+# The crawl list carries two more columns than the scraper reads (static_html, body_text_chars).
+# They are page-selection evidence and must be ignored rather than tripping validation.
+SEED_HEADER = "url,section,title,static_html,body_text_chars\n"
+SEED_ROWS = (
+    "https://www.sjsu.edu/advising/,academic-advising,Academic Advising,True,4210\n"
+    "https://www.sjsu.edu/counseling/,counseling-psych,Counseling Services,True,3880\n"
+)
+
+
+def _seed_file(tmp_path, body, name="url-list.csv") -> Path:
+    path = tmp_path / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _page(url="https://www.sjsu.edu/advising/", section="academic-advising", title="Advising"):
+    return {"url": url, "section": section, "title": title}
+
+
+# --- The crawl list: a bad list must raise, never come back short ------------------------------
+
+
+def test_load_seed_pages_reads_required_columns_and_ignores_the_rest(tmp_path):
+    pages = scraper.load_seed_pages(_seed_file(tmp_path, SEED_HEADER + SEED_ROWS))
+    assert pages == [
+        {
+            "url": "https://www.sjsu.edu/advising/",
+            "section": "academic-advising",
+            "title": "Academic Advising",
+        },
+        {
+            "url": "https://www.sjsu.edu/counseling/",
+            "section": "counseling-psych",
+            "title": "Counseling Services",
+        },
+    ]
+
+
+def test_load_seed_pages_preserves_file_order(tmp_path):
+    reversed_rows = "".join(reversed(SEED_ROWS.splitlines(keepends=True)))
+    pages = scraper.load_seed_pages(_seed_file(tmp_path, SEED_HEADER + reversed_rows))
+    assert [p["section"] for p in pages] == ["counseling-psych", "academic-advising"]
+
+
+def test_a_missing_crawl_list_raises_rather_than_scraping_nothing(tmp_path):
+    # THE failure this guard exists for. Returning [] here would hand prune_stale_objects an empty
+    # expected set, which deletes every document in the knowledge base and then re-ingests nothing.
+    with pytest.raises(scraper.SeedListError, match="not found"):
+        scraper.load_seed_pages(tmp_path / "absent.csv")
+
+
+def test_a_header_only_crawl_list_raises(tmp_path):
+    with pytest.raises(scraper.SeedListError, match="no pages"):
+        scraper.load_seed_pages(_seed_file(tmp_path, SEED_HEADER))
+
+
+def test_an_empty_crawl_list_raises(tmp_path):
+    with pytest.raises(scraper.SeedListError):
+        scraper.load_seed_pages(_seed_file(tmp_path, ""))
+
+
+@pytest.mark.parametrize("dropped", scraper.SEED_COLUMNS)
+def test_a_missing_required_column_raises_naming_the_column(tmp_path, dropped):
+    # `section` is as required as `url`: it rides into the metadata sidecar, and app/cards.py keys
+    # its ranking and follow-up buttons off it. A sectionless page still answers questions, so the
+    # degradation would otherwise be invisible.
+    columns = [c for c in ("url", "section", "title") if c != dropped]
+    body = ",".join(columns) + "\n" + ",".join(f"v-{c}" for c in columns) + "\n"
+    with pytest.raises(scraper.SeedListError, match=dropped):
+        scraper.load_seed_pages(_seed_file(tmp_path, body))
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ",academic-advising,Advising\n",
+        "https://www.sjsu.edu/advising/,,Advising\n",
+        "https://www.sjsu.edu/advising/,academic-advising,\n",
+        "https://www.sjsu.edu/advising/,   ,Advising\n",
+    ],
+)
+def test_a_blank_cell_raises_with_the_line_number(tmp_path, row):
+    body = "url,section,title\n" + row
+    with pytest.raises(scraper.SeedListError, match="line 2"):
+        scraper.load_seed_pages(_seed_file(tmp_path, body))
+
+
+@pytest.mark.parametrize(
+    "url", ["www.sjsu.edu/advising/", "ftp://www.sjsu.edu/advising/", "/advising/", "javascript:0"]
+)
+def test_a_non_http_url_raises(tmp_path, url):
+    body = f"url,section,title\n{url},academic-advising,Advising\n"
+    with pytest.raises(scraper.SeedListError, match="not an http"):
+        scraper.load_seed_pages(_seed_file(tmp_path, body))
+
+
+def test_a_duplicate_url_raises(tmp_path):
+    # Duplicates are not merely wasteful: the same slug would be uploaded twice per run, and a
+    # copy-paste duplicate usually means a row that was meant to be edited and was not.
+    body = (
+        "url,section,title\n"
+        "https://www.sjsu.edu/advising/,academic-advising,Advising\n"
+        "https://www.sjsu.edu/counseling/,counseling-psych,Counseling\n"
+        "https://www.sjsu.edu/advising/,academic-advising,Advising Again\n"
+    )
+    with pytest.raises(scraper.SeedListError, match="line 4"):
+        scraper.load_seed_pages(_seed_file(tmp_path, body))
+
+
+def test_an_unreadable_crawl_list_raises_as_a_seed_list_error(tmp_path):
+    # Invalid UTF-8 (a truncated multi-byte sequence) is what a corrupted asset looks like. It must
+    # surface as SeedListError so the handler's fatal path catches the same class either way.
+    path = tmp_path / "url-list.csv"
+    path.write_bytes(b"url,section,title\nhttps://x/a,sec,\xff\xfe title\n")
+    with pytest.raises(scraper.SeedListError, match="could not be read"):
+        scraper.load_seed_pages(path)
+
+
+def test_the_real_crawl_list_is_valid_and_complete():
+    """The committed url-list.csv itself, not a fixture. This is the file that ships as the
+    Lambda layer, so a truncated or half-edited commit should fail here rather than at 11:30 UTC.
+
+    The expected count is derived from the file rather than hardcoded, so adding pages is a
+    one-file edit - but a truncated file still fails, because the rows it kept would not match."""
+    path = Path(__file__).resolve().parents[2] / "url-list.csv"
+    pages = scraper.load_seed_pages(path)
+
+    with open(path, newline="", encoding="utf-8") as fh:
+        data_rows = [r for r in csv.DictReader(fh) if (r.get("url") or "").strip()]
+    assert len(pages) == len(data_rows)
+    assert len(pages) > 1
+    assert all(p["url"].startswith("https://") for p in pages)
+    assert all(p["section"] and p["title"] for p in pages)
+
+
+def test_seed_urls_is_the_configured_corpus_in_order():
+    pages = [_page(url="https://x/a"), _page(url="https://x/b")]
+    assert scraper.seed_urls(pages) == ["https://x/a", "https://x/b"]
+
+
+# --- slugify -----------------------------------------------------------------------------------
+
+
+def test_slugify_is_deterministic():
+    url = "https://www.sjsu.edu/advising/index.php"
+    assert scraper.slugify_url(url) == scraper.slugify_url(url)
+
+
+def test_slugify_is_filesystem_safe_and_readable():
+    slug = scraper.slugify_url("https://www.sjsu.edu/advising/index.php")
+    # Only lowercase alphanumerics and hyphens; readable host/path retained.
+    assert re.fullmatch(r"[a-z0-9-]+", slug)
+    assert slug.startswith("www-sjsu-edu-advising-index-php-")
+
+
+def test_slugify_distinct_urls_do_not_collide():
+    # Same slugified path but different query strings must yield different filenames.
+    a = scraper.slugify_url("https://www.sjsu.edu/search?q=advising")
+    b = scraper.slugify_url("https://www.sjsu.edu/search?q=aid")
+    assert a != b
+
+
+def test_slugify_root_path_becomes_index():
+    slug = scraper.slugify_url("https://www.sjsu.edu/")
+    assert slug.startswith("www-sjsu-edu-index-") or slug.startswith("www-sjsu-edu-")
+
+
+# --- metadata ----------------------------------------------------------------------------------
+
+
+def test_build_metadata_shape_and_injected_timestamp():
+    md = scraper.build_metadata(
+        "https://www.sjsu.edu/advising",
+        "https://www.sjsu.edu/advising/",
+        "Academic Advising",
+        "academic-advising",
+        "some markdown body",
+        timestamp="2026-08-05T00:00:00Z",
+    )
+    assert md == {
+        "source_url": "https://www.sjsu.edu/advising",
+        "fetched_url": "https://www.sjsu.edu/advising/",
+        "title": "Academic Advising",
+        "section": "academic-advising",
+        "scrape_timestamp": "2026-08-05T00:00:00Z",
+        "content_chars": len("some markdown body"),
+        "scraper_version": scraper.SCRAPER_VERSION,
+    }
+
+
+def test_metadata_has_required_attribution_keys():
+    md = scraper.build_metadata("u", "u", None, "sec", "x", timestamp="2026-08-05T00:00:00Z")
+    # section is on this list, not optional: it is what cards.py ranks and routes on.
+    for key in ("source_url", "title", "section", "scrape_timestamp"):
+        assert key in md
+
+
+# --- extraction (static fixture, no network) ---------------------------------------------------
+
+
+def test_extract_markdown_keeps_article_drops_boilerplate():
+    title, markdown = scraper.extract_markdown(FIXTURE_HTML, url="https://www.sjsu.edu/advising/")
+    assert markdown, "expected non-empty markdown from the fixture"
+    # Main content survives.
+    assert "Monday through Friday" in markdown
+    assert "academic probation" in markdown
+    # Boilerplate is stripped.
+    assert "Admissions" not in markdown
+    assert "Quick Links" not in markdown
+    assert "All rights reserved" not in markdown
+    # Title extracted (site suffix may or may not be trimmed by trafilatura).
+    assert title and "Academic Advising" in title
+
+
+# --- replacement-char scrubbing (baked-in source mojibake, no network) -------------------------
+
+
+def test_scrub_replacement_chars():
+    assert scraper._scrub_replacement_chars("studentï¿½s") == "students"  # "ï¿½" triple
+    assert scraper._scrub_replacement_chars("a�b") == "ab"  # bare U+FFFD
+    assert scraper._scrub_replacement_chars("clean text") == "clean text"
+    assert scraper._scrub_replacement_chars(None) is None
+    assert scraper._scrub_replacement_chars("") == ""
+
+
+def test_extract_markdown_scrubs_baked_in_mojibake():
+    _title, markdown = scraper.extract_markdown(
+        FIXTURE_MOJIBAKE_HTML, url="https://www.sjsu.edu/counseling/"
+    )
+    assert markdown
+    assert "ï¿½" not in markdown, "baked-in 'ï¿½' garbage still present"
+    assert "�" not in markdown, "bare U+FFFD still present"
+    assert "students mental health" in markdown  # "student[ï¿½]s" -> garbage stripped
+
+
+# --- table flattening (layout tables -> flat prose, no network) --------------------------------
+
+
+def test_flatten_markdown_tables_unit():
+    src = (
+        "# Title\n\n"
+        "| FAFSA priority deadline -- March 2. | |\n"
+        "| --- | --- |\n"
+        "| Phone: (408) 283-7500 | Email: fao@sjsu.edu |\n\n"
+        "Regular paragraph.\n"
+    )
+    out = scraper._flatten_markdown_tables(src)
+    lines = out.split("\n")
+    # No markdown-table markup survives.
+    assert "| |" not in out
+    assert not any(ln.strip().startswith("|") for ln in lines)
+    # Heading and non-table prose pass through untouched.
+    assert "# Title" in lines
+    assert "Regular paragraph." in lines
+    # Separator row dropped; content cells become their own prose lines.
+    assert "FAFSA priority deadline -- March 2." in lines
+    assert "Phone: (408) 283-7500" in lines
+    assert "Email: fao@sjsu.edu" in lines
+
+
+def test_extract_markdown_flattens_layout_tables_to_prose():
+    _title, markdown = scraper.extract_markdown(
+        FIXTURE_TABLE_HTML, url="https://www.sjsu.edu/faso/deadlines/"
+    )
+    assert markdown
+    # No table markup: no empty-cell junk, and no line is a table row.
+    assert "| |" not in markdown
+    assert not any(ln.strip().startswith("|") for ln in markdown.split("\n"))
+    # Cell TEXT is preserved as flat prose.
+    assert "FAFSA priority deadline -- March 2 for the following academic year." in markdown
+    assert "Phone: (408) 283-7500" in markdown
+    assert "Email: fao@sjsu.edu" in markdown
+    assert "San Jose, CA 95192" in markdown
+    # Headings survive (include_tables stays True; we only strip pipes).
+    assert "# Financial Aid Deadlines" in markdown
+
+
+# --- fetch handling (mocked) -------------------------------------------------------------------
+
+
+def _client(handler) -> httpx.Client:
+    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
+def test_scrape_page_success_carries_the_curated_section(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, html=FIXTURE_HTML)
+
+    page = _page(section="academic-advising")
+    with _client(handler) as client:
+        result = scraper.scrape_page(page, client)
+
+    assert result.ok
+    assert "Monday through Friday" in result.markdown
+    assert result.section == "academic-advising"
+    # And it reaches the sidecar, which is where retrieval and cards.py read it back out.
+    assert result.metadata["section"] == "academic-advising"
+    assert result.metadata["source_url"] == page["url"]
+    assert result.metadata["content_chars"] == len(result.markdown)
+
+
+def test_scrape_page_scrubs_mojibake_end_to_end():
+    # Server sends the page correctly as UTF-8 (as the real site does); the baked-in "ï¿½" garbage
+    # must be scrubbed out of the result markdown end to end.
+    def handler(request):
+        return httpx.Response(
+            200,
+            content=FIXTURE_MOJIBAKE_HTML.encode("utf-8"),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(url="https://www.sjsu.edu/counseling/"), client)
+
+    assert result.ok
+    assert "ï¿½" not in result.markdown
+    assert "�" not in result.markdown
+    assert "students mental health" in result.markdown
+
+
+def test_scrape_page_falls_back_to_the_curated_title():
+    # A page whose <title> trafilatura cannot read must still cite as something a student
+    # recognizes rather than as a null - the crawl list's title is the safety net.
+    def handler(request):
+        return httpx.Response(
+            200,
+            html="<html><body><main><article><p>"
+            + ("Peer connections run drop-in groups every weekday afternoon. " * 6)
+            + "</p></article></main></body></html>",
+        )
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(title="Peer Connections"), client)
+
+    assert result.ok
+    assert result.title == "Peer Connections"
+    assert result.metadata["title"] == "Peer Connections"
+
+
+def test_scrape_page_404_is_graceful_and_keeps_its_section():
+    def handler(request):
+        return httpx.Response(404, text="Not Found")
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(url="https://www.sjsu.edu/gone/"), client)
+
+    assert result.ok is False
+    assert result.error == "HTTP 404"
+    assert result.section == "academic-advising"
+    assert result.markdown is None
+    assert result.metadata is None
+
+
+def test_scrape_page_network_error_is_graceful():
+    def handler(request):
+        raise httpx.ConnectError("dns failure", request=request)
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(url="https://nope.invalid/"), client)
+
+    assert result.ok is False
+    assert "ConnectError" in result.error
+    assert result.markdown is None
+
+
+def test_scrape_page_with_no_extractable_content_fails_gracefully():
+    def handler(request):
+        return httpx.Response(200, html="<html><body></body></html>")
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(), client)
+
+    assert result.ok is False
+    assert result.error == "no content extracted"
+
+
+def test_scrape_pages_continues_past_a_failure():
+    good = "https://www.sjsu.edu/advising/"
+    bad = "https://www.sjsu.edu/gone/"
+
+    def handler(request):
+        if str(request.url) == bad:
+            return httpx.Response(404, text="Not Found")
+        return httpx.Response(200, html=FIXTURE_HTML)
+
+    pages = [_page(url=good), _page(url=bad, section="financial-aid")]
+    with _client(handler) as client:
+        results = scraper.scrape_pages(pages, client=client)
+
+    # One result per input page, in input order, and one failure does not abort the run.
+    assert len(results) == 2
+    assert results[0].ok is True
+    assert results[1].ok is False
+    assert results[1].section == "financial-aid"
+
+
+# --- write_result (tmp dir) --------------------------------------------------------------------
+
+
+def test_write_result_creates_md_and_json(tmp_path):
+    result = scraper.ScrapeResult(
+        url="https://www.sjsu.edu/advising/",
+        slug="www-sjsu-edu-advising-deadbeef",
+        section="academic-advising",
+        ok=True,
+        title="Academic Advising",
+        markdown="# Academic Advising\n\nOpen weekdays.",
+        metadata={"source_url": "https://www.sjsu.edu/advising/", "title": "Academic Advising"},
+    )
+    md_path = scraper.write_result(result, tmp_path)
+    json_path = tmp_path / f"{result.slug}.json"
+
+    assert md_path.exists()
+    assert md_path.read_text(encoding="utf-8").startswith("# Academic Advising")
+    assert json.loads(json_path.read_text(encoding="utf-8"))["title"] == "Academic Advising"
+
+
+def test_write_result_skips_failed(tmp_path):
+    result = scraper.ScrapeResult(url="u", slug="s", section="sec", ok=False, error="HTTP 404")
+    assert scraper.write_result(result, tmp_path) is None
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- CLI ---------------------------------------------------------------------------------------
+
+
+def test_cli_exits_2_on_a_bad_crawl_list_without_scraping(tmp_path, monkeypatch):
+    # Same fatal treatment as the Lambda: a bad list is a hard stop, not a zero-page run. The
+    # scrape must not even be attempted, which is what the exploding stub proves.
+    def explode(*a, **kw):
+        raise AssertionError("scrape_pages must not run when the crawl list is unusable")
+
+    monkeypatch.setattr(scraper, "scrape_pages", explode)
+    code = scraper.main(["--url-list", str(tmp_path / "absent.csv"), "--output-dir", str(tmp_path)])
+    assert code == 2
+
+
+def test_cli_section_filter_scrapes_only_that_section(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_scrape(pages, **kw):
+        captured["pages"] = pages
+        return []
+
+    monkeypatch.setattr(scraper, "scrape_pages", fake_scrape)
+    seed = _seed_file(tmp_path, SEED_HEADER + SEED_ROWS)
+    code = scraper.main(
+        [
+            "--url-list",
+            str(seed),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--section",
+            "counseling-psych",
+        ]
+    )
+    assert code == 0
+    assert [p["url"] for p in captured["pages"]] == ["https://www.sjsu.edu/counseling/"]
+
+
+def test_cli_unknown_section_exits_2(tmp_path, monkeypatch):
+    monkeypatch.setattr(scraper, "scrape_pages", lambda pages, **kw: [])
+    seed = _seed_file(tmp_path, SEED_HEADER + SEED_ROWS)
+    code = scraper.main(
+        ["--url-list", str(seed), "--output-dir", str(tmp_path / "out"), "--section", "nope"]
+    )
+    assert code == 2
+
+
+def test_cli_limit_caps_the_page_count(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_scrape(pages, **kw):
+        captured["pages"] = pages
+        return []
+
+    monkeypatch.setattr(scraper, "scrape_pages", fake_scrape)
+    seed = _seed_file(tmp_path, SEED_HEADER + SEED_ROWS)
+    scraper.main(["--url-list", str(seed), "--output-dir", str(tmp_path / "out"), "--limit", "1"])
+    assert len(captured["pages"]) == 1
+
+
+def test_cli_reports_a_partial_failure_with_exit_1(tmp_path, monkeypatch):
+    ok = scraper.ScrapeResult(
+        url="https://x/a",
+        slug="x-a",
+        section="academic-advising",
+        ok=True,
+        title="A",
+        markdown="# A\n\nbody",
+        metadata={"source_url": "https://x/a", "content_chars": 11},
+    )
+    bad = scraper.ScrapeResult(url="https://x/b", slug="x-b", section="sec", ok=False, error="HTTP 404")
+    monkeypatch.setattr(scraper, "scrape_pages", lambda pages, **kw: [ok, bad])
+    seed = _seed_file(tmp_path, SEED_HEADER + SEED_ROWS)
+    out_dir = tmp_path / "out"
+
+    code = scraper.main(["--url-list", str(seed), "--output-dir", str(out_dir)])
+
+    assert code == 1
+    assert (out_dir / "x-a.md").exists()
+    assert not (out_dir / "x-b.md").exists()

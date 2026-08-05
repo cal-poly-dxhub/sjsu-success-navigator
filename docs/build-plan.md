@@ -14,7 +14,7 @@ L1 property values. Nothing pre-flights those without an account.
 
 - [x] pull gav config skeleton and synth validators, renamed with no hardcoded global names
 - [x] pull gav kb section, repointed at our source bucket and chunking values
-- [ ] pull gav scraper shell, crawling the curated url list from config on a single daily schedule (no tiers); sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
+- [x] pull gav scraper shell, crawling the curated url list from config on a single daily schedule (no tiers); sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
 - [ ] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases
 - [ ] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced
 - [ ] pull camp card parsing and the pre-model safety intercept as-is
@@ -35,9 +35,21 @@ distribution domain into its cors allowlist. Not frozen after its commit.
 ## Open
 
 - [ ] astro build: bundle at deploy, or commit dist/
+- [ ] content-hash stability is unmeasured on sjsu.edu: gav's corpus scraped
+      byte-identical twice, ours has never been scraped at all (needs account).
+      A per-render nonce or a rotating banner inside an extracted body would
+      defeat upload gating for that page - visible as a `pages_changed` count
+      that never drops to zero.
 
 ## Resolved (2026-08-05)
 
+- crawl list transport: a SECOND Lambda layer carrying `url-list.csv`, with only
+  the filename in `URL_LIST_FILE`. Forced, not preferred: Lambda caps all
+  environment variables at 4 KB in aggregate (hard, not raisable), and the list
+  is 19 KB as compact url/section JSON - 2.9 KB even gzipped and base64'd. Gav's
+  `SCRAPER_TIERS` env transport does not survive the scale-up. A layer rather
+  than the function bundle because the list sits at the repo root and
+  `Code.from_asset` takes one directory.
 - scraper cadence: DAILY, single schedule, no tiers. Cheap by calculation: 203
   pages scale gav's measured 19-pages-in-25-67s to ~4.5-12 min at 512MB
   (~$0.12/mo of Lambda), a full corpus re-embed is ~190K Titan tokens (<$0.01),
