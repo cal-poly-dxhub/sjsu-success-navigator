@@ -2,8 +2,8 @@
 #
 # Single source of truth for changeable knobs. The CDK app in infra/ reads this file
 # (resolved at the repo root, one level up from infra/) and wires the values into the
-# stack. Values here come from docs/synthesis.md "Decisions (2026-08-05)"; synth-time
-# validators land in the next commit (build-plan: "config skeleton and synth validators").
+# stack. Values here come from docs/synthesis.md "Decisions (2026-08-05)", and infra/config.py
+# validates this file at synth: an invalid value fails `cdk synth` rather than the deploy.
 
 knowledge_base:
   name: sjsu-navigator-kb
@@ -53,7 +53,7 @@ http_api:
   throttling_burst_limit: 20
 
 cors:
-  # Browser origin allowlist for the HTTP API. Never "*" (validator lands next commit).
+  # Browser origin allowlist for the HTTP API. Never "*" - synth rejects it.
   # The CloudFront distribution domain joins this list at deploy as a token.
   allow_origins:
     - http://localhost:4321   # DEV ONLY: astro dev server

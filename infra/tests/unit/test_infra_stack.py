@@ -1,8 +1,12 @@
-"""Scaffold assertions: config loads with the expected shape, and the stack
-synthesizes empty. Run from infra/ with `python -m pytest` (gav convention:
-cwd on sys.path makes `infra.*` resolve to infra/infra/)."""
+"""Scaffold assertions: config loads with the expected shape, the stack synthesizes
+empty, and an invalid config fails at synth rather than at deploy. Run from infra/ with
+`python -m pytest` (gav convention: cwd on sys.path makes `infra.*` resolve to
+infra/infra/)."""
+
+import copy
 
 import aws_cdk as cdk
+import pytest
 from aws_cdk.assertions import Template
 
 from infra.config import load_config
@@ -39,3 +43,13 @@ def test_scaffold_stack_synthesizes_empty():
     # anything else in a scaffold is a mistake.
     real = {k: v for k, v in resources.items() if v.get("Type") != "AWS::CDK::Metadata"}
     assert real == {}, f"scaffold stack must be empty, found: {sorted(real)}"
+
+
+def test_stack_rejects_an_invalid_config_at_synth():
+    """The validators are only worth having if the STACK runs them - a validator nothing
+    calls is a comment. Instantiating the stack must fail on a bad config, and it must fail
+    for a section that has not been built yet (here: cors, consumed by the API section)."""
+    config = copy.deepcopy(load_config())
+    config["cors"]["allow_origins"] = ["*"]
+    with pytest.raises(ValueError, match="must not contain"):
+        NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config)

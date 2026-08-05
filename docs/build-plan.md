@@ -12,7 +12,7 @@ L1 property values. Nothing pre-flights those without an account.
 
 ## Copy over and morph
 
-- [ ] pull gav config skeleton and synth validators, renamed with no hardcoded global names
+- [x] pull gav config skeleton and synth validators, renamed with no hardcoded global names
 - [ ] pull gav kb section, repointed at our source bucket and chunking values
 - [ ] pull gav scraper shell, crawling the curated url list from config on a single daily schedule (no tiers); sidecars carry `section` alongside source_url and title, or cards.py deprioritization and follow-ups degrade silently
 - [ ] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases

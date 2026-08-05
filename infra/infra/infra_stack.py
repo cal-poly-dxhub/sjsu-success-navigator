@@ -15,13 +15,17 @@ pull is a copy + rename, not a re-architecture):
   6. Site bucket + CloudFront (OAC) + Astro deploy
      + config.json stamping                           ("pull gav frontend s3 + cloudfront")
 
-All changeable knobs come from the repo-root config.yaml (see infra/config.py).
+All changeable knobs come from the repo-root config.yaml (see infra/config.py), which
+also validates the file at synth - the L1 Cfn* constructs used below do not check any
+property constraints themselves.
 """
 
 from typing import Any, Dict
 
 from aws_cdk import Stack
 from constructs import Construct
+
+from infra.config import validate_config
 
 
 class NavigatorStack(Stack):
@@ -34,6 +38,12 @@ class NavigatorStack(Stack):
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # Validate the WHOLE config before creating anything, including blocks whose
+        # sections are not built yet. L1 Cfn* constructs do not check property constraints
+        # at synth, so without this the first sign of a bad value is a failed deploy - or,
+        # for an immutable property, a replacement of a resource that already holds data.
+        validate_config(config)
 
         # Held for the sections below; the scaffold intentionally creates nothing.
         self._config = config

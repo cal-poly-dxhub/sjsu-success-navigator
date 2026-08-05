@@ -1,4 +1,4 @@
-"""Load the repo-root config.yaml for the CDK app.
+"""Load and VALIDATE the repo-root config.yaml for the CDK app.
 
 config.yaml is the single source of truth for changeable knobs. This module resolves it
 relative to __file__ so it works no matter what the current working directory is.
@@ -6,18 +6,76 @@ relative to __file__ so it works no matter what the current working directory is
 Layout: this file is <repo>/infra/infra/config.py, so the repo root is parents[2] and
 config.yaml sits directly under it.
 
-The synth-time validators (CORS wildcard rejection, scraper URL-list checks) land in
-the next commit - build-plan: "pull gav config skeleton and synth validators". This
-scaffold carries only the loader so the stack and tests have a config home now.
+WHY VALIDATORS EXIST AT ALL, given the stack synthesizes fine without them: the stack is
+L1 `Cfn*` all the way down, and L1 constructs do NOT enforce CloudFormation's property
+constraints at synth. A name that violates a service's pattern, a dimension the embedding
+model does not emit, a wildcard CORS origin - every one of those synthesizes clean and
+first fails at deploy, some of them AFTER creating half the stack. These functions move
+that enforcement to synth, where it costs nothing to be wrong.
+
+NAMING CONVENTION, which every later stack section inherits: no global name is written in
+the stack. Bucket, knowledge base, index, function and schedule names all derive from this
+file, and the derivation lives HERE rather than inline in the stack, so there is exactly
+one place a name is spelled. The consequence, accepted deliberately (gav does the same):
+config.yaml carries literal names, so standing the stack up a SECOND time in one account
+means editing config.yaml first. Two deploys of an unedited config collide on the vector
+bucket name and the KB name. That is a config edit, not a code change.
 """
 
+import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config.yaml"
+
+# Bedrock's name pattern for AWS::Bedrock::KnowledgeBase.Name and
+# AWS::Bedrock::DataSource.Name, verbatim from the CloudFormation resource reference
+# (verified 2026-08-05). Read it as up to 100 groups of "one alphanumeric, then AT MOST ONE
+# - or _". So it rejects a LEADING separator and any doubled separator ("--"), it ALLOWS a
+# trailing one, and the group count caps the name at 200 characters. The data source name is
+# BUILT by folding the chunk config into the KB name (see resolve_data_source_name), so it is
+# the likelier of the two to trip this - which is why it is checked here, at synth, rather
+# than discovered when the deploy fails.
+_BEDROCK_NAME_RE = re.compile(r"^([0-9a-zA-Z][_-]?){1,100}$")
+
+# S3 Vectors bucket + index names: 3-63 chars, and the charset is the one the service's
+# own ARN pattern admits - `[a-z0-9][a-z0-9-.]{1,61}[a-z0-9]` (verified against the
+# CreateVectorBucket / CreateIndex API reference, 2026-08-05). Lowercase only; no
+# underscores, which is the difference from the Bedrock pattern above and an easy way to
+# author a config that half-validates.
+_S3_VECTORS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+_S3_VECTORS_NAME_MIN = 3
+_S3_VECTORS_NAME_MAX = 63
+
+# S3 Vectors caps non-filterable metadata keys at 10 PER INDEX, and the setting is
+# IMMUTABLE after the index is created - so exceeding it is not a deploy that fails and
+# gets fixed, it is an index that has to be replaced (taking the KB with it).
+_MAX_NON_FILTERABLE_KEYS = 10
+
+# Vector dimensions the embedding model actually emits. Titan Text Embeddings v2 supports
+# 1024 (default), 512 and 256 (verified against the Bedrock model reference, 2026-08-05).
+# The index dimension MUST equal the model's output or every ingestion fails, and the
+# index dimension is immutable, so a mismatch is another replacement rather than a fix.
+_EMBEDDING_MODEL_DIMENSIONS = {
+    "amazon.titan-embed-text-v2:0": (1024, 512, 256),
+}
+# S3 Vectors' own hard range, for an embedding model not in the table above.
+_DIMENSION_MIN = 1
+_DIMENSION_MAX = 4096
+
+# Bedrock's chunking strategies. v1 uses FIXED_SIZE (gav's baseline); the others are
+# listed so an unsupported value is named as unsupported rather than silently passed to a
+# CfnDataSource that will reject it at deploy.
+_CHUNKING_STRATEGIES = ("FIXED_SIZE", "NONE", "HIERARCHICAL", "SEMANTIC")
+
+# Columns url-list.csv must carry. `section` is load-bearing beyond provenance: it reaches
+# the metadata sidecars, and the card builder keys its deprioritization and its follow-up
+# buttons off it. A blank section degrades SILENTLY (a card just stops being deprioritized
+# and loses its tailored follow-up), which is why it is required here rather than defaulted.
+_SEED_COLUMNS = ("url", "section", "title")
 
 
 def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
@@ -25,3 +83,375 @@ def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def _require_mapping(config: Dict[str, Any], section: str) -> Dict[str, Any]:
+    """One top-level config block, or a synth-time error naming the block."""
+    block = config.get(section)
+    if not isinstance(block, dict):
+        raise ValueError(
+            f"config.yaml is missing the `{section}` block (or it is not a mapping) - "
+            "every stack section reads its knobs from config, never from a literal in the stack."
+        )
+    return block
+
+
+def _positive_int(block: Dict[str, Any], section: str, key: str) -> int:
+    """A positive integer knob, or a synth-time error. `bool` is rejected explicitly
+    because it is an int subclass in Python, so `True` would otherwise pass as 1."""
+    value = block.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{section}.{key} must be a positive integer (got {value!r}).")
+    return value
+
+
+def _non_empty_str(block: Dict[str, Any], section: str, key: str) -> str:
+    """A non-empty string knob, or a synth-time error."""
+    value = block.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{section}.{key} must be a non-empty string (got {value!r}).")
+    return value.strip()
+
+
+def _check_bedrock_name(name: str, field: str) -> str:
+    """Validate a Bedrock resource name against the service's own pattern."""
+    if not _BEDROCK_NAME_RE.match(name):
+        raise ValueError(
+            f"{field} is not a valid Bedrock resource name: {name!r}. Bedrock requires "
+            "alphanumeric groups joined by at most one '-' or '_' each (max 100 groups), so "
+            "a leading/trailing separator or a doubled '--' is rejected - at DEPLOY time, "
+            "since L1 Cfn* constructs do not check patterns at synth."
+        )
+    return name
+
+
+def _check_s3_vectors_name(name: str, field: str) -> str:
+    """Validate an S3 Vectors bucket or index name against the service's own rules."""
+    if not (_S3_VECTORS_NAME_MIN <= len(name) <= _S3_VECTORS_NAME_MAX):
+        raise ValueError(
+            f"{field} must be {_S3_VECTORS_NAME_MIN}-{_S3_VECTORS_NAME_MAX} characters "
+            f"(got {len(name)}: {name!r})."
+        )
+    if not _S3_VECTORS_NAME_RE.match(name):
+        raise ValueError(
+            f"{field} is not a valid S3 Vectors name: {name!r}. Allowed: lowercase letters, "
+            "digits, '-' and '.', starting and ending with a letter or digit. Note there are "
+            "NO underscores and NO uppercase here, unlike the Bedrock name pattern."
+        )
+    return name
+
+
+def resolve_knowledge_base(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `knowledge_base` block: KB name, embedding model, vector dimension.
+
+    The embedding model and its 1024 dimensions are INHERITED FROM GAV, not chosen here
+    (docs/synthesis.md, "Decisions (2026-08-05)") - gav's exact vector-store shape, which
+    is what makes its KB section a copy rather than a re-derivation.
+
+    The dimension is cross-checked against what the embedding model actually emits: they
+    must be equal or every ingestion fails with a ValidationException, and since the index
+    dimension is immutable the fix is an index replacement (which takes the KB with it).
+    """
+    kb_cfg = _require_mapping(config, "knowledge_base")
+    name = _check_bedrock_name(
+        _non_empty_str(kb_cfg, "knowledge_base", "name"), "knowledge_base.name"
+    )
+    embedding_model_id = _non_empty_str(
+        kb_cfg, "knowledge_base", "embedding_model_id"
+    )
+    dimension = _positive_int(kb_cfg, "knowledge_base", "vector_dimension")
+
+    supported = _EMBEDDING_MODEL_DIMENSIONS.get(embedding_model_id)
+    if supported is not None:
+        if dimension not in supported:
+            raise ValueError(
+                f"knowledge_base.vector_dimension {dimension} is not an output size of "
+                f"{embedding_model_id} (supported: {', '.join(str(d) for d in supported)}). "
+                "The index dimension must equal the model's output or ingestion fails, and "
+                "the index dimension is immutable - so this is an index replacement, not a fix."
+            )
+    elif not (_DIMENSION_MIN <= dimension <= _DIMENSION_MAX):
+        # An embedding model this file has no table for: fall back to S3 Vectors' own range
+        # rather than pretending to know the model's output sizes.
+        raise ValueError(
+            f"knowledge_base.vector_dimension must be {_DIMENSION_MIN}-{_DIMENSION_MAX} "
+            f"(got {dimension}); S3 Vectors rejects anything outside that range."
+        )
+
+    return {
+        "name": name,
+        "embedding_model_id": embedding_model_id,
+        "vector_dimension": dimension,
+    }
+
+
+def resolve_vector_store(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `vector_store` block: S3 Vectors bucket/index names and index shape.
+
+    `non_filterable_metadata_keys` is the trap worth validating: Bedrock's internal
+    metadata keys are filterable by default and blow S3 Vectors' filterable-metadata limit,
+    failing EVERY ingestion, and the setting is immutable once the index exists. Capped at
+    10 keys per index by the service.
+    """
+    vs_cfg = _require_mapping(config, "vector_store")
+    vector_bucket_name = _check_s3_vectors_name(
+        _non_empty_str(vs_cfg, "vector_store", "vector_bucket_name"),
+        "vector_store.vector_bucket_name",
+    )
+    index_name = _check_s3_vectors_name(
+        _non_empty_str(vs_cfg, "vector_store", "index_name"), "vector_store.index_name"
+    )
+
+    data_type = _non_empty_str(vs_cfg, "vector_store", "data_type")
+    if data_type != "float32":
+        raise ValueError(
+            f"vector_store.data_type must be 'float32' (got {data_type!r}) - it is the only "
+            "data type S3 Vectors supports."
+        )
+    distance_metric = _non_empty_str(vs_cfg, "vector_store", "distance_metric")
+    if distance_metric not in ("cosine", "euclidean"):
+        raise ValueError(
+            f"vector_store.distance_metric must be 'cosine' or 'euclidean' (got "
+            f"{distance_metric!r})."
+        )
+
+    keys = vs_cfg.get("non_filterable_metadata_keys")
+    if not keys or not isinstance(keys, list) or not all(isinstance(k, str) and k.strip() for k in keys):
+        raise ValueError(
+            "vector_store.non_filterable_metadata_keys must be a non-empty list of key "
+            "strings. Bedrock's internal metadata keys have to be marked non-filterable or "
+            "every ingestion fails on S3 Vectors' filterable-metadata limit."
+        )
+    if len(keys) > _MAX_NON_FILTERABLE_KEYS:
+        raise ValueError(
+            f"vector_store.non_filterable_metadata_keys holds {len(keys)} keys; S3 Vectors "
+            f"allows at most {_MAX_NON_FILTERABLE_KEYS} per index. This setting is IMMUTABLE "
+            "after index creation, so exceeding it means replacing the index, not editing it."
+        )
+    if len(set(keys)) != len(keys):
+        raise ValueError(
+            "vector_store.non_filterable_metadata_keys contains duplicates; each duplicate "
+            f"spends one of the {_MAX_NON_FILTERABLE_KEYS} available slots for nothing."
+        )
+
+    return {
+        "vector_bucket_name": vector_bucket_name,
+        "index_name": index_name,
+        "data_type": data_type,
+        "distance_metric": distance_metric,
+        "non_filterable_metadata_keys": list(keys),
+    }
+
+
+def resolve_chunking(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `chunking` block, plus the name suffix that encodes it.
+
+    FIXED_SIZE 600 tokens / 20% overlap is INHERITED FROM GAV as the starting baseline
+    (docs/synthesis.md), to be retuned with the eval once an account exists - not a value
+    chosen against this corpus.
+
+    CHANGING CHUNKING IS A DATA-SOURCE REPLACEMENT, NOT A CONFIG TWEAK. Bedrock chunking is
+    immutable, so any edit here makes CloudFormation replace the data source - and it
+    replaces by creating the new one BEFORE deleting the old, which collides on a fixed name
+    and kills the deploy mid-update with `409 AlreadyExists`. `name_suffix` (gav's trick) is
+    what keeps the replacement name distinct; resolve_data_source_name folds it in. Two
+    further consequences of a chunking edit, neither visible at synth: the replacement data
+    source starts EMPTY, and `cdk deploy` does not refill it (the install trigger only
+    re-fires on scraper change), so ingestion needs a manual kick afterward.
+    """
+    chunking_cfg = _require_mapping(config, "chunking")
+    strategy = _non_empty_str(chunking_cfg, "chunking", "strategy")
+    if strategy not in _CHUNKING_STRATEGIES:
+        raise ValueError(
+            f"chunking.strategy {strategy!r} is not a Bedrock chunking strategy "
+            f"({', '.join(_CHUNKING_STRATEGIES)})."
+        )
+    if strategy != "FIXED_SIZE":
+        raise ValueError(
+            f"chunking.strategy is {strategy!r}, but the stack only wires FIXED_SIZE "
+            "chunking (gav's baseline). Supporting another strategy is a code change in the "
+            "KB section, not a config edit - otherwise the strategy name and the chunking "
+            "configuration the data source actually gets would disagree silently."
+        )
+
+    max_tokens = _positive_int(chunking_cfg, "chunking", "max_tokens")
+    overlap = chunking_cfg.get("overlap_percentage")
+    if isinstance(overlap, bool) or not isinstance(overlap, int) or not (1 <= overlap <= 99):
+        raise ValueError(
+            f"chunking.overlap_percentage must be an integer 1-99 (got {overlap!r}); Bedrock "
+            "expresses overlap as a percentage of max_tokens."
+        )
+
+    return {
+        "strategy": strategy,
+        "max_tokens": max_tokens,
+        "overlap_percentage": overlap,
+        # e.g. "fixedsize-600t20p". Underscores are dropped rather than kept because this
+        # rides inside a Bedrock name, and the pattern allows at most one separator between
+        # alphanumeric groups.
+        "name_suffix": f"{strategy.lower().replace('_', '')}-{max_tokens}t{overlap}p",
+    }
+
+
+def resolve_data_source_name(config: Dict[str, Any]) -> str:
+    """The KB's S3 data source name, with the chunking configuration folded in.
+
+    THE NAME CARRIES THE CHUNKING CONFIG ON PURPOSE - see resolve_chunking for why a fixed
+    name turns a chunking edit into a failed deploy. Built here rather than in the stack so
+    the fold and the pattern check live in one place: the fold is what makes the name long
+    and separator-heavy enough to violate Bedrock's name pattern, so the two belong together.
+    """
+    kb_name = resolve_knowledge_base(config)["name"]
+    suffix = resolve_chunking(config)["name_suffix"]
+    return _check_bedrock_name(f"{kb_name}-s3-{suffix}", "the derived data source name")
+
+
+def resolve_scraper(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `scraper` block: single daily schedule, HTTP knobs, and the crawl-list filename.
+
+    ONE schedule, no tiers (docs/synthesis.md): 203 curated pages are cheap enough to sweep
+    daily, and change gating means an unchanged day pays only the Lambda run. A missing cron
+    is validated rather than defaulted because its failure mode is a Lambda that nothing ever
+    invokes - a corpus that silently stops refreshing, visible only as stale answers later.
+    """
+    scraper_cfg = _require_mapping(config, "scraper")
+    schedule_cron = _non_empty_str(scraper_cfg, "scraper", "schedule_cron")
+    if not (schedule_cron.startswith("cron(") and schedule_cron.endswith(")")):
+        raise ValueError(
+            f"scraper.schedule_cron must be an EventBridge cron expression of the form "
+            f"'cron(...)' (got {schedule_cron!r}). EventBridge cron has SIX fields and a "
+            "'?' in either day-of-month or day-of-week; a 5-field UNIX cron is rejected at "
+            "deploy, not here."
+        )
+    return {
+        "schedule_cron": schedule_cron,
+        "url_list_file": _non_empty_str(scraper_cfg, "scraper", "url_list_file"),
+        "timeout_seconds": _positive_int(scraper_cfg, "scraper", "timeout_seconds"),
+        "user_agent": _non_empty_str(scraper_cfg, "scraper", "user_agent"),
+    }
+
+
+def seed_list_path(config: Dict[str, Any]) -> Path:
+    """Absolute path to the curated crawl list named by `scraper.url_list_file`.
+
+    Resolved against the REPO ROOT, not the current working directory: synth runs from
+    infra/ and the list lives at the root (a decision - it is content, not infra).
+    """
+    return _REPO_ROOT / resolve_scraper(config)["url_list_file"]
+
+
+def resolve_seed_pages(config: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The curated crawl list as `[{"url", "section", "title"}]`, in file order.
+
+    This is the corpus as CONFIGURATION defines it - what a run fetches, and what the
+    stale-object prune keeps in the KB source bucket. Read and checked at synth so a broken
+    list fails the build rather than deploying a scraper with nothing to do.
+
+    Every check here guards a failure that is otherwise SILENT:
+      - a missing or empty file  -> a scraper that fetches nothing and prunes the entire
+        knowledge base on its first run
+      - a missing `section`      -> cards lose their deprioritization and their tailored
+        follow-up button, with nothing in the logs to say why
+      - a duplicate URL          -> the page is fetched twice per run for one S3 object
+    """
+    path = seed_list_path(config)
+    if not path.exists():
+        raise ValueError(
+            f"the crawl list named by scraper.url_list_file does not exist: {path}. It is "
+            "the scraper's only source of URLs, so a missing file means a run that fetches "
+            "nothing - and prunes everything."
+        )
+
+    # Imported here rather than at module scope: csv is needed by this one function, and
+    # keeping the import local mirrors how narrowly the crawl list is read.
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        columns = reader.fieldnames or []
+        missing = [c for c in _SEED_COLUMNS if c not in columns]
+        if missing:
+            raise ValueError(
+                f"{path.name} is missing required column(s): {', '.join(missing)}. Required: "
+                f"{', '.join(_SEED_COLUMNS)} (`section` reaches the metadata sidecars and "
+                "drives card deprioritization and follow-up buttons)."
+            )
+        rows = list(reader)
+
+    pages: List[Dict[str, str]] = []
+    seen: set = set()
+    for line_number, row in enumerate(rows, start=2):  # start=2: line 1 is the header
+        page = {}
+        for column in _SEED_COLUMNS:
+            value = (row.get(column) or "").strip()
+            if not value:
+                raise ValueError(
+                    f"{path.name} line {line_number}: `{column}` is empty. Every column in "
+                    f"{', '.join(_SEED_COLUMNS)} is required for every page."
+                )
+            page[column] = value
+        if not page["url"].startswith(("http://", "https://")):
+            raise ValueError(
+                f"{path.name} line {line_number}: {page['url']!r} is not an http(s) URL."
+            )
+        if page["url"] in seen:
+            raise ValueError(
+                f"{path.name} line {line_number}: {page['url']} is listed more than once. A "
+                "duplicate costs an extra fetch per run and writes the same S3 object twice."
+            )
+        seen.add(page["url"])
+        pages.append(page)
+
+    if not pages:
+        raise ValueError(
+            f"{path.name} has a valid header but no pages. An empty crawl list means the "
+            "scraper fetches nothing and its prune deletes the whole knowledge base."
+        )
+    return pages
+
+
+def validate_config(config: Dict[str, Any]) -> None:
+    """Run every validator, discarding the results.
+
+    The stack calls this ONCE at the top of __init__, before any construct exists. Without
+    it a validator only fires when the section that happens to consume it has been written,
+    so a config error in a not-yet-built section (a bad guardrail name, a CORS wildcard)
+    would sit undetected until that section lands. Calling everything up front makes `cdk
+    synth` the gate for the WHOLE file from this commit forward, not just the built part.
+
+    Cheap enough to be unconditional: YAML already parsed, plus one pass over a 203-row CSV.
+    """
+    resolve_knowledge_base(config)
+    resolve_vector_store(config)
+    resolve_chunking(config)
+    resolve_data_source_name(config)
+    resolve_scraper(config)
+    resolve_seed_pages(config)
+    resolve_cors_allow_origins(config)
+
+
+def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:
+    """The browser origin allowlist for the HTTP API, from config's `cors.allow_origins`.
+
+    There is no safe default here, so a missing/empty list is a synth-time error rather than
+    a silent fallback. A wildcard is rejected outright: the endpoint fans out to paid Bedrock
+    calls, and "*" would let any site drive it from its visitors' browsers.
+
+    CORS is browser-enforced only and is NOT a security boundary (curl ignores it) - stage
+    throttling and the Cognito gate are the actual cost caps. Entries are matched as EXACT
+    full origins, so each is scheme + host with no trailing slash and no path.
+    """
+    origins = (config.get("cors") or {}).get("allow_origins")
+    if not origins:
+        raise ValueError(
+            "config.yaml is missing cors.allow_origins - set the browser origin allowlist "
+            "for the HTTP API (e.g. https://www.sjsu.edu)."
+        )
+    if not isinstance(origins, list) or not all(isinstance(o, str) for o in origins):
+        raise ValueError("cors.allow_origins must be a list of origin strings.")
+    if any(o.strip() == "*" for o in origins):
+        raise ValueError(
+            "cors.allow_origins must not contain '*' - list the exact origins allowed to "
+            "call this endpoint from a browser."
+        )
+    return list(origins)
