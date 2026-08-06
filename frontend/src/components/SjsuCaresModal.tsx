@@ -4,9 +4,12 @@ import {
 	OFFICIAL_CAMPUS_CONTACTS,
 	SJSU_CARES_ACTIONS,
 	SJSU_CARES_CONTACTS,
+	SJSU_CARES_EMAIL,
+	SJSU_CARES_HOURS,
 	SJSU_CARES_LOCATION,
 	SJSU_CARES_NOTE,
 	SJSU_CARES_OVERVIEW,
+	SJSU_CARES_PHONE,
 	SJSU_CARES_SERVICES,
 	SJSU_CARES_STEPS,
 } from '../lib/sjsuCares';
@@ -166,7 +169,15 @@ export function SjsuCaresModal({
 							<div className="sjsu-cares-modal__essentials">
 								<div className="sjsu-cares-modal__essential">
 									<span className="sjsu-cares-modal__essential-label">Main line</span>
-									<a href="tel:4089241234">408.924.1234</a>
+									<a href="tel:4089241234">{SJSU_CARES_PHONE}</a>
+								</div>
+								<div className="sjsu-cares-modal__essential">
+									<span className="sjsu-cares-modal__essential-label">Email</span>
+									<a href={`mailto:${SJSU_CARES_EMAIL}`}>{SJSU_CARES_EMAIL}</a>
+								</div>
+								<div className="sjsu-cares-modal__essential">
+									<span className="sjsu-cares-modal__essential-label">Hours</span>
+									<p>{SJSU_CARES_HOURS}</p>
 								</div>
 								<div className="sjsu-cares-modal__essential">
 									<span className="sjsu-cares-modal__essential-label">Location</span>

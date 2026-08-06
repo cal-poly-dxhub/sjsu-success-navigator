@@ -46,8 +46,15 @@ export const SJSU_CARES_OVERVIEW =
 
 export const SJSU_CARES_NOTE = 'Always include your student ID when reaching out.';
 
+// Every value below is transcribed from the SJSU Cares contact page, verified 2026-08-06.
 export const SJSU_CARES_LOCATION =
-	'Student Union 1001, enter from the exterior across from the Engineering Building east of the 7th Street Paseo.';
+	'Diaz Compean Student Union West, entrance across from the Engineering Building.';
+
+export const SJSU_CARES_PHONE = '408.924.1234';
+
+export const SJSU_CARES_EMAIL = 'sjsucares@sjsu.edu';
+
+export const SJSU_CARES_HOURS = 'Monday - Friday, 10 am - 4 pm';
 
 export const SJSU_CARES_CONTACT_PAGE =
 	'https://www.sjsu.edu/sjsucares/about/contact-us.php';
@@ -62,6 +69,11 @@ export const SJSU_CARES_ACTIONS: SjsuCaresAction[] = [
 		label: 'Call SJSU Cares',
 		href: 'tel:4089241234',
 		variant: 'secondary',
+	},
+	{
+		label: 'Email SJSU Cares',
+		href: `mailto:${SJSU_CARES_EMAIL}`,
+		variant: 'ghost',
 	},
 	{
 		label: 'Open contact page',
@@ -105,7 +117,7 @@ export const SJSU_CARES_SERVICES: SjsuCaresService[] = [
 		kicker: 'If you are balancing school and caregiving',
 		description:
 			'Support for parenting students, including accommodations, rights guidance, and campus resources.',
-		href: 'https://www.sjsu.edu/sjsucares/get-assistance/parenting-students/index.php',
+		href: 'https://www.sjsu.edu/sjsucares/resources/parenting-students/index.php',
 		theme: 'parenting',
 	},
 ];
@@ -151,7 +163,14 @@ export const SJSU_CARES_CONTACTS: SjsuCaresContact[] = [
 		phone: '408.924.2847',
 	},
 	{
-		name: 'Gisselle Munoz',
+		name: 'Brenj Cuneta',
+		role: 'Senior Basic Needs & Community Engagement Coordinator',
+		focus: 'Basic needs programs and the Spartan Food Pantry',
+		email: 'brenjielyn.cuneta@sjsu.edu',
+		phone: '408.924.4208',
+	},
+	{
+		name: 'Gisselle Muñoz',
 		role: 'Basic Needs Coordinator - Housing',
 		focus: 'Housing instability, emergency housing options, and housing navigation',
 		email: 'gisselle.munoz@sjsu.edu',
@@ -160,10 +179,11 @@ export const SJSU_CARES_CONTACTS: SjsuCaresContact[] = [
 		serviceTheme: 'housing',
 	},
 	{
-		name: 'Sonia Lizama-Orduna',
+		name: 'Sonia Lizama-Orduña',
 		role: 'Basic Needs Coordinator - Benefits',
 		focus: 'CalFresh and public benefits support',
 		email: 'sonia.lizama-orduna@sjsu.edu',
+		phone: '408.924.5565',
 		appointmentHref: 'https://scheduler.zoom.us/sonia-lizama-orduna/calfresh',
 		serviceTheme: 'food',
 	},
@@ -179,7 +199,6 @@ export const OFFICIAL_CAMPUS_CONTACTS: CampusContactOffice[] = [
 		methods: [
 			{ label: 'Call 408.924.2587', href: 'tel:4089242587' },
 			{ label: 'Email peerconnections@sjsu.edu', href: 'mailto:peerconnections@sjsu.edu' },
-			{ label: 'Faculty contact deanna.peck@sjsu.edu', href: 'mailto:deanna.peck@sjsu.edu' },
 		],
 	},
 	{
@@ -191,7 +210,7 @@ export const OFFICIAL_CAMPUS_CONTACTS: CampusContactOffice[] = [
 		methods: [
 			{ label: 'Genevieve Lau', href: 'mailto:genevieve.lau@sjsu.edu' },
 			{ label: 'Greg Garcia', href: 'mailto:greg.garcia@sjsu.edu' },
-			{ label: 'Liliana Fuerte Calderon', href: 'mailto:liliana.fuertecalderon@sjsu.edu' },
+			{ label: 'Liliana Fuerte', href: 'mailto:liliana.fuertecalderon@sjsu.edu' },
 			{ label: 'Andrea Smith-Landucci', href: 'mailto:andrea.smith@sjsu.edu' },
 		],
 	},
@@ -218,9 +237,10 @@ export const OFFICIAL_CAMPUS_CONTACTS: CampusContactOffice[] = [
 		sourceUrl: 'https://www.sjsu.edu/sjsucares/get-involved/pantry-donation-guide.php',
 		theme: 'basic-needs',
 		methods: [
-			{ label: 'Call 408.924.1234', href: 'tel:4089241234' },
 			{ label: 'Email spartanfoodpantry@sjsu.edu', href: 'mailto:spartanfoodpantry@sjsu.edu' },
-			{ label: 'Email brenjielyn.cuneta@sjsu.edu', href: 'mailto:brenjielyn.cuneta@sjsu.edu' },
+			// 408.924.1234 is the SJSU Cares main line, which the pantry pages reuse. It is not a
+			// pantry-specific number and must not be labelled as one.
+			{ label: `Call SJSU Cares ${SJSU_CARES_PHONE}`, href: 'tel:4089241234' },
 		],
 	},
 	{
