@@ -58,8 +58,11 @@ export type ChatSession = {
 	response: ChatResponse;
 };
 
-/** RAG content phases on the left panel. */
-export type RagPhase = 'conversational' | 'scroll' | 'grid';
+/**
+ * RAG content phases on the left panel. `conversational` is prose alone; `grid` is prose
+ * plus the card group under it. There is no phase in which the prose is not on screen.
+ */
+export type RagPhase = 'conversational' | 'grid';
 
 export type ConversationTurn = {
 	id: string;

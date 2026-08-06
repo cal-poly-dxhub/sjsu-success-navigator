@@ -35,11 +35,11 @@
 	align-items: flex-start;
 }
 
-.conversation-turn__scroll {
-	display: flex;
-	flex-direction: column;
-	gap: 0.75rem;
+.conversation-turn__cards {
 	width: 100%;
+	min-width: 0;
+	/* A little air between the prose and the group it deals into. */
+	margin-top: 0.35rem;
 }
 
 .conversation-turn__static-bubble {
@@ -57,13 +57,6 @@
 
 .conversation-turn__static-bubble .formatted-message {
 	font-size: clamp(0.92rem, 1.9vw, 1.05rem);
-}
-
-.conversation-turn__safety {
-	display: flex;
-	flex-direction: column;
-	gap: 1rem;
-	width: 100%;
 }
 
 @media (max-width: 860px) {

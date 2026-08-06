@@ -4,6 +4,7 @@ import type { ConversationTurn, RagPhase } from '../types/chat';
 import { ConversationTurnView } from './ConversationTurnView';
 import { PendingExchange } from './PendingExchange';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { scrollToActiveTurn } from '../lib/scrollAnchor';
 import './ConversationFeed.css';
 
 type ConversationFeedProps = {
@@ -56,14 +57,4 @@ export function ConversationFeed({
 			</div>
 		</LayoutGroup>
 	);
-}
-
-export function scrollToActiveTurn(reduceMotion: boolean) {
-	const target = document.getElementById('active-conversation-turn');
-	if (!target) return;
-	const top = window.scrollY + target.getBoundingClientRect().top - 5.25 * 16;
-	window.scrollTo({
-		top: Math.max(0, top),
-		behavior: reduceMotion ? 'auto' : 'smooth',
-	});
 }

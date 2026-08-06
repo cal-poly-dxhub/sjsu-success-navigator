@@ -56,6 +56,11 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       four-line clamp went - it is an editorial budget now, still one config value
       reaching both the parser and the prompt. Whether the model actually shifts its
       weight is a question for real answers, not the unit suite.
+- [x] card presentation: variable-height cards in a responsive grid under the prose,
+      dealt in off a deck. The reveal button, the one-at-a-time stack and the 4-line
+      clamp are gone, and the prose is never replaced (docs/cards-v2.md, Presentation).
+      This is the rework the tag-contract commit deliberately deferred, and the clamp
+      it removes is the box the entry above stopped deriving desc_max_chars from.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [ ] measure the real average character advance for Nunito Sans at 0.875rem in a
       browser and re-derive cards.title_max_chars; 60 comes from a 0.5em estimate
