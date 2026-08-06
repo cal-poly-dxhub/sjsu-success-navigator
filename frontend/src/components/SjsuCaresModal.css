@@ -1,533 +1,238 @@
-.sjsu-cares-modal {
+/* Brand colours come only from the theme tokens: var(--accent-blue) is the primary,
+   var(--sjsu-gold) is an accent only, var(--sjsu-gray) is the neutral. Tints are derived
+   with color-mix so no brand hex is open-coded here. */
+.cares {
 	position: fixed;
 	inset: 0;
 	z-index: 30;
 	display: grid;
 	place-items: center;
-	padding: 1.25rem;
+	padding: 0.75rem;
 }
 
-.sjsu-cares-modal__backdrop {
+.cares__backdrop {
 	position: absolute;
 	inset: 0;
 	border: 0;
-	background:
-		radial-gradient(circle at top, rgba(249, 194, 11, 0.22), transparent 32%),
-		rgba(11, 23, 39, 0.58);
-	backdrop-filter: blur(10px);
+	padding: 0;
+	background: color-mix(in srgb, var(--accent-blue) 42%, rgba(0, 0, 0, 0.62));
+	backdrop-filter: blur(6px);
 	cursor: pointer;
 }
 
-.sjsu-cares-modal__panel {
+.cares__panel {
 	position: relative;
 	z-index: 1;
-	width: min(1040px, 100%);
-	max-height: min(88vh, 920px);
-	overflow: auto;
-	padding: 1.4rem;
-	border: 1px solid rgba(8, 90, 163, 0.12);
-	border-radius: 32px;
-	background:
-		linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(250, 249, 247, 0.96)),
-		url('/paper-fiber.svg');
-	box-shadow:
-		0 30px 90px rgba(18, 30, 47, 0.22),
-		0 2px 0 rgba(5, 64, 122, 0.1);
+	display: flex;
+	flex-direction: column;
+	width: min(30rem, 100%);
+	max-height: min(90vh, 46rem);
+	overflow: hidden auto;
+	border-radius: 16px;
+	background: #fff;
+	overflow-wrap: anywhere;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
 
-.sjsu-cares-modal__header {
+/* Masthead: the blue field over a gold rule is the surface's identity mark. */
+.cares__masthead {
 	display: flex;
 	align-items: flex-start;
 	justify-content: space-between;
-	gap: 1rem;
-	margin-bottom: 1.2rem;
+	gap: 0.75rem;
+	padding: 0.95rem 1rem;
+	border-bottom: 4px solid var(--sjsu-gold);
+	background: var(--accent-blue);
+	color: #fff;
 }
 
-.sjsu-cares-modal__eyebrow {
-	margin: 0 0 0.35rem;
-	color: var(--accent-blue);
-	font-size: 0.75rem;
-	font-weight: 800;
-	letter-spacing: 0.12em;
-	text-transform: uppercase;
+.cares__identity {
+	min-width: 0;
 }
 
-.sjsu-cares-modal__title {
+.cares__eyebrow {
 	margin: 0;
-	font-size: clamp(1.9rem, 2.2vw, 2.7rem);
-	line-height: 1;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	opacity: 0.85;
 }
 
-.sjsu-cares-modal__intro {
-	max-width: 45rem;
-	margin: 0.75rem 0 0;
-	color: var(--text-secondary);
-	font-size: 1rem;
-	line-height: 1.55;
+.cares__title {
+	margin: 0.15rem 0 0;
+	font-size: 1.5rem;
+	font-weight: 800;
+	line-height: 1.1;
 }
 
-.sjsu-cares-modal__close {
+.cares__close {
+	flex: 0 0 auto;
 	display: inline-grid;
 	place-items: center;
-	width: 3rem;
-	height: 3rem;
-	border: 1px solid rgba(8, 90, 163, 0.14);
+	width: 2.25rem;
+	height: 2.25rem;
+	border: 1px solid rgba(255, 255, 255, 0.45);
 	border-radius: 999px;
-	background: #fff;
-	color: var(--text-primary);
+	background: transparent;
+	color: #fff;
 	font: inherit;
-	font-size: 1.8rem;
+	font-size: 1.4rem;
 	line-height: 1;
 	cursor: pointer;
-	box-shadow: 0 8px 24px rgba(28, 36, 48, 0.08);
 }
 
-.sjsu-cares-modal__hero {
-	display: grid;
-	grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
-	gap: 1rem;
-	margin-bottom: 1rem;
+.cares__close:hover,
+.cares__close:focus-visible {
+	background: rgba(255, 255, 255, 0.16);
 }
 
-.sjsu-cares-modal__callout,
-.sjsu-cares-modal__essentials,
-.sjsu-cares-modal__section,
-.sjsu-cares-modal__contact-card,
-.sjsu-cares-modal__service-card {
-	border: 1px solid rgba(8, 90, 163, 0.12);
-	border-radius: 24px;
-	background: rgba(255, 255, 255, 0.84);
-	box-shadow: 0 14px 30px rgba(18, 30, 47, 0.08);
-}
-
-.sjsu-cares-modal__callout {
-	padding: 1.35rem;
-	background:
-		linear-gradient(135deg, rgba(8, 90, 163, 0.08), rgba(249, 194, 11, 0.12)),
-		rgba(255, 255, 255, 0.9);
-}
-
-.sjsu-cares-modal__priority-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.75rem;
-	margin-top: 1rem;
-}
-
-.sjsu-cares-modal__priority-action {
-	flex: 0 0 auto;
-}
-
-.sjsu-cares-modal__callout-label {
-	margin: 0 0 0.4rem;
-	color: var(--accent-blue);
-	font-size: 0.82rem;
-	font-weight: 800;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-}
-
-.sjsu-cares-modal__callout h3,
-.sjsu-cares-modal__section-header h3,
-.sjsu-cares-modal__service-card h4,
-.sjsu-cares-modal__contact-copy h4 {
-	margin: 0;
-}
-
-.sjsu-cares-modal__callout > p,
-.sjsu-cares-modal__service-card p,
-.sjsu-cares-modal__contact-copy p,
-.sjsu-cares-modal__essential p {
-	margin: 0.55rem 0 0;
-	color: var(--text-secondary);
-	line-height: 1.55;
-}
-
-.sjsu-cares-modal__essentials {
-	display: grid;
-	gap: 0.75rem;
-	padding: 1rem;
-}
-
-.sjsu-cares-modal__essential {
-	padding: 0.2rem 0;
-}
-
-.sjsu-cares-modal__essential-label {
-	display: block;
-	margin-bottom: 0.22rem;
-	color: var(--text-muted);
-	font-size: 0.8rem;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.08em;
-}
-
-.sjsu-cares-modal__essential a,
-.sjsu-cares-modal__contact-actions a {
-	color: var(--accent-blue);
-	font-weight: 800;
-	text-decoration: none;
-}
-
-.sjsu-cares-modal__micro-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.6rem;
-	padding-top: 0.45rem;
-}
-
-.sjsu-cares-modal__micro-action .pressable__face {
-	padding-inline: 0.9rem;
-}
-
-.sjsu-cares-modal__grid {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-	gap: 1rem;
-}
-
-.sjsu-cares-modal__section {
-	padding: 1rem;
-}
-
-.sjsu-cares-modal__section-header {
-	margin-bottom: 0.85rem;
-}
-
-.sjsu-cares-modal__section-intro {
-	margin: -0.15rem 0 0;
-	color: var(--text-secondary);
-	line-height: 1.55;
-}
-
-.sjsu-cares-modal__services,
-.sjsu-cares-modal__contacts,
-.sjsu-cares-modal__steps {
+.cares__body {
 	display: grid;
 	gap: 0.85rem;
-}
-
-.sjsu-cares-modal__service-card {
-	display: block;
 	padding: 1rem;
-	color: inherit;
-	text-decoration: none;
-	border-top-width: 4px;
-	transition:
-		transform 160ms ease,
-		box-shadow 160ms ease,
-		border-color 160ms ease;
 }
 
-.sjsu-cares-modal__service-card--highlighted {
-	position: relative;
-	border-color: rgba(8, 90, 163, 0.3);
-	box-shadow:
-		0 20px 38px rgba(18, 30, 47, 0.12),
-		0 0 0 3px rgba(8, 90, 163, 0.08);
-}
-
-.sjsu-cares-modal__service-badge {
-	display: inline-flex;
-	margin-bottom: 0.75rem;
-	padding: 0.32rem 0.7rem;
-	border-radius: 999px;
-	background: rgba(8, 90, 163, 0.1);
-	color: var(--accent-blue);
-	font-size: 0.72rem;
-	font-weight: 800;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-}
-
-.sjsu-cares-modal__service-card--food {
-	border-top-color: #3a8f5d;
-}
-
-.sjsu-cares-modal__service-card--housing {
-	border-top-color: #085aa3;
-}
-
-.sjsu-cares-modal__service-card--financial {
-	border-top-color: #c99700;
-}
-
-.sjsu-cares-modal__service-card--parenting {
-	border-top-color: #b55083;
-}
-
-.sjsu-cares-modal__service-topline {
-	display: flex;
-	align-items: center;
-	gap: 0.7rem;
-	margin-bottom: 0.7rem;
-}
-
-.sjsu-cares-modal__service-topline p {
+.cares__intro {
 	margin: 0;
-	color: var(--text-muted);
-	font-size: 0.83rem;
-	font-weight: 700;
-	letter-spacing: 0.02em;
-}
-
-.sjsu-cares-modal__service-mark {
-	display: inline-grid;
-	place-items: center;
-	width: 2rem;
-	height: 2rem;
-	border-radius: 999px;
-	background: rgba(8, 90, 163, 0.08);
-	color: var(--accent-blue);
-	font-weight: 900;
-}
-
-.sjsu-cares-modal__service-card:hover,
-.sjsu-cares-modal__service-card:focus-visible,
-.sjsu-cares-modal__contact-card:hover {
-	transform: translateY(-2px);
-	border-color: rgba(8, 90, 163, 0.28);
-	box-shadow: 0 18px 36px rgba(18, 30, 47, 0.12);
-}
-
-.sjsu-cares-modal__service-link {
-	display: inline-flex;
-	margin-top: 0.9rem;
-	color: var(--accent-blue);
-	font-size: 0.86rem;
-	font-weight: 800;
-}
-
-.sjsu-cares-modal__step-card {
-	display: grid;
-	grid-template-columns: auto 1fr;
-	gap: 0.9rem;
-	padding: 1rem;
-	border: 1px solid rgba(8, 90, 163, 0.12);
-	border-radius: 20px;
-	background: rgba(255, 255, 255, 0.78);
-}
-
-.sjsu-cares-modal__step-card h4 {
-	margin: 0;
-}
-
-.sjsu-cares-modal__step-card p {
-	margin: 0.35rem 0 0;
 	color: var(--text-secondary);
+	font-size: 0.95rem;
 	line-height: 1.5;
 }
 
-.sjsu-cares-modal__step-number {
-	display: inline-grid;
-	place-items: center;
-	width: 2.3rem;
-	height: 2.3rem;
-	border-radius: 999px;
-	background: var(--accent-blue);
-	color: white;
-	font-weight: 900;
-	font-size: 0.9rem;
-}
-
-.sjsu-cares-modal__people-section {
-	margin-top: 1rem;
-}
-
-.sjsu-cares-modal__directory-section {
-	margin-top: 1rem;
-}
-
-.sjsu-cares-modal__directory {
+.cares__primary {
 	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 0.85rem;
-}
-
-.sjsu-cares-modal__directory-card {
-	padding: 1rem;
-	border: 1px solid rgba(8, 90, 163, 0.12);
-	border-radius: 22px;
-	background: rgba(255, 255, 255, 0.8);
-	box-shadow: 0 14px 30px rgba(18, 30, 47, 0.07);
-}
-
-.sjsu-cares-modal__directory-card--academic {
-	border-top: 4px solid #085aa3;
-}
-
-.sjsu-cares-modal__directory-card--basic-needs {
-	border-top: 4px solid #c99700;
-}
-
-.sjsu-cares-modal__directory-card--wellness {
-	border-top: 4px solid #3a8f5d;
-}
-
-.sjsu-cares-modal__directory-card--safety {
-	border-top: 4px solid #b33a2d;
-}
-
-.sjsu-cares-modal__directory-topline {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 0.75rem;
-	margin-bottom: 0.6rem;
-}
-
-.sjsu-cares-modal__directory-kicker {
-	color: var(--text-muted);
-	font-size: 0.78rem;
-	font-weight: 700;
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
-}
-
-.sjsu-cares-modal__directory-source {
-	color: var(--accent-blue);
-	font-size: 0.82rem;
-	font-weight: 800;
+	gap: 0.15rem;
+	padding: 0.8rem 1rem;
+	border-radius: 12px;
+	background: var(--accent-blue);
+	color: #fff;
 	text-decoration: none;
 }
 
-.sjsu-cares-modal__directory-card h4 {
+.cares__primary:hover,
+.cares__primary:focus-visible {
+	background: color-mix(in srgb, var(--accent-blue) 88%, #000);
+}
+
+.cares__primary-label {
+	font-size: 1.02rem;
+	font-weight: 800;
+}
+
+.cares__primary-hint {
+	font-size: 0.82rem;
+	opacity: 0.9;
+}
+
+.cares__direct {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+	gap: 0.6rem;
+}
+
+.cares__direct-link {
+	padding: 0.65rem 0.85rem;
+	border: 1px solid color-mix(in srgb, var(--accent-blue) 35%, transparent);
+	border-radius: 12px;
+	color: var(--accent-blue);
+	font-size: 0.92rem;
+	font-weight: 700;
+	text-align: center;
+	text-decoration: none;
+}
+
+.cares__direct-link:hover,
+.cares__direct-link:focus-visible {
+	background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+}
+
+.cares__facts {
+	display: grid;
+	gap: 0.5rem;
 	margin: 0;
 }
 
-.sjsu-cares-modal__directory-card p {
-	margin: 0.5rem 0 0;
-	color: var(--text-secondary);
-	line-height: 1.52;
-}
-
-.sjsu-cares-modal__directory-methods {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.6rem;
-	margin-top: 0.95rem;
-}
-
-.sjsu-cares-modal__directory-method {
-	display: inline-flex;
-	align-items: center;
-	padding: 0.5rem 0.72rem;
-	border-radius: 999px;
-	background: rgba(8, 90, 163, 0.08);
-	color: var(--accent-blue);
-	font-size: 0.84rem;
+.cares__fact dt {
+	color: var(--sjsu-gray);
+	font-size: 0.7rem;
 	font-weight: 800;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+}
+
+.cares__fact dd {
+	margin: 0.12rem 0 0;
+	color: var(--text-secondary);
+	font-size: 0.9rem;
+	line-height: 1.45;
+}
+
+.cares__service {
+	display: grid;
+	gap: 0.2rem;
+	padding: 0.8rem 0.9rem;
+	border: 1px solid color-mix(in srgb, var(--sjsu-gray) 45%, transparent);
+	border-left: 4px solid var(--sjsu-gold);
+	border-radius: 12px;
+	color: inherit;
 	text-decoration: none;
 }
 
-.sjsu-cares-modal__directory-method:hover,
-.sjsu-cares-modal__directory-method:focus-visible,
-.sjsu-cares-modal__directory-source:hover,
-.sjsu-cares-modal__directory-source:focus-visible {
-	text-decoration: underline;
+.cares__service:hover,
+.cares__service:focus-visible {
+	border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
+	border-left-color: var(--sjsu-gold);
 }
 
-.sjsu-cares-modal__contact-card {
-	overflow: hidden;
-}
-
-.sjsu-cares-modal__contact-card--expanded {
-	border-color: rgba(8, 90, 163, 0.24);
-}
-
-.sjsu-cares-modal__contact-toggle {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 1rem;
-	width: 100%;
-	padding: 1rem;
-	border: 0;
-	background: transparent;
-	text-align: left;
-	font: inherit;
-	cursor: pointer;
-}
-
-.sjsu-cares-modal__contact-role {
-	margin: 0 0 0.3rem;
-	color: var(--accent-blue);
-	font-size: 0.78rem;
+.cares__service-badge {
+	color: var(--sjsu-gray);
+	font-size: 0.68rem;
 	font-weight: 800;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 }
 
-.sjsu-cares-modal__contact-chevron {
-	display: inline-grid;
-	place-items: center;
-	width: 2rem;
-	height: 2rem;
-	border-radius: 999px;
-	background: rgba(8, 90, 163, 0.08);
+.cares__service-title {
 	color: var(--accent-blue);
-	font-size: 1.35rem;
+	font-size: 1rem;
+	font-weight: 800;
+}
+
+.cares__service-desc {
+	color: var(--text-secondary);
+	font-size: 0.88rem;
+	line-height: 1.45;
+}
+
+.cares__more {
+	display: grid;
+	gap: 0.55rem;
+	padding-top: 0.15rem;
+}
+
+.cares__more a {
+	color: var(--accent-blue);
+	font-size: 0.9rem;
 	font-weight: 700;
-}
-
-.sjsu-cares-modal__contact-details {
-	overflow: hidden;
-}
-
-.sjsu-cares-modal__contact-details-inner {
-	padding: 0 1rem 1rem;
-	border-top: 1px solid rgba(8, 90, 163, 0.1);
-}
-
-.sjsu-cares-modal__contact-actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.75rem 1rem;
-	padding-top: 0.85rem;
-}
-
-.sjsu-cares-modal__contact-actions a:hover,
-.sjsu-cares-modal__contact-actions a:focus-visible,
-.sjsu-cares-modal__essential a:hover,
-.sjsu-cares-modal__essential a:focus-visible {
 	text-decoration: underline;
+	text-underline-offset: 3px;
 }
 
-@media (max-width: 860px) {
-	.sjsu-cares-modal {
-		padding: 0.8rem;
-	}
-
-	.sjsu-cares-modal__panel {
-		padding: 1rem;
-		border-radius: 26px;
-	}
-
-	.sjsu-cares-modal__hero,
-	.sjsu-cares-modal__grid,
-	.sjsu-cares-modal__directory {
-		grid-template-columns: 1fr;
-	}
-
-	.sjsu-cares-modal__priority-actions,
-	.sjsu-cares-modal__micro-actions {
-		flex-direction: column;
-	}
-
-	.sjsu-cares-modal__priority-action,
-	.sjsu-cares-modal__micro-action {
-		width: 100%;
-	}
-
-	.sjsu-cares-modal__priority-action .pressable__face,
-	.sjsu-cares-modal__micro-action .pressable__face {
-		width: 100%;
-	}
+.cares__note {
+	margin: 0;
+	padding-top: 0.15rem;
+	border-top: 1px solid color-mix(in srgb, var(--sjsu-gray) 35%, transparent);
+	color: var(--sjsu-gray);
+	font-size: 0.82rem;
+	line-height: 1.45;
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.sjsu-cares-modal__service-card,
-	.sjsu-cares-modal__contact-card {
-		transition: none;
-	}
+.cares__panel :focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+.cares__masthead :focus-visible {
+	outline-color: #fff;
 }

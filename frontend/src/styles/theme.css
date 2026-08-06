@@ -5,7 +5,10 @@
 	--text-secondary: #3d4654;
 	--text-muted: #6b7380;
 	--accent-gold: #f9c20b;
-	--accent-blue: #085aa3;
+	/* SJSU published brand palette: blue is primary, gold is an accent only, gray is the neutral. */
+	--accent-blue: #0055a2;
+	--sjsu-gold: #e5a823;
+	--sjsu-gray: #939597;
 	--btn-primary-face: #f9c20b;
 	--btn-primary-edge: #c99700;
 	--btn-primary-text: #1a2f4a;

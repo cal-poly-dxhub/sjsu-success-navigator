@@ -1,20 +1,18 @@
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import {
-	OFFICIAL_CAMPUS_CONTACTS,
-	SJSU_CARES_ACTIONS,
-	SJSU_CARES_CONTACTS,
+	findSjsuCaresService,
+	SJSU_CARES_CONTACT_PAGE,
 	SJSU_CARES_EMAIL,
 	SJSU_CARES_HOURS,
 	SJSU_CARES_LOCATION,
 	SJSU_CARES_NOTE,
 	SJSU_CARES_OVERVIEW,
 	SJSU_CARES_PHONE,
-	SJSU_CARES_SERVICES,
-	SJSU_CARES_STEPS,
+	SJSU_CARES_REQUEST_FORM,
+	SJSU_CARES_SERVICES_INDEX,
 } from '../lib/sjsuCares';
 import type { SjsuCaresService } from '../lib/sjsuCares';
-import { PressableButton } from './PressableButton';
 import './SjsuCaresModal.css';
 
 type SjsuCaresModalProps = {
@@ -23,25 +21,16 @@ type SjsuCaresModalProps = {
 	highlightedServiceTheme?: SjsuCaresService['theme'] | null;
 };
 
+const TEL_HREF = `tel:${SJSU_CARES_PHONE.replaceAll('.', '')}`;
+
 export function SjsuCaresModal({
 	open,
 	onClose,
 	highlightedServiceTheme = null,
 }: SjsuCaresModalProps) {
-	const [expandedContactEmail, setExpandedContactEmail] = useState<string | null>(
-		SJSU_CARES_CONTACTS[0]?.email ?? null,
-	);
 	const panelRef = useRef<HTMLElement | null>(null);
 	const previousActiveRef = useRef<HTMLElement | null>(null);
-
-	const orderedServices = useMemo(() => {
-		if (!highlightedServiceTheme) return SJSU_CARES_SERVICES;
-		return [...SJSU_CARES_SERVICES].sort((left, right) => {
-			if (left.theme === highlightedServiceTheme && right.theme !== highlightedServiceTheme) return -1;
-			if (right.theme === highlightedServiceTheme && left.theme !== highlightedServiceTheme) return 1;
-			return 0;
-		});
-	}, [highlightedServiceTheme]);
+	const recommended = findSjsuCaresService(highlightedServiceTheme);
 
 	useEffect(() => {
 		if (!open) return;
@@ -94,21 +83,13 @@ export function SjsuCaresModal({
 		};
 	}, [open, onClose]);
 
-	useEffect(() => {
-		if (!open) return;
-		const matchingContact = SJSU_CARES_CONTACTS.find(
-			(contact) => contact.serviceTheme === highlightedServiceTheme,
-		);
-		setExpandedContactEmail(matchingContact?.email ?? SJSU_CARES_CONTACTS[0]?.email ?? null);
-	}, [highlightedServiceTheme, open]);
-
 	return (
 		<AnimatePresence>
 			{open ? (
-				<div className="sjsu-cares-modal" role="dialog" aria-modal="true" aria-labelledby="sjsu-cares-title">
+				<div className="cares" role="dialog" aria-modal="true" aria-labelledby="cares-title">
 					<motion.button
 						type="button"
-						className="sjsu-cares-modal__backdrop"
+						className="cares__backdrop"
 						aria-label="Close SJSU Cares information"
 						initial={{ opacity: 0 }}
 						animate={{ opacity: 1 }}
@@ -119,258 +100,82 @@ export function SjsuCaresModal({
 
 					<motion.section
 						ref={panelRef}
-						className="sjsu-cares-modal__panel"
-						initial={{ opacity: 0, y: 28, scale: 0.97 }}
+						className="cares__panel"
+						initial={{ opacity: 0, y: 24, scale: 0.98 }}
 						animate={{ opacity: 1, y: 0, scale: 1 }}
-						exit={{ opacity: 0, y: 18, scale: 0.98 }}
+						exit={{ opacity: 0, y: 16, scale: 0.98 }}
 						transition={{ type: 'spring', stiffness: 320, damping: 28 }}
 					>
-						<div className="sjsu-cares-modal__header">
-							<div>
-								<p className="sjsu-cares-modal__eyebrow">Talk to a person</p>
-								<h2 id="sjsu-cares-title" className="sjsu-cares-modal__title">
-									Connect with SJSU Cares
+						<header className="cares__masthead">
+							<div className="cares__identity">
+								<p className="cares__eyebrow">San José State University</p>
+								<h2 id="cares-title" className="cares__title">
+									SJSU Cares
 								</h2>
-								<p className="sjsu-cares-modal__intro">{SJSU_CARES_OVERVIEW}</p>
 							</div>
 
 							<button
 								type="button"
-								className="sjsu-cares-modal__close"
+								className="cares__close"
 								aria-label="Close SJSU Cares information"
 								onClick={onClose}
 							>
 								<span aria-hidden="true">×</span>
 							</button>
+						</header>
+
+						<div className="cares__body">
+							<p className="cares__intro">{SJSU_CARES_OVERVIEW}</p>
+
+							<a className="cares__primary" href={SJSU_CARES_REQUEST_FORM} target="_blank" rel="noopener noreferrer">
+								<span className="cares__primary-label">Request assistance</span>
+								<span className="cares__primary-hint">The fastest way to reach a case manager</span>
+							</a>
+
+							<div className="cares__direct">
+								<a className="cares__direct-link" href={TEL_HREF}>
+									Call {SJSU_CARES_PHONE}
+								</a>
+								<a className="cares__direct-link" href={`mailto:${SJSU_CARES_EMAIL}`}>
+									Email {SJSU_CARES_EMAIL}
+								</a>
+							</div>
+
+							<dl className="cares__facts">
+								<div className="cares__fact">
+									<dt>Hours</dt>
+									<dd>{SJSU_CARES_HOURS}</dd>
+								</div>
+								<div className="cares__fact">
+									<dt>Office</dt>
+									<dd>{SJSU_CARES_LOCATION}</dd>
+								</div>
+							</dl>
+
+							{recommended ? (
+								<a
+									className="cares__service"
+									href={recommended.href}
+									target="_blank"
+									rel="noopener noreferrer"
+								>
+									<span className="cares__service-badge">Recommended for your question</span>
+									<span className="cares__service-title">{recommended.title}</span>
+									<span className="cares__service-desc">{recommended.description}</span>
+								</a>
+							) : null}
+
+							<div className="cares__more">
+								<a href={SJSU_CARES_SERVICES_INDEX} target="_blank" rel="noopener noreferrer">
+									All SJSU Cares services
+								</a>
+								<a href={SJSU_CARES_CONTACT_PAGE} target="_blank" rel="noopener noreferrer">
+									Staff directory and full contact list
+								</a>
+							</div>
+
+							<p className="cares__note">{SJSU_CARES_NOTE}</p>
 						</div>
-
-						<div className="sjsu-cares-modal__hero">
-							<div className="sjsu-cares-modal__callout">
-								<p className="sjsu-cares-modal__callout-label">Best first step</p>
-								<h3>Submit a request for assistance</h3>
-								<p>
-									SJSU Cares can follow up with next steps, eligibility details, and the campus or community
-									resources that fit your situation.
-								</p>
-								<div className="sjsu-cares-modal__priority-actions">
-									{SJSU_CARES_ACTIONS.slice(0, 2).map((action) => (
-										<PressableButton
-											key={action.label}
-											href={action.href}
-											variant={action.variant}
-											className="sjsu-cares-modal__priority-action"
-										>
-											{action.label}
-										</PressableButton>
-									))}
-								</div>
-							</div>
-
-							<div className="sjsu-cares-modal__essentials">
-								<div className="sjsu-cares-modal__essential">
-									<span className="sjsu-cares-modal__essential-label">Main line</span>
-									<a href="tel:4089241234">{SJSU_CARES_PHONE}</a>
-								</div>
-								<div className="sjsu-cares-modal__essential">
-									<span className="sjsu-cares-modal__essential-label">Email</span>
-									<a href={`mailto:${SJSU_CARES_EMAIL}`}>{SJSU_CARES_EMAIL}</a>
-								</div>
-								<div className="sjsu-cares-modal__essential">
-									<span className="sjsu-cares-modal__essential-label">Hours</span>
-									<p>{SJSU_CARES_HOURS}</p>
-								</div>
-								<div className="sjsu-cares-modal__essential">
-									<span className="sjsu-cares-modal__essential-label">Location</span>
-									<p>{SJSU_CARES_LOCATION}</p>
-								</div>
-								<div className="sjsu-cares-modal__essential">
-									<span className="sjsu-cares-modal__essential-label">Helpful note</span>
-									<p>{SJSU_CARES_NOTE}</p>
-								</div>
-								<div className="sjsu-cares-modal__micro-actions">
-									{SJSU_CARES_ACTIONS.slice(2).map((action) => (
-										<PressableButton
-											key={action.label}
-											href={action.href}
-											variant={action.variant}
-											className="sjsu-cares-modal__micro-action"
-										>
-											{action.label}
-										</PressableButton>
-									))}
-								</div>
-							</div>
-						</div>
-
-						<div className="sjsu-cares-modal__grid">
-							<section className="sjsu-cares-modal__section">
-								<div className="sjsu-cares-modal__section-header">
-									<p className="sjsu-cares-modal__eyebrow">Services</p>
-									<h3>How SJSU Cares can help</h3>
-								</div>
-								<div className="sjsu-cares-modal__services">
-									{orderedServices.map((service) => (
-										<a
-											key={service.title}
-											className={`sjsu-cares-modal__service-card sjsu-cares-modal__service-card--${service.theme}${highlightedServiceTheme === service.theme ? ' sjsu-cares-modal__service-card--highlighted' : ''}`}
-											href={service.href}
-											target="_blank"
-											rel="noopener noreferrer"
-										>
-											{highlightedServiceTheme === service.theme ? (
-												<span className="sjsu-cares-modal__service-badge">Recommended for your question</span>
-											) : null}
-											<div className="sjsu-cares-modal__service-topline">
-												<span className="sjsu-cares-modal__service-mark" aria-hidden="true">
-													{service.theme === 'food'
-														? 'F'
-														: service.theme === 'housing'
-															? 'H'
-															: service.theme === 'financial'
-																? '$'
-																: 'P'}
-												</span>
-												<p>{service.kicker}</p>
-											</div>
-											<h4>{service.title}</h4>
-											<p>{service.description}</p>
-											<span className="sjsu-cares-modal__service-link">Open service</span>
-										</a>
-									))}
-								</div>
-							</section>
-
-							<section className="sjsu-cares-modal__section">
-								<div className="sjsu-cares-modal__section-header">
-									<p className="sjsu-cares-modal__eyebrow">What to expect</p>
-									<h3>What happens after you reach out</h3>
-								</div>
-								<div className="sjsu-cares-modal__steps">
-									{SJSU_CARES_STEPS.map((step, index) => (
-										<article key={step.title} className="sjsu-cares-modal__step-card">
-											<span className="sjsu-cares-modal__step-number">0{index + 1}</span>
-											<div>
-												<h4>{step.title}</h4>
-												<p>{step.description}</p>
-											</div>
-										</article>
-									))}
-								</div>
-							</section>
-						</div>
-
-						<section className="sjsu-cares-modal__section sjsu-cares-modal__people-section">
-							<div className="sjsu-cares-modal__section-header">
-								<p className="sjsu-cares-modal__eyebrow">People</p>
-								<h3>Reach the SJSU Cares team</h3>
-								<p className="sjsu-cares-modal__section-intro">
-									Choose the team member whose area feels closest to what you need, or start with the main
-									request form if you are unsure.
-								</p>
-							</div>
-							<div className="sjsu-cares-modal__contacts">
-								{SJSU_CARES_CONTACTS.map((contact) => {
-									const expanded = expandedContactEmail === contact.email;
-									return (
-										<article
-											key={contact.email}
-											className={`sjsu-cares-modal__contact-card${expanded ? ' sjsu-cares-modal__contact-card--expanded' : ''}`}
-										>
-											<button
-												type="button"
-												className="sjsu-cares-modal__contact-toggle"
-												onClick={() =>
-													setExpandedContactEmail((current) =>
-														current === contact.email ? null : contact.email,
-													)
-												}
-												aria-expanded={expanded}
-											>
-												<div className="sjsu-cares-modal__contact-copy">
-													<p className="sjsu-cares-modal__contact-role">{contact.role}</p>
-													<h4>{contact.name}</h4>
-													<p>{contact.focus}</p>
-												</div>
-												<span className="sjsu-cares-modal__contact-chevron" aria-hidden="true">
-													{expanded ? '−' : '+'}
-												</span>
-											</button>
-
-											<AnimatePresence initial={false}>
-												{expanded ? (
-													<motion.div
-														className="sjsu-cares-modal__contact-details"
-														initial={{ height: 0, opacity: 0 }}
-														animate={{ height: 'auto', opacity: 1 }}
-														exit={{ height: 0, opacity: 0 }}
-														transition={{ duration: 0.22, ease: 'easeOut' }}
-													>
-														<div className="sjsu-cares-modal__contact-details-inner">
-															<div className="sjsu-cares-modal__contact-actions">
-																<a href={`mailto:${contact.email}`}>{contact.email}</a>
-																{contact.phone ? (
-																	<a href={`tel:${contact.phone.replaceAll('.', '')}`}>{contact.phone}</a>
-																) : null}
-																{contact.appointmentHref ? (
-																	<a
-																		href={contact.appointmentHref}
-																		target="_blank"
-																		rel="noopener noreferrer"
-																	>
-																		Make appointment
-																	</a>
-																) : null}
-															</div>
-														</div>
-													</motion.div>
-												) : null}
-											</AnimatePresence>
-										</article>
-									);
-								})}
-							</div>
-						</section>
-
-						<section className="sjsu-cares-modal__section sjsu-cares-modal__directory-section">
-							<div className="sjsu-cares-modal__section-header">
-								<p className="sjsu-cares-modal__eyebrow">More contacts</p>
-								<h3>Official contacts from other SJSU resource pages</h3>
-								<p className="sjsu-cares-modal__section-intro">
-									These are broader campus contacts pulled from the official SJSU pages currently indexed in
-									this project, so the directory is not limited to SJSU Cares alone.
-								</p>
-							</div>
-
-							<div className="sjsu-cares-modal__directory">
-								{OFFICIAL_CAMPUS_CONTACTS.map((office) => (
-									<article
-										key={`${office.office}-${office.sourceUrl}`}
-										className={`sjsu-cares-modal__directory-card sjsu-cares-modal__directory-card--${office.theme}`}
-									>
-										<div className="sjsu-cares-modal__directory-topline">
-											<span className="sjsu-cares-modal__directory-kicker">{office.sourceLabel}</span>
-											<a
-												className="sjsu-cares-modal__directory-source"
-												href={office.sourceUrl}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												Open source
-											</a>
-										</div>
-										<h4>{office.office}</h4>
-										<p>{office.summary}</p>
-										<div className="sjsu-cares-modal__directory-methods">
-											{office.methods.map((method) => (
-												<a key={method.label} href={method.href} className="sjsu-cares-modal__directory-method">
-													{method.label}
-												</a>
-											))}
-										</div>
-									</article>
-								))}
-							</div>
-						</section>
 					</motion.section>
 				</div>
 			) : null}
