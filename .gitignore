@@ -21,6 +21,12 @@ cdk.out/
 .env.*
 !.env.example
 
+# Local dev runtime config, hand-written to point `astro dev` at a deployed API. It is
+# the same bucket key the stack stamps at deploy time, so a committed copy is a second
+# source of truth for the one file that says where the API is - and the wrong one, since
+# it names whichever stack the developer happened to be testing against.
+frontend/public/config.json
+
 # Logs
 *.log
 npm-debug.log*

@@ -157,7 +157,29 @@ def _astro_bundling() -> BundlingOptions:
             # and the lockfile.
             "mkdir -p /tmp/build && cd /asset-input && "
             "cp -R package.json package-lock.json astro.config.mjs tsconfig.json "
-            "src public /tmp/build/ && cd /tmp/build && "
+            "src public /tmp/build/ && "
+            # DROP THE DEVELOPER'S LOCAL config.json. To run `astro dev` against a deployed
+            # API you hand-write frontend/public/config.json with the four runtime keys, and
+            # public/ ships verbatim - so without this line that file is built into dist/ and
+            # staged at the SAME bucket key the SiteConfigDeployment stamps at deploy. Today
+            # the site deployment's `exclude=["config.json"]` happens to keep it from being
+            # uploaded, but that exclude exists to scope the PRUNE; the moment it is narrowed
+            # or the two deployments are merged, a developer's private endpoint is published
+            # over the real one and the site silently points students at the wrong API.
+            #
+            # It is removed from the container-local COPY, not from the mounted input: CDK
+            # bind-mounts frontend/ read-write, so deleting under /asset-input would delete
+            # the developer's own file (the same trap the copy above exists for).
+            #
+            # NOT expressible as a Source.asset `exclude` entry, which is the obvious-looking
+            # place for it: that list filters the asset FINGERPRINT, not what the container
+            # sees, because bundling bind-mounts the whole source directory. Verified - with
+            # "public/config.json" added to the exclude below, the file still lands in the
+            # staged asset; only the asset hash changes.
+            #
+            # `rm -f` never fails on an absent file, so a developer without one synths and
+            # deploys exactly as before.
+            "rm -f /tmp/build/public/config.json && cd /tmp/build && "
             "npm ci --no-audit --no-fund && "
             "npm run build && "
             "cp -R dist/. /asset-output/",

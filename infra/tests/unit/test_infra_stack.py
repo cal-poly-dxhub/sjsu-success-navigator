@@ -1177,6 +1177,28 @@ def test_the_site_content_is_the_container_built_astro_output():
     assert "sammy.riv" in listing, listing
 
 
+def test_a_developers_local_config_json_never_reaches_the_site_asset():
+    """The site asset must not carry a config.json, ever - the only one that may exist in
+    the bucket is the SiteConfigDeployment's, stamped from stack tokens at deploy.
+
+    To run `astro dev` against a deployed API a developer hand-writes
+    frontend/public/config.json with the four runtime keys, and public/ ships verbatim, so
+    that file builds straight into dist/ at the same bucket key the stack stamps. It is
+    gitignored and dropped inside the build container; this pins the second half.
+
+    Vacuous on a machine with no local file, and deliberately so - it bites exactly where
+    the risk lives, on the developer who has one. Same shape as the layer and function
+    listing tests above, which also read clean on a fresh clone."""
+    listing = _staged_listing("SiteContentDeployment")
+    assert "config.json" not in listing, (
+        f"a config.json was built into the site asset: {listing}. The site deployment's "
+        "exclude keeps it from being uploaded today, but that exclude is there to scope "
+        "the prune - narrow it, or merge the two deployments, and this file publishes "
+        "over the deploy-stamped one and points the app at whatever API the developer "
+        "was testing against."
+    )
+
+
 def test_the_routing_function_matches_the_pages_the_build_emits():
     """The viewer-request function rewrites directory paths to index.html, which is only
     correct if Astro emits directory-format pages. The OAuth routes camp had (/login,
