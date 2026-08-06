@@ -5,9 +5,10 @@ document and do not change.
 
 ## What a card is
 
-One retrieved source, presented to the student. Not a fragment of the answer.
-The answer lives in the chat bubble; cards say where it came from and offer a
-next step.
+One retrieved source, presented to the student, carrying the part of the answer
+that sends them somewhere. Anything that names a destination, or that we learned
+from a source we ingested, belongs in a card: the specifics that make it usable
+and the next step. The chat bubble is the intro to them, not the answer.
 
 ## One model response per turn
 
@@ -77,9 +78,18 @@ balance is:
 - every field is within its length cap
 - prose is never empty
 
-Starting point: the prose answers directly in a few sentences and the card
-descriptions carry the per-source detail. Camp's shape, a teaser bubble with
-the content in the cards, stays reachable by prompt alone.
+Where it sits now: in the cards. Anything that sends a student somewhere, or
+that tells them about a source we ingested, is a card, and each one carries a
+real description rather than a bare source link - the destination, the specifics
+that make it usable, the next step. The prose is two or three lines saying what
+kinds of options exist and pointing at the cards below.
+
+The first shipped balance was the other one - prose answering directly in a few
+sentences, cards carrying per-source detail - and moving it took a prompt
+rewrite and one config number. That is the claim above holding up. The one thing
+the weighting does not change is a turn with no cards, where the prose is
+necessarily the whole answer; the prompt says so explicitly, because a teaser
+bubble above an empty space is this balance's failure mode.
 
 ## Length caps
 
@@ -91,8 +101,9 @@ shortened where it can be measured, never hidden by the layout.
 - Every card field is capped: title one line, desc, followup.
 - The cap is ONE value per field, in config.yaml `cards`. The server enforces it
   and the prompt is built with that number in it. Two literals would drift.
-- The number is derived from the layout, not chosen: narrowest supported
-  viewport, card font size, the line budget the design allows.
+- Where a cap answers to the layout, it is derived rather than chosen:
+  narrowest supported viewport, card font size, the line budget the design
+  allows. `title_max_chars` still is. `desc_max_chars` no longer is - see below.
 - Three layers, each catching a different failure. The prompt states the cap
   and every canonical example sits under it (primary steer, not a guarantee).
   The server truncates at a word boundary before the card leaves the backend,
@@ -101,10 +112,10 @@ shortened where it can be measured, never hidden by the layout.
 - Cap violation rate is an eval metric. If the model overruns often, either the
   prompt or the cap is wrong, and the fixture run says which.
 
-### How desc_max_chars = 140 was derived
+### Why desc_max_chars is 300
 
-At a 320px viewport - the floor implied by `<meta name="viewport"
-content="width=device-width">` with no min-width anywhere in the CSS:
+It was 140, and that number was the four-line clamp's capacity at a 320px
+viewport:
 
 ```
 320px  viewport
@@ -118,10 +129,22 @@ x4     lines (.statement-card--compact -webkit-line-clamp: 4)
 =147   minus wrap loss at line ends
 ```
 
-The 0.5em advance is the standard estimate for a humanist sans, not a
-measurement of Nunito Sans itself. Re-derive rather than nudging the number if
-the box changes; measuring the real advance in a browser is an open item in
-docs/build-plan.md.
+That arithmetic still derives `title_max_chars`, which is one line across the
+same 257.6px column. It no longer derives the description, because the four-line
+box it counted is being deleted: with the clamp gone the layout has no opinion
+about how long a description may be, and the cap becomes an editorial judgement
+instead of a measurement.
+
+The judgement is what a card is for. It carries the destination, the specifics
+that make it usable and the next step, which is two or three real sentences, and
+300 is that much room. The cap does not go away with the box - the reason for
+capping was never the clamp. An uncapped description is a paid model writing an
+essay into a card, and past roughly this length a card stops being scannable,
+which is the property that makes it a card rather than a paragraph.
+
+Both numbers still rest on a 0.5em advance, the standard estimate for a humanist
+sans rather than a measurement of Nunito Sans; measuring the real advance is an
+open item in docs/build-plan.md, and it now bears on the title cap only.
 
 ## Fallback
 

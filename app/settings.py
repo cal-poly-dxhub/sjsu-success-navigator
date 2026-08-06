@@ -81,12 +81,12 @@ class Settings:
     # The card contract (config.yaml `cards`). Each value is read by BOTH the parser in
     # cards.py and the prompt builder in prompts.py, which is the whole point of it being one
     # value: the cap the model is told is the cap the server enforces. Defaults match
-    # config.yaml, and desc_max_chars is derived from the card box at the narrowest
-    # supported viewport rather than chosen - the derivation is in config.yaml.
+    # config.yaml, where each number is explained - desc_max_chars is an editorial budget for
+    # how much of the answer a card carries, title_max_chars is derived from the card box.
     card_max_cards: int = 4
     card_max_retrieval_results: int = 6
     card_title_max_chars: int = 60
-    card_desc_max_chars: int = 140
+    card_desc_max_chars: int = 300
     card_followup_max_chars: int = 120
 
 
@@ -111,6 +111,6 @@ def load_settings() -> Settings:
         card_max_cards=_int("CARD_MAX_CARDS", 4),
         card_max_retrieval_results=_int("CARD_MAX_RETRIEVAL_RESULTS", 6),
         card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 60),
-        card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 140),
+        card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 300),
         card_followup_max_chars=_int("CARD_FOLLOWUP_MAX_CHARS", 120),
     )

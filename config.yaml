@@ -91,26 +91,31 @@ cards:
   # How many retrieval results the model is shown per search, deduplicated by URL. Each
   # carries a small integer id; the model cites ids and never sees or writes a URL.
   max_retrieval_results: 6
-  # DERIVED FROM THE LAYOUT, not chosen. At the narrowest supported viewport (320px, the
-  # floor implied by `<meta name="viewport" content="width=device-width">` with no
-  # min-width anywhere in the CSS):
+  # An EDITORIAL budget, not a layout measurement. 140 was what the four-line clamp on
+  # .statement-card--compact could hold at the narrowest viewport, so the box decided how
+  # much a card was allowed to say. That box is being deleted, and what replaces it is a
+  # judgement about what a card is FOR: it carries the destination, the specifics that make
+  # it usable, and the next step, while the prose above it is a short intro rather than the
+  # answer. Two or three real sentences is that much room, and 300 is that.
+  #
+  # Still capped, and still capped HERE: the reason for a cap was never the clamp. An
+  # unbounded description is a paid model writing an essay into a card, and past ~300 a card
+  # stops being scannable - which is the point of a card. The number reaches the parser and
+  # the prompt from this one line, so the model is briefed on the budget the server applies.
+  desc_max_chars: 300
+  # STILL DERIVED FROM THE LAYOUT: one line at the compact title size (0.9375rem / 15px)
+  # across the text column the narrowest supported viewport leaves (320px, the floor implied
+  # by `<meta name="viewport" content="width=device-width">` with no min-width in the CSS):
   #
   #   320px  viewport
   #   -32px  .chat-app__stage        width: min(1120px, 100% - 2rem)
   #   =288px panel (single column below the 860px breakpoint)
   #   -30.4  .statement-card--compact horizontal padding (0.95rem x 2)
   #   =257.6px text column
-  #   /7.0px avg char advance, Nunito Sans at 0.875rem (14px), ~0.5em
-  #   =36.8  characters per line
-  #   x4     lines (.statement-card--compact -webkit-line-clamp: 4)
-  #   =147   minus wrap loss at line ends
   #
-  # 220 was the old cap against the same 4-line box, which is why roughly a third of every
-  # description was lost to silent clipping. The 0.5em advance is the standard estimate for
-  # a humanist sans rather than a measurement of Nunito Sans itself; if the box changes,
-  # re-derive rather than nudging this number.
-  desc_max_chars: 140
-  # One line at the compact title size (0.9375rem / 15px) across the same 257.6px column.
+  # The per-character estimate behind that line is 0.5em, standard for a humanist sans and
+  # not a measurement of Nunito Sans itself (docs/build-plan.md has measuring it as an open
+  # item). Re-derive rather than nudging this number if the card box changes.
   title_max_chars: 60
   # The hidden prompt behind "Tell me more", sent as an ordinary user turn. Capped because
   # it is a paid model input, not because it is displayed - nothing renders it.

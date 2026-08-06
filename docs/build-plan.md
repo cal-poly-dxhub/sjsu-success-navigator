@@ -48,11 +48,20 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       the parser and the prompt. BREAKING: the wire contract is unchanged, but every
       card's text now comes from the model, so a deploy of this without the matching
       prompt produces zero cards rather than wrong ones.
+- [x] the cards carry the answer and the prose introduces them (docs/cards-v2.md).
+      cards.desc_max_chars 140 -> 300, and the system prompt says where the substance
+      goes: anything that sends a student somewhere, or tells them about a source we
+      ingested, is a card with a real description, and the prose is a two-or-three-line
+      intro pointing below. The cap stopped being a layout measurement when the
+      four-line clamp went - it is an editorial budget now, still one config value
+      reaching both the parser and the prompt. Whether the model actually shifts its
+      weight is a question for real answers, not the unit suite.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [ ] measure the real average character advance for Nunito Sans at 0.875rem in a
-      browser and re-derive cards.desc_max_chars; 140 comes from a 0.5em estimate
+      browser and re-derive cards.title_max_chars; 60 comes from a 0.5em estimate
       (config.yaml carries the arithmetic), which is standard for a humanist sans but
-      is not a measurement of this font
+      is not a measurement of this font. No longer bears on desc_max_chars, which is
+      no longer derived from the box.
 - [ ] cap-violation rate as an eval metric: if the model overruns often, either the
       prompt or the cap is wrong, and the fixture run says which
 - [ ] retune retrieve_min_score; 0.35 was tuned against a differently shaped corpus (needs account)
