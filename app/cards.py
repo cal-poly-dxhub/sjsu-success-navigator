@@ -1,269 +1,333 @@
+"""Cards, parsed from the tags the model emits - not cut out of anybody's prose.
+
+WHAT REPLACED WHAT. v1 had two card paths and neither one had an author. The tool path took
+a `submit_chat_response` JSON payload in which the model typed a `sourceUrl` string, which
+was then validated by EXACT string match against the retrieved URLs - so a URL that was
+right except for a trailing slash lost its link with no signal, and a URL the model invented
+outright was merely unlinked rather than rejected. The fallback path was worse: it built
+cards mechanically out of the retrieved PAGE text with a regex sentence split and a 220-char
+truncate, so on any timeout the student got cards nobody wrote, answering a question nobody
+had read. Both are gone. The model now emits its whole turn as text - prose plus <card>
+blocks - and this module is the only thing that reads it.
+
+THE MODEL CANNOT EXPRESS A URL. A card cites `ref="2"`, an integer from this turn's
+retrieval list, and the server resolves it against a map it built itself (TurnSources). The
+model is never shown a URL in the first place (see source_options_for_tool), so "do not
+invent URLs" stops being an instruction the model follows or ignores and becomes a shape its
+output has no room for. The failure mode is not reduced, it is unrepresentable.
+
+WHERE THE CAPS COME FROM. Every length cap arrives on Settings, sourced from config.yaml,
+and is read in exactly two places: here, where it is enforced, and prompts.py, where it is
+written into the contract the model is given. One value, so the number the model is told is
+by construction the number the server applies.
+
+AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
+reason is observability: a card that renders without its source button is a visible symptom,
+where a silently dropped card is a student seeing three cards instead of four and nobody
+finding out. The event is logged at WARNING with both the bad ref and the ids that were
+actually available, because the UI is the weaker half of that signal.
+"""
+
 from __future__ import annotations
 
 import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from settings import Settings
 from models import FollowupAction, SourceAction, StatementBatch, StatementCard
-from retrieve import RetrievedChunk, retrieve_chunks
-from section_presets import followup_for_section
+from retrieve import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
-MAX_CARDS_PER_BATCH = 4
-BODY_MAX_CHARS = 220
+# The label on the source link. Fixed here, not model-authored: it is chrome, and a model
+# that writes its own link labels eventually writes one that misdescribes the destination.
+SOURCE_ACTION_LABEL = "Open source"
 
-NOISY_SECTIONS = frozenset({"jobs", "events", "blog", "channels"})
-NOISY_QUERY_KEYWORDS = frozenset(
-    {
-        "job",
-        "jobs",
-        "career fair",
-        "event",
-        "events",
-        "workshop schedule",
-        "blog",
-        "channel",
-        "internship posting",
-    }
-)
+# The label on the follow-up button. Also fixed - the model authors only the hidden PROMPT
+# behind it (<followup>), which is what actually varies per card.
+FOLLOWUP_ACTION_LABEL = "Tell me more"
+
+# How much of a retrieved chunk the model is shown per result. Enough to write an honest
+# description from; not the whole page.
+SOURCE_EXCERPT_CHARS = 500
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+# A <card> block: any attributes, any body, non-greedy so two adjacent cards do not collapse
+# into one. `ref` is pulled out of the attributes separately rather than being required by
+# this pattern, because a card whose ref is MISSING still has to be found - it is a card that
+# loses its link, not text that silently stays in the prose.
+_CARD_BLOCK_RE = re.compile(r"<card\b([^>]*)>(.*?)</card\s*>", re.DOTALL | re.IGNORECASE)
+_REF_ATTR_RE = re.compile(r"\bref\s*=\s*[\"']?\s*(\d+)", re.IGNORECASE)
+_SAFETY_TAG_RE = re.compile(r"<safety\s*/?>", re.IGNORECASE)
 
 
-def build_statement_cards(
-    chunks: list[RetrievedChunk],
-    query: str,
-    *,
-    max_cards: int = MAX_CARDS_PER_BATCH,
-) -> list[StatementCard]:
-    ranked = _rank_chunks(chunks, query)
-    deduped = _dedupe_by_source_url(ranked)
-
-    cards: list[StatementCard] = []
-    for chunk in deduped:
-        if len(cards) >= max_cards:
-            break
-        card = _chunk_to_card(chunk)
-        if card is not None:
-            cards.append(card)
-
-    return cards
+def _field_re(name: str) -> re.Pattern[str]:
+    return re.compile(rf"<{name}\s*>(.*?)</{name}\s*>", re.DOTALL | re.IGNORECASE)
 
 
-def retrieve_statement_cards(
-    query: str,
-    # REQUIRED, where camp defaulted it to None. Not a behaviour change - a port
-    # necessity: camp's retrieve_chunks fell back to get_settings() when handed None,
-    # and this port has no such global (settings come from the environment the stack
-    # sets, resolved once at cold start). Leaving the default would turn a missing
-    # argument into an AttributeError on None inside retrieval.
-    settings: Settings,
-    *,
-    max_cards: int = MAX_CARDS_PER_BATCH,
-) -> list[StatementCard]:
-    chunks = retrieve_chunks(query, settings)
-    return build_statement_cards(chunks, query, max_cards=max_cards)
+_TITLE_RE = _field_re("title")
+_DESC_RE = _field_re("desc")
+_FOLLOWUP_RE = _field_re("followup")
+
+# Every tag this contract defines, opening or closing, well-formed or not. Used to scrub the
+# prose so a malformed block - an unclosed <card ref="2">, a stray </desc> - reaches the
+# student as text rather than as markup. Deliberately NOT a generic <[^>]+> sweep: that would
+# eat legitimate content the model might write about, and the guarantee needed here is only
+# that OUR tags never surface.
+_ANY_KNOWN_TAG_RE = re.compile(
+    r"</?\s*(?:card|title|desc|followup|safety)\b[^>]*/?>",
+    re.IGNORECASE,
+)
 
 
-def _rank_chunks(chunks: list[RetrievedChunk], query: str) -> list[RetrievedChunk]:
-    allow_noisy = _query_allows_noisy_sections(query)
-    preferred: list[RetrievedChunk] = []
-    noisy: list[RetrievedChunk] = []
+@dataclass(frozen=True)
+class SourceOption:
+    """One retrieved source, as the model sees it: an id, a title, and text.
 
-    for chunk in chunks:
-        section = (chunk.section or "").lower()
-        if section in NOISY_SECTIONS and not allow_noisy:
-            noisy.append(chunk)
-        else:
-            preferred.append(chunk)
+    No URL. The model never receives one, so it can never echo one back.
+    """
 
-    return preferred + noisy
-
-
-def _query_allows_noisy_sections(query: str) -> bool:
-    normalized = query.lower()
-    return any(keyword in normalized for keyword in NOISY_QUERY_KEYWORDS)
+    ref_id: int
+    title: str
+    text: str
+    source_url: str
+    section: str | None
 
 
-def _dedupe_by_source_url(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    best_by_url: dict[str, RetrievedChunk] = {}
+class TurnSources:
+    """The id-to-source map for ONE turn, and the only thing that can produce a card's URL.
 
-    for chunk in chunks:
-        key = chunk.source_url or chunk.s3_uri or chunk.text[:80]
-        existing = best_by_url.get(key)
-        if existing is None or chunk.score > existing.score:
-            best_by_url[key] = chunk
+    Ids are assigned here, per turn, and are deduplicated by URL across every retrieval call
+    the loop makes: a source that comes back from two different searches keeps the id it was
+    given the first time, so the model is never shown the same page under two numbers and
+    never has to guess which one to cite.
 
-    deduped = list(best_by_url.values())
-    deduped.sort(key=lambda chunk: chunk.score, reverse=True)
-    return deduped
+    Ids are NOT stable across turns and nothing persists them. A ref from a previous turn is
+    exactly as unresolvable as one the model invented, which is the intended behaviour - the
+    map is rebuilt from the sources this turn actually retrieved.
+    """
+
+    def __init__(self) -> None:
+        self._by_url: dict[str, SourceOption] = {}
+        self._by_id: dict[int, SourceOption] = {}
+        self._next_id = 1
+
+    def add_chunks(self, chunks: list[RetrievedChunk], *, limit: int) -> list[SourceOption]:
+        """Register a retrieval result set and return what to show the model for THIS call.
+
+        Capped at `limit` per call rather than per turn: the cap exists so one tool result
+        stays readable, not to bound how much the model may learn over several searches.
+        Chunks with no source_url are dropped here - a source that cannot be linked has
+        nothing to offer a card whose entire job is provenance.
+        """
+        options: list[SourceOption] = []
+
+        for chunk in sorted(chunks, key=lambda c: c.score, reverse=True):
+            if len(options) >= limit:
+                break
+
+            url = (chunk.source_url or "").strip()
+            if not url:
+                continue
+
+            existing = self._by_url.get(url)
+            if existing is not None:
+                # Same page, seen in an earlier search this turn. Reuse its id so the model
+                # is not shown one source under two numbers.
+                if existing not in options:
+                    options.append(existing)
+                continue
+
+            option = SourceOption(
+                ref_id=self._next_id,
+                title=(chunk.title or "").strip() or "Campus resource",
+                text=chunk.text,
+                source_url=url,
+                section=chunk.section,
+            )
+            self._by_url[url] = option
+            self._by_id[option.ref_id] = option
+            self._next_id += 1
+            options.append(option)
+
+        return options
+
+    def resolve(self, ref_id: int | None) -> SourceOption | None:
+        if ref_id is None:
+            return None
+        return self._by_id.get(ref_id)
+
+    def known_ids(self) -> list[int]:
+        return sorted(self._by_id)
+
+    def __len__(self) -> int:
+        return len(self._by_id)
 
 
-def _chunk_to_card(chunk: RetrievedChunk) -> StatementCard | None:
-    source_url = chunk.source_url
-    if not source_url:
-        return None
+@dataclass(frozen=True)
+class ParsedCard:
+    """One <card> block, exactly as written. Nothing resolved, nothing capped yet."""
 
-    title = _clean_title(chunk.title)
-    if not title:
-        return None
+    ref_id: int | None
+    title: str
+    desc: str
+    followup: str
 
-    body = _summarize_body(chunk.text)
-    if not body:
-        return None
 
-    card_id = _card_id(chunk.section, source_url)
-    followup_label, followup_prompt = _followup_actions(title, chunk.section)
+@dataclass(frozen=True)
+class ParsedResponse:
+    prose: str
+    cards: list[ParsedCard]
+    needs_safety: bool
 
-    return StatementCard(
-        id=card_id,
-        title=title,
-        body=body,
-        sourceUrl=source_url,
-        actions=[
-            SourceAction(label="Open source"),
-            FollowupAction(label=followup_label, prompt=followup_prompt),
-        ],
+
+def parse_model_response(text: str) -> ParsedResponse:
+    """Split one model turn into its prose and its card blocks.
+
+    The prose is everything OUTSIDE the card blocks, which is the fallback's whole mechanism:
+    if no block is well-formed then nothing is removed, every known tag is scrubbed, and the
+    student gets the model's complete text as one bubble. Content is never dropped on a parse
+    failure - only markup is.
+    """
+    source = text or ""
+
+    cards: list[ParsedCard] = []
+    for attrs, body in _CARD_BLOCK_RE.findall(source):
+        ref_match = _REF_ATTR_RE.search(attrs)
+        cards.append(
+            ParsedCard(
+                ref_id=int(ref_match.group(1)) if ref_match else None,
+                title=_first_field(_TITLE_RE, body),
+                desc=_first_field(_DESC_RE, body),
+                followup=_first_field(_FOLLOWUP_RE, body),
+            )
+        )
+
+    prose = _CARD_BLOCK_RE.sub("\n\n", source)
+    needs_safety = bool(_SAFETY_TAG_RE.search(prose))
+
+    return ParsedResponse(
+        prose=_clean_prose(prose),
+        cards=cards,
+        needs_safety=needs_safety,
     )
 
 
-def _clean_title(title: str | None) -> str:
-    if not title:
-        return "Campus resource"
-
-    cleaned = title.split("|", maxsplit=1)[0].strip()
-    cleaned = _WHITESPACE_RE.sub(" ", cleaned)
-    return cleaned or "Campus resource"
-
-
-def _summarize_body(text: str) -> str:
-    normalized = text.replace("\r", " ")
-    lines: list[str] = []
-    for line in normalized.split("\n"):
-        cleaned = re.sub(r"^#+\s*", "", line).strip()
-        if cleaned:
-            lines.append(cleaned)
-
-    normalized = _WHITESPACE_RE.sub(" ", " ".join(lines)).strip()
-    if not normalized:
+def _first_field(pattern: re.Pattern[str], body: str) -> str:
+    match = pattern.search(body)
+    if match is None:
         return ""
-
-    sentence_break = re.search(r"[.!?]\s", normalized)
-    if sentence_break and sentence_break.start() < BODY_MAX_CHARS:
-        candidate = normalized[: sentence_break.end()].strip()
-    else:
-        candidate = normalized
-
-    if len(candidate) > BODY_MAX_CHARS:
-        candidate = candidate[: BODY_MAX_CHARS - 1].rstrip() + "…"
-
-    return candidate
+    return _WHITESPACE_RE.sub(" ", match.group(1)).strip()
 
 
-def _card_id(section: str | None, source_url: str) -> str:
-    path = urlparse(source_url).path.strip("/")
-    slug = path.replace("/", "-").replace(".php", "").replace(".html", "")
-    slug = re.sub(r"[^a-zA-Z0-9-]+", "-", slug).strip("-").lower()
-
-    if section and slug:
-        return f"{section}-{slug}"[:80]
-    if slug:
-        return slug[:80]
-    if section:
-        return section[:80]
-    return "campus-resource"
+def _clean_prose(text: str) -> str:
+    """Scrub every known tag and normalise the blank lines a removed block leaves behind."""
+    stripped = _ANY_KNOWN_TAG_RE.sub("", text)
+    stripped = _BLANK_LINES_RE.sub("\n\n", stripped)
+    return "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
 
 
-def _followup_actions(title: str, section: str | None) -> tuple[str, str]:
-    """Delegates to section_presets, which is keyed on OUR crawl-list vocabulary.
-
-    Camp's inline table was keyed on its own section names and did not overlap ours on a
-    single value, so every card was silently taking the generic branch."""
-    return followup_for_section(section, title)
+def strip_card_tags(text: str) -> str:
+    """The whole response as prose, markup removed. The zero-cards fallback."""
+    return _clean_prose(text or "")
 
 
-def create_statement_batch(
-    cards: list[StatementCard],
-    query: str,
-) -> StatementBatch:
-    return StatementBatch(
-        id=f"batch-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}",
-        cards=cards[:MAX_CARDS_PER_BATCH],
-        query=query,
-        createdAt=int(time.time() * 1000),
-    )
+def truncate_to_cap(text: str, cap: int) -> str:
+    """Shorten to `cap` characters INCLUDING the ellipsis, breaking on a word boundary.
+
+    Shortening happens here, where it can be measured, rather than in the layout, where v1
+    did it: a CSS line clamp hides text without shortening it, so the model was never held to
+    a budget and roughly a third of every description was cut with no ellipsis to show it.
+    """
+    normalized = _WHITESPACE_RE.sub(" ", text or "").strip()
+    if len(normalized) <= cap:
+        return normalized
+
+    # One character of the budget belongs to the ellipsis.
+    head = normalized[: cap - 1]
+    boundary = head.rfind(" ")
+    if boundary > 0:
+        head = head[:boundary]
+
+    return head.rstrip(" ,;:.-") + "…"
 
 
-def chunks_to_tool_results(chunks: list[RetrievedChunk]) -> list[dict[str, object]]:
-    return [
-        {
-            "title": chunk.title,
-            "sourceUrl": chunk.source_url,
-            "section": chunk.section,
-            "score": round(chunk.score, 4),
-            "excerpt": chunk.text[:500],
-        }
-        for chunk in chunks
-    ]
-
-
-def cards_from_submission(
-    submitted_cards: list[dict[str, object]],
-    *,
-    known_chunks: list[RetrievedChunk],
+def cards_from_parsed(
+    parsed_cards: list[ParsedCard],
+    sources: TurnSources,
+    settings: Settings,
 ) -> list[StatementCard]:
-    known_by_url = {
-        chunk.source_url: chunk for chunk in known_chunks if chunk.source_url
-    }
+    """Turn parsed blocks into wire cards: resolve the ref, apply the caps, build the actions.
+
+    A card needs a title and a description to exist at all - those are the card. Everything
+    else degrades rather than dropping: an unresolvable ref costs the source button (see the
+    module docstring), and a missing, empty or over-cap follow-up costs the follow-up button.
+    """
     cards: list[StatementCard] = []
 
-    for item in submitted_cards[:MAX_CARDS_PER_BATCH]:
-        title = str(item.get("title", "")).strip()
-        body = str(item.get("body", "")).strip()
-        source_url = str(item.get("sourceUrl", "")).strip()
-        if not title or not body or not source_url:
+    for index, parsed in enumerate(parsed_cards):
+        if len(cards) >= settings.card_max_cards:
+            logger.info(
+                "Model emitted %s cards; keeping the first %s.",
+                len(parsed_cards),
+                settings.card_max_cards,
+            )
+            break
+
+        title = truncate_to_cap(parsed.title, settings.card_title_max_chars)
+        desc = truncate_to_cap(parsed.desc, settings.card_desc_max_chars)
+        if not title or not desc:
+            logger.warning(
+                "Dropping a card block with no %s (ref=%r).",
+                "title" if not title else "description",
+                parsed.ref_id,
+            )
             continue
 
-        known = known_by_url.get(source_url)
-        section = known.section if known else _section_from_url(source_url)
-        card_id = _card_id(section, source_url)
-        followup_label, followup_prompt = _followup_actions(title, section)
-
-        # DELIBERATE CHANGE TO CAMP'S BEHAVIOUR (approved, docs/build-plan.md bullet 7).
-        # Camp attached "Open source" to every submitted card, linking whatever URL the
-        # model put in the field. It only ever looked the URL up to READ a section, and a
-        # miss fell through to guessing the section from the URL's own path - so a URL the
-        # model invented was never rejected, just linked.
-        #
-        # A card whose sourceUrl was not among the retrieved sources now loses its LINK.
-        # The card survives with its title, body and follow-up: the model's prose may
-        # still be right, and the frontend renders an anchor only when a `source` action
-        # is present (StatementCard.tsx), so dropping the action drops the link with no
-        # change to the wire contract.
-        #
-        # The sourceUrl FIELD stays populated because the type requires a string and
-        # camp's frontend reads it; nothing renders it without the action. Removing the
-        # field would be the silent break the port is explicitly avoiding.
-        actions: list = []
-        if known is not None:
-            actions.append(SourceAction(label="Open source"))
-        else:
+        source = sources.resolve(parsed.ref_id)
+        if source is None:
             logger.warning(
-                "Dropping the link on a submitted card whose sourceUrl was not retrieved: %r",
-                source_url,
+                "Card ref %r did not resolve against this turn's sources (available: %s). "
+                "Keeping the card without its source link.",
+                parsed.ref_id,
+                sources.known_ids(),
             )
-        actions.append(FollowupAction(label=followup_label, prompt=followup_prompt))
+
+        actions: list = []
+        if source is not None:
+            actions.append(SourceAction(label=SOURCE_ACTION_LABEL))
+
+        # Over-cap follow-ups lose the button rather than being truncated. A shortened
+        # question is a DIFFERENT question, and this text is not displayed - it is sent as
+        # the student's next turn - so trimming it would silently ask something else.
+        followup = _WHITESPACE_RE.sub(" ", parsed.followup).strip()
+        if followup and len(followup) <= settings.card_followup_max_chars:
+            actions.append(
+                FollowupAction(label=FOLLOWUP_ACTION_LABEL, prompt=followup)
+            )
+        elif followup:
+            logger.warning(
+                "Dropping an over-cap follow-up prompt (%s chars, cap %s) on card ref=%r.",
+                len(followup),
+                settings.card_followup_max_chars,
+                parsed.ref_id,
+            )
 
         cards.append(
             StatementCard(
-                id=card_id,
+                id=_card_id(index, source),
                 title=title,
-                body=body,
-                sourceUrl=source_url,
+                body=desc,
+                # The type requires a string and the frontend reads the field, but nothing
+                # renders it without a `source` action - so an unresolved ref yields a card
+                # with no link rather than a card with a broken one.
+                sourceUrl=source.source_url if source is not None else "",
                 actions=actions,
             )
         )
@@ -271,6 +335,37 @@ def cards_from_submission(
     return cards
 
 
-def _section_from_url(source_url: str) -> str | None:
-    path = urlparse(source_url).path.strip("/").split("/")
-    return path[0].lower() if path else None
+def _card_id(index: int, source: SourceOption | None) -> str:
+    """A batch-unique React key. Index-prefixed so two cards citing one source still differ."""
+    if source is None:
+        return f"c{index}-unsourced"
+
+    path = urlparse(source.source_url).path.strip("/")
+    slug = path.replace("/", "-").replace(".php", "").replace(".html", "")
+    slug = re.sub(r"[^a-zA-Z0-9-]+", "-", slug).strip("-").lower()
+    return f"c{index}-{slug}"[:80] if slug else f"c{index}-source"
+
+
+def source_options_for_tool(options: list[SourceOption]) -> list[dict[str, object]]:
+    """The retrieval tool result, as the model sees it.
+
+    `id`, `title`, `text`. No URL, deliberately - see the module docstring. Nothing the model
+    can write consumes a URL, so sending one would only give it a string to copy into prose.
+    """
+    return [
+        {
+            "id": option.ref_id,
+            "title": option.title,
+            "text": option.text[:SOURCE_EXCERPT_CHARS],
+        }
+        for option in options
+    ]
+
+
+def create_statement_batch(cards: list[StatementCard], query: str) -> StatementBatch:
+    return StatementBatch(
+        id=f"batch-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}",
+        cards=cards,
+        query=query,
+        createdAt=int(time.time() * 1000),
+    )

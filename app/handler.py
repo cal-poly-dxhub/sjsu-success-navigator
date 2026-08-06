@@ -30,7 +30,7 @@ import boto3
 from botocore.config import Config
 
 from models import ChatRequest
-from orchestrator import classify_response_mode, run_chat
+from orchestrator import run_chat
 from safety import try_safety_response
 from settings import load_settings
 
@@ -216,5 +216,12 @@ def lambda_handler(event, context):
         logger.exception("Chat orchestration failed")
         return _response(502, {"error": "The assistant is unavailable right now."})
 
-    logger.info("chat route=%s", classify_response_mode(response))
+    # Replaces classify_response_mode, which collapsed a turn into one of three words by
+    # reading only the FIRST statement batch. The counts say strictly more and cannot go
+    # stale against the response shape.
+    logger.info(
+        "chat cards=%s safety=%s",
+        sum(len(batch.cards) for batch in (response.statement_batches or [])),
+        response.safety_handoff is not None,
+    )
     return _chat_response(response)

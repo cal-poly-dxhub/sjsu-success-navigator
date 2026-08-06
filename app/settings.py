@@ -78,6 +78,17 @@ class Settings:
     # the handler narrows it further using Lambda's own remaining time.
     converse_deadline_seconds: int = 22
 
+    # The card contract (config.yaml `cards`). Each value is read by BOTH the parser in
+    # cards.py and the prompt builder in prompts.py, which is the whole point of it being one
+    # value: the cap the model is told is the cap the server enforces. Defaults match
+    # config.yaml, and desc_max_chars is derived from the card box at the narrowest
+    # supported viewport rather than chosen - the derivation is in config.yaml.
+    card_max_cards: int = 4
+    card_max_retrieval_results: int = 6
+    card_title_max_chars: int = 60
+    card_desc_max_chars: int = 140
+    card_followup_max_chars: int = 120
+
 
 def load_settings() -> Settings:
     """Build Settings from the environment. Raises SettingsError on missing identity."""
@@ -97,4 +108,9 @@ def load_settings() -> Settings:
         max_converse_iterations=_int("MAX_CONVERSE_ITERATIONS", 6),
         max_history_messages=_int("MAX_HISTORY_MESSAGES", 12),
         converse_deadline_seconds=_int("CONVERSE_DEADLINE_SECONDS", 22),
+        card_max_cards=_int("CARD_MAX_CARDS", 4),
+        card_max_retrieval_results=_int("CARD_MAX_RETRIEVAL_RESULTS", 6),
+        card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 60),
+        card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 140),
+        card_followup_max_chars=_int("CARD_FOLLOWUP_MAX_CHARS", 120),
     )

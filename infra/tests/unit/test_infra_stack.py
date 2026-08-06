@@ -681,7 +681,12 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
     rule and point a redeployed stack at the previous guardrail version.
 
     The version matters most: pinning to DRAFT instead would be mutable, with no rollback."""
-    from infra.config import resolve_chat, resolve_generation, resolve_retrieval
+    from infra.config import (
+        resolve_cards,
+        resolve_chat,
+        resolve_generation,
+        resolve_retrieval,
+    )
 
     config = load_config()
     env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")["Properties"][
@@ -704,6 +709,15 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
     assert env["CONVERSE_DEADLINE_SECONDS"] == str(
         resolve_chat(config)["converse_deadline_seconds"]
     )
+    # The card caps. Every one of these reaches BOTH the parser that enforces it and the
+    # system prompt that states it, so a value that fails to arrive would let the two
+    # disagree - the model briefed on one budget, the server applying another.
+    cards_cfg = resolve_cards(config)
+    assert env["CARD_MAX_CARDS"] == str(cards_cfg["max_cards"])
+    assert env["CARD_MAX_RETRIEVAL_RESULTS"] == str(cards_cfg["max_retrieval_results"])
+    assert env["CARD_TITLE_MAX_CHARS"] == str(cards_cfg["title_max_chars"])
+    assert env["CARD_DESC_MAX_CHARS"] == str(cards_cfg["desc_max_chars"])
+    assert env["CARD_FOLLOWUP_MAX_CHARS"] == str(cards_cfg["followup_max_chars"])
     # AWS_REGION is RESERVED - Lambda sets it and rejects it in a function's configuration -
     # so the region has to travel under our own key.
     assert "AWS_REGION" not in env
@@ -826,7 +840,6 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "prompts.py",
         "retrieve.py",
         "safety.py",
-        "section_presets.py",
         "settings.py",
         "tools.py",
     ]

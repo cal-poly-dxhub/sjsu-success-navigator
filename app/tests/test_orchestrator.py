@@ -11,6 +11,7 @@ import pytest
 
 import orchestrator
 from models import ChatRequest
+from retrieve import RetrievedChunk
 from settings import Settings
 
 _SETTINGS = Settings(
@@ -66,11 +67,14 @@ def _tool_turn(name, tool_input, tool_use_id="tu-1"):
     }
 
 
+def _retrieval_turn(query="tutoring", tool_use_id="tu-1"):
+    return _tool_turn("retrieve_campus_resources", {"query": query}, tool_use_id)
+
+
 @pytest.fixture
 def no_retrieval(monkeypatch):
     """Retrieval returns nothing, so tests exercise loop control flow rather than cards."""
     monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
-    monkeypatch.setattr(orchestrator, "retrieve_statement_cards", lambda query, settings: [])
 
 
 def _run(monkeypatch, fake, deadline=None, settings=_SETTINGS):
@@ -80,20 +84,126 @@ def _run(monkeypatch, fake, deadline=None, settings=_SETTINGS):
     )
 
 
-def test_submit_chat_response_ends_the_loop(monkeypatch, no_retrieval):
-    fake = _FakeBedrock(
-        [_tool_turn("submit_chat_response", {"conversationalText": "Try Peer Connections.", "cards": []})]
-    )
+def test_the_models_text_reply_ends_the_loop(monkeypatch, no_retrieval):
+    """There is no submit tool any more. `end_turn` is the only way a turn ends, and the
+    text of that turn IS the answer - which is what removed the second exit path and the
+    mechanical card builder behind it."""
+    fake = _FakeBedrock([_text_turn("Try Peer Connections.")])
     response = _run(monkeypatch, fake)
     assert fake.calls == 1
     assert response.conversational_text == "Try Peer Connections."
+    assert response.statement_batches is None
+
+
+def test_submit_chat_response_is_no_longer_offered_as_a_tool(monkeypatch, no_retrieval):
+    """Its removal is the substance of this change, not a side effect: while it existed the
+    model typed its own sourceUrl, so an invented URL was something to detect after the fact
+    rather than something it had no way to express."""
+    fake = _FakeBedrock([_text_turn("hi")])
+    _run(monkeypatch, fake)
+
+    tool_names = {tool["toolSpec"]["name"] for tool in fake.kwargs["toolConfig"]["tools"]}
+    assert tool_names == {"retrieve_campus_resources"}
+
+
+def test_a_retrieved_source_becomes_a_card_the_model_wrote(monkeypatch):
+    """The end-to-end contract: retrieve, hand the model numbered sources, take back tagged
+    text, resolve the ref to the URL the server itself holds."""
+    monkeypatch.setattr(
+        orchestrator,
+        "retrieve_chunks",
+        lambda query, settings: [
+            RetrievedChunk(
+                text="Drop-in tutoring for math.",
+                score=0.9,
+                source_url="https://www.sjsu.edu/tutoring/index.php",
+                title="Peer Connections",
+                section="tutoring-academic-support",
+                s3_uri=None,
+            )
+        ],
+    )
+
+    fake = _FakeBedrock(
+        [
+            _retrieval_turn(),
+            _text_turn(
+                'Tutoring is free.\n\n<card ref="1">'
+                "<title>Free math tutoring</title>"
+                "<desc>Drop-in help for lower-division math.</desc>"
+                "<followup>How do I book a tutor?</followup></card>"
+            ),
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    card = response.statement_batches[0].cards[0]
+    assert response.conversational_text == "Tutoring is free."
+    assert card.title == "Free math tutoring"
+    assert card.source_url == "https://www.sjsu.edu/tutoring/index.php"
+    assert [action.type for action in card.actions] == ["source", "followup"]
+
+
+def test_the_model_is_handed_numbered_sources_and_no_urls(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator,
+        "retrieve_chunks",
+        lambda query, settings: [
+            RetrievedChunk(
+                text="Drop-in tutoring for math.",
+                score=0.9,
+                source_url="https://www.sjsu.edu/tutoring/index.php",
+                title="Peer Connections",
+                section="tutoring",
+                s3_uri=None,
+            )
+        ],
+    )
+
+    fake = _FakeBedrock([_retrieval_turn(), _text_turn("done")])
+    _run(monkeypatch, fake)
+
+    sent = str(fake.kwargs["messages"])
+    assert '"id": 1' in sent
+    assert "sjsu.edu" not in sent, "a URL in the transcript is a URL the model can copy"
+
+
+def test_an_unparseable_reply_becomes_one_bubble_with_the_tags_stripped(monkeypatch, no_retrieval):
+    """The regression that must never come back. v1 answered a broken reply with cards built
+    out of retrieved page text - confident referrals nobody had written."""
+    fake = _FakeBedrock(
+        [_text_turn('Here is what I found.\n\n<card ref="1"><title>Tutoring</title><desc>Free help.')]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.statement_batches is None
+    assert "<card" not in response.conversational_text
+    assert "Here is what I found." in response.conversational_text
+    assert "Free help." in response.conversational_text, "content survives the markup"
+
+
+def test_a_safety_tag_drops_the_cards_and_attaches_the_fixed_panel(monkeypatch, no_retrieval):
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "<safety/>\n\nPlease reach out to someone below.\n\n"
+                '<card ref="1"><title>T</title><desc>D</desc></card>'
+            )
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.safety_handoff is not None
+    assert response.statement_batches is None
+    assert "<safety" not in response.conversational_text
+    assert "T</title>" not in response.conversational_text
 
 
 def test_the_loop_stops_at_the_iteration_cap(monkeypatch, no_retrieval, caplog):
     """A model that never submits must not loop forever. Camp fell through silently;
     the cap is config here and the exhaustion is logged."""
     settings = Settings(**{**_SETTINGS.__dict__, "max_converse_iterations": 3})
-    fake = _FakeBedrock([_tool_turn("retrieve_campus_resources", {"query": "tutoring"})])
+    fake = _FakeBedrock([_retrieval_turn()])
 
     with caplog.at_level("WARNING"):
         response = _run(monkeypatch, fake, settings=settings)
@@ -127,22 +237,23 @@ def test_the_loop_stops_at_the_wall_clock_deadline(monkeypatch, no_retrieval, ca
 
 
 def test_the_deadline_path_does_not_retrieve_again(monkeypatch):
-    """The fallback's last-resort retrieval is a fresh network call. Running it after the
-    budget is spent is the exact overrun the deadline exists to prevent."""
+    """v1's fallback made a fresh retrieval call on the way out, which is the exact overrun
+    the deadline exists to prevent. There is no such path now - the loop answers from the
+    text it already has - and this pins that no network call happens on the way out."""
     clock = {"now": 500.0}
     monkeypatch.setattr(orchestrator.time, "monotonic", lambda: clock["now"])
-    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
 
     def _forbidden(query, settings):
         raise AssertionError("retrieval ran after the deadline had passed")
 
-    monkeypatch.setattr(orchestrator, "retrieve_statement_cards", _forbidden)
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", _forbidden)
 
-    fake = _FakeBedrock([_tool_turn("retrieve_campus_resources", {"query": "x"})])
+    fake = _FakeBedrock([_retrieval_turn("x")])
     response = _run(monkeypatch, fake, deadline=499.0)
 
     assert fake.calls == 0, "an already-passed deadline must not start any model call"
     assert response.conversational_text
+    assert response.statement_batches is None, "no cards may be invented on the way out"
 
 
 def test_an_absent_deadline_is_derived_from_config(monkeypatch, no_retrieval):
@@ -194,9 +305,7 @@ def test_history_is_trimmed_server_side_to_the_configured_window(monkeypatch, no
 def test_the_response_serialises_to_camps_camelcase_wire_contract(monkeypatch, no_retrieval):
     """Camp's own frontend arrives at a later bullet and reads these exact keys, so a
     rename here is a silent break."""
-    fake = _FakeBedrock(
-        [_tool_turn("submit_chat_response", {"conversationalText": "Here you go.", "cards": []})]
-    )
+    fake = _FakeBedrock([_text_turn("Here you go.")])
     response = _run(monkeypatch, fake)
     body = response.model_dump(by_alias=True)
     assert body["conversationalText"] == "Here you go."
