@@ -69,6 +69,13 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       cap without rewriting the prompt's examples truncates cards instead of shortening
       them. Still no clamp, no fixed height, no minimum height, and reduced motion still
       presents the grid directly.
+- [x] a follow-up click is an ordinary user turn, so it can carry cards (docs/cards-v2.md,
+      Tell me more). The card-suppression note is out of the user message and the matching
+      guidance is out of the system prompt, including "do not repeat cards the student
+      already has" - unenforceable, since history carries prose only, and it degraded into
+      blanket avoidance. Retrieval guidance now turns on whether the answer needs a source
+      rather than on the turn's position. `followup` stays on the wire contract with no
+      backend reader.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [ ] measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

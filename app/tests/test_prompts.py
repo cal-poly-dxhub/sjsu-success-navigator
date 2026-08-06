@@ -100,6 +100,29 @@ def test_the_card_descriptions_in_the_examples_carry_real_substance():
         assert len(desc) >= 150, f"a thin <desc> example undercuts the weighting: {desc!r}"
 
 
+def test_the_prompt_never_withholds_cards_because_a_turn_is_a_follow_up():
+    """The other half of the follow-up fix. The request path stopped injecting the
+    suppression (test_orchestrator), and the system prompt must not restate it: a section
+    telling the model to answer a click narrowly, or to skip cards it thinks the student
+    already has, reproduces the bug with the wire flag untouched.
+
+    "Do not repeat cards the student already has" is the subtler one and is gone for a
+    reason worth keeping written down: history carries prose only, so the model cannot see
+    which cards were shown, and an instruction it has no way to evaluate degrades into
+    emitting nothing.
+    """
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "Card follow-up context" not in prompt
+    assert "clicked a follow-up" not in prompt
+    assert "Do not repeat cards" not in prompt
+    # Retrieval turns on whether the answer needs a source, never on the turn's position.
+    assert "narrow follow-ups" not in prompt
+    assert "Decide by what the answer needs, not by where the question sits" in prompt
+    # And says the positive thing, so a rewrite cannot quietly drift back.
+    assert "A follow-up is a question like any other." in prompt
+
+
 def test_the_prompt_tells_the_model_where_the_answer_goes():
     """The editorial division, asserted as presence rather than wording: destinations and
     retrieved detail belong in cards, the prose is a short intro. If a later rewrite drops

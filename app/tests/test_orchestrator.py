@@ -302,6 +302,32 @@ def test_history_is_trimmed_server_side_to_the_configured_window(monkeypatch, no
     assert "three" in sent and "four" in sent, "the window's turns must survive"
 
 
+def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypatch, no_retrieval):
+    """The bug this pins: `followup: true` used to append "emit no cards unless they clearly
+    changed topic" to the user message, so clicking Tell me more could not produce cards while
+    typing the same words could. The flag stays on the wire contract; it must not change a
+    single byte of what the model is sent. Compared as whole message lists, history included,
+    because the suppression note lived inside the last one."""
+    history = [
+        {"role": "user", "text": "where do I get tutoring?"},
+        {"role": "assistant", "text": "Peer Connections runs drop-in tutoring."},
+    ]
+    query = "How do I book a calculus tutor at Peer Connections?"
+
+    sent = []
+    for followup in (False, True):
+        fake = _FakeBedrock([_text_turn("Here you go.")])
+        monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+        orchestrator.run_chat(
+            ChatRequest(query=query, followup=followup, history=history), _SETTINGS
+        )
+        sent.append(fake.kwargs["messages"])
+
+    typed, clicked = sent
+    assert clicked == typed
+    assert "follow-up" not in str(clicked) and "no cards" not in str(clicked)
+
+
 def test_the_response_serialises_to_camps_camelcase_wire_contract(monkeypatch, no_retrieval):
     """Camp's own frontend arrives at a later bullet and reads these exact keys, so a
     rename here is a silent break."""
