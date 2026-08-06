@@ -119,9 +119,9 @@ viewport:
 
 ```
 320px  viewport
--32px  .chat-app__stage        width: min(1120px, 100% - 2rem)
+-32px  .chat-app__stage   width: min(1120px, 100% - 2rem)
 =288px panel (single column below the 860px breakpoint)
--30.4  .statement-card--compact horizontal padding (0.95rem x 2)
+-30.4  .statement-card horizontal padding (0.95rem x 2)
 =257.6px text column
 /7.0px avg char advance, Nunito Sans at 0.875rem (14px), ~0.5em
 =36.8  characters per line
@@ -129,11 +129,14 @@ x4     lines (.statement-card--compact -webkit-line-clamp: 4)
 =147   minus wrap loss at line ends
 ```
 
-That arithmetic still derives `title_max_chars`, which is one line across the
-same 257.6px column. It no longer derives the description, because the four-line
-box it counted is being deleted: with the clamp gone the layout has no opinion
-about how long a description may be, and the cap becomes an editorial judgement
-instead of a measurement.
+**The last two lines of that sum no longer hold.** The 4-line clamp and the
+`--compact` modifier are both deleted (see Presentation below), so there is no
+line budget left to multiply by. The width arithmetic above is still current -
+the panel is 288px at the 320px floor and the card's horizontal padding is
+unchanged - and it still derives `title_max_chars`, which is one line across the
+same 257.6px column. It no longer derives the description: with the clamp gone
+the layout has no opinion about how long a description may be, and the cap
+becomes an editorial judgement instead of a measurement.
 
 The judgement is what a card is for. It carries the destination, the specifics
 that make it usable and the next step, which is two or three real sentences, and
@@ -145,6 +148,44 @@ which is the property that makes it a card rather than a paragraph.
 Both numbers still rest on a 0.5em advance, the standard estimate for a humanist
 sans rather than a measurement of Nunito Sans; measuring the real advance is an
 open item in docs/build-plan.md, and it now bears on the title cap only.
+
+## Presentation
+
+Cards carry the destinations and the specifics; the prose is a short intro. A
+card that is clipped is therefore an answer that is clipped, so the layout has
+nowhere left to hide text.
+
+- **The card is as tall as its own text.** No line clamp, no ellipsis, no fixed
+  or minimum height, in a grid whose items do not stretch to match their row.
+  Cards in a row end at different heights on purpose.
+- **The grid is responsive**, `auto-fill` over a 15.5rem floor: multiple columns
+  when the panel is wide enough, one column at the 320px viewport floor. The
+  floor is measured against this layout, not picked - two tracks plus the gap
+  need 509.6px and the panel is 546px at a 1280px viewport.
+- **The prose stays.** It is never replaced, scaled away or scrolled off by the
+  cards. The column grows underneath it and the view anchors to the top of the
+  card group, once, when the group first appears.
+- **The group enters by dealing off a deck.** Cards leave the deck one at a
+  time, top card first, and land in final form; the last card is down inside
+  0.75s at the card ceiling of four. There is no reveal button and nothing to
+  press - the prose finishing typing is what brings the cards out. The composer
+  stays interactive throughout, and a click on a card mid-entrance does nothing
+  rather than landing on a card that is about to move out from under it.
+- **The entrance is transform-only.** The grid is laid out final-form first and
+  each card animated back from a measured stack position, so the column is at
+  its finished height from the first frame and nothing below the group reflows
+  while cards are in the air. Hover is transform and shadow only, for the same
+  reason, and only on a real pointer - touch gets no hover state.
+- **`prefers-reduced-motion: reduce` presents the grid directly.** No deck, no
+  stagger, no transition. The preference is read on the first render rather than
+  in an effect, so there is no animated frame to correct.
+- **The group exists only when cards actually parsed**, and safety cards are
+  never choreographed: they are on screen, whole, the moment the turn renders.
+
+This replaced `CardStackAnimator`, the `PulseFab` reveal button, the `useRagPhase`
+timing machine and the one-at-a-time progress bar, none of which have a caller
+left. `RagPhase` is down to `conversational` and `grid`, and there is no longer a
+phase in which the prose is off screen.
 
 ## Fallback
 
@@ -187,12 +228,10 @@ available, because the UI is the weaker half of that signal.
 The cost is real and worth stating: allowing a linkless card now means
 tightening the rule later has to fight prompts that learned the loose version.
 
-**The presentation layer is untouched.** The draft called for removing
-`CardStackAnimator` and the reveal gate. This change is backend and data
-contract only; the existing reveal button and stack animation stay exactly as
-they are, rendering the new fields. The presentation rework in the draft - the
-conversational text staying put, variable-height cards, scroll anchoring to the
-top of the card group - is not implemented here.
+**The presentation layer was reworked in a second commit.** The tag-contract
+commit was backend and data contract only and deliberately left the reveal
+button and stack animation in place. The presentation rework the draft called
+for then landed on its own, and is described under Presentation below.
 
 ## How we know it works
 

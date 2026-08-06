@@ -5,14 +5,6 @@
 	width: 100%;
 }
 
-.conversational-bubble__fab {
-	display: flex;
-	justify-content: center;
-	width: 100%;
-	max-width: 28rem;
-	margin-top: 0.85rem;
-}
-
 .conversational-bubble {
 	width: 100%;
 	max-width: 28rem;

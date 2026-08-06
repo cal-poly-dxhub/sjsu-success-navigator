@@ -5,12 +5,11 @@ import './StatementCard.css';
 type StatementCardProps = {
 	card: StatementCardData;
 	onFollowup: (prompt: string) => void;
-	compact?: boolean;
 };
 
-export function StatementCard({ card, onFollowup, compact = false }: StatementCardProps) {
+export function StatementCard({ card, onFollowup }: StatementCardProps) {
 	return (
-		<article className={`statement-card${compact ? ' statement-card--compact' : ''}`}>
+		<article className="statement-card">
 			<header className="statement-card__header">
 				<h2 className="statement-card__title">{card.title}</h2>
 			</header>

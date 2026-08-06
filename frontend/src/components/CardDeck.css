@@ -1,0 +1,33 @@
+.card-deck {
+	display: grid;
+	/*
+	 * auto-fill, not auto-fit: a lone card keeps one track's width instead of stretching
+	 * across the panel, so a card is the same size whatever the count. `min(100%, ...)`
+	 * keeps the track from overflowing a panel narrower than the floor - at a 320px
+	 * viewport the panel is 288px and this resolves to a single column.
+	 *
+	 * 15.5rem is measured against this layout, not picked: the panel is 546px at a 1280px
+	 * viewport (13rem side nav, then the 1.05fr of the split stage), and two 15.5rem
+	 * tracks plus the gap need 509.6px. A 17rem floor left a 1280px laptop in one column.
+	 */
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	/* Each card is as tall as its own content. Nothing stretches to match its row. */
+	align-items: start;
+	gap: 0.85rem;
+	width: 100%;
+}
+
+/* A click while cards are still in the air does nothing rather than landing on a card
+   that is about to move out from under the pointer. */
+.card-deck--dealing {
+	pointer-events: none;
+}
+
+.card-deck__item {
+	min-width: 0;
+	transform-origin: top center;
+}
+
+.card-deck--dealing .card-deck__item {
+	will-change: transform;
+}

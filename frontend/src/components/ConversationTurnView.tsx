@@ -2,10 +2,9 @@ import { useCallback, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
 import { FormattedMessage } from './FormattedMessage';
 import type { ConversationTurn, RagPhase } from '../types/chat';
-import { useRagPhase } from '../hooks/useRagPhase';
 import { ConversationalBubble } from './ConversationalBubble';
-import { CardStackAnimator } from './CardStackAnimator';
-import { RagGrid, RagProgress } from './StatementStack';
+import { scrollElementToTop } from '../lib/scrollAnchor';
+import { RagGrid } from './StatementStack';
 import { SafetyHandoff } from './SafetyHandoff';
 import { UserPrompt } from './UserPrompt';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
@@ -30,37 +29,38 @@ export function ConversationTurnView({
 }: ConversationTurnViewProps) {
 	const reduceMotion = usePrefersReducedMotion();
 	const hasRag = turn.cards.length > 0;
-	const hasSafety = Boolean(turn.safetyHandoff);
-
-	const handleRequestPhase = useCallback(
-		(phase: RagPhase | 'done') => {
-			onPhaseChange(turn.id, phase);
-		},
-		[onPhaseChange, turn.id],
-	);
-
-	const rag = useRagPhase({
-		phase: isActive ? turn.phase : turn.phase === 'done' ? 'done' : turn.phase,
-		cardCount: turn.cards.length,
-		reduceMotion,
-		onRequestPhase: isActive && hasRag ? handleRequestPhase : () => {},
-	});
-
 	const phase = turn.phase;
-	const prevPhaseRef = useRef(phase);
-	const animateGridIn = prevPhaseRef.current === 'scroll' && phase === 'grid';
+	const cardGroupRef = useRef<HTMLDivElement>(null);
+	const anchoredRef = useRef(false);
 
+	/**
+	 * The prose finishing typing is what brings the cards out - there is no reveal button
+	 * and nothing for the student to press. The prose stays exactly where it is; the
+	 * column grows underneath it.
+	 */
+	const revealCards = useCallback(() => {
+		if (!isActive || !hasRag || phase !== 'conversational') return;
+		onPhaseChange(turn.id, 'grid');
+	}, [isActive, hasRag, phase, onPhaseChange, turn.id]);
+
+	// A turn with cards but no prose has nothing to finish typing, so nothing would ever
+	// call revealCards. The contract says prose is never empty; this is the belt.
 	useEffect(() => {
-		prevPhaseRef.current = phase;
-	}, [phase]);
+		if (turn.text.trim()) return;
+		revealCards();
+	}, [turn.text, revealCards]);
 
-	const showArchivedGrid = !isActive && hasRag && phase === 'done';
-	const showActiveGrid = isActive && hasRag && phase === 'grid';
-	const showScroll = isActive && hasRag && phase === 'scroll';
-	const showConversational =
-		isActive && !hasSafety && hasRag && (phase === 'conversational' || rag.bubbleExiting);
-	const showTalkBubble = isActive && !hasRag && !hasSafety;
-	const staticBubble = !isActive && !hasRag && !hasSafety;
+	const showCards = hasRag && (isActive ? phase === 'grid' : true);
+
+	// Anchor to the top of the card group the first time it appears, once. Re-anchoring on
+	// every render would fight the student's own scrolling.
+	useEffect(() => {
+		if (!showCards || !isActive || anchoredRef.current) return;
+		const group = cardGroupRef.current;
+		if (!group) return;
+		anchoredRef.current = true;
+		window.requestAnimationFrame(() => scrollElementToTop(group, reduceMotion));
+	}, [showCards, isActive, reduceMotion]);
 
 	const layoutTransition = reduceMotion
 		? { duration: 0 }
@@ -76,85 +76,35 @@ export function ConversationTurnView({
 			{turn.query ? <UserPrompt text={turn.query} /> : null}
 
 			<div className="conversation-exchange__response">
-				{showArchivedGrid ? (
-					<RagGrid
-						cards={turn.cards}
-						onFollowup={onFollowup}
-						createdAt={turn.createdAt}
-						archived
+				{turn.text && isActive ? (
+					<ConversationalBubble
+						text={turn.text}
+						introDelayMs={introDelayMs}
+						onTypingChange={onTypingChange}
+						onTypingComplete={revealCards}
 					/>
 				) : null}
 
-				{staticBubble ? (
+				{turn.text && !isActive ? (
 					<div className="conversation-turn__static-bubble">
 						<FormattedMessage text={turn.text} />
 					</div>
 				) : null}
 
-				{hasSafety && turn.safetyHandoff ? (
-					<div className="conversation-turn__safety">
-						{isActive ? (
-							<ConversationalBubble
-								text={turn.text}
-								introDelayMs={introDelayMs}
-								active
-								onTypingChange={onTypingChange}
-							/>
-						) : (
-							<div className="conversation-turn__static-bubble">
-								<FormattedMessage text={turn.text} />
-							</div>
-						)}
-						<SafetyHandoff handoff={turn.safetyHandoff} />
-					</div>
-				) : null}
+				{/* Safety is deterministic and never choreographed: it is on screen, whole,
+				    the moment the turn renders. */}
+				{turn.safetyHandoff ? <SafetyHandoff handoff={turn.safetyHandoff} /> : null}
 
-				{showConversational ? (
-					<ConversationalBubble
-						text={turn.text}
-						introDelayMs={introDelayMs}
-						active
-						exiting={rag.bubbleExiting}
-						showFab={rag.typingComplete}
-						onTypingChange={onTypingChange}
-						onTypingComplete={rag.markTypingComplete}
-						onContinue={rag.advanceFromConversational}
-					/>
-				) : null}
-
-				{showTalkBubble ? (
-					<ConversationalBubble
-						text={turn.text}
-						introDelayMs={introDelayMs}
-						active
-						onTypingChange={onTypingChange}
-					/>
-				) : null}
-
-				{showScroll ? (
-					<div className="conversation-turn__scroll">
-						<RagProgress
-							label={rag.progressLabel}
-							ratio={rag.progressRatio}
-							total={turn.cards.length}
-							step={rag.progressStep}
-						/>
-						<CardStackAnimator
+				{showCards ? (
+					<div className="conversation-turn__cards" ref={cardGroupRef}>
+						<RagGrid
 							cards={turn.cards}
-							frontIndex={rag.frontIndex}
-							landDurationMs={rag.stackLandMs}
 							onFollowup={onFollowup}
+							createdAt={turn.createdAt}
+							deal={isActive}
+							archived={!isActive}
 						/>
 					</div>
-				) : null}
-
-				{showActiveGrid ? (
-					<RagGrid
-						cards={turn.cards}
-						onFollowup={onFollowup}
-						createdAt={turn.createdAt}
-						animateIn={animateGridIn && !reduceMotion}
-					/>
 				) : null}
 			</div>
 		</motion.article>
