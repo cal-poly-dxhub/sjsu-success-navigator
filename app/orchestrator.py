@@ -1,3 +1,22 @@
+"""The Converse tool-use loop. One tool (retrieval), one exit (the model's text reply).
+
+WHAT CHANGED FROM v1. The loop used to have two exits and two card builders. The model could
+end by calling `submit_chat_response` with a JSON cards array, or by just talking, and every
+abnormal path - deadline, iteration cap, a model that never submitted - fell through to
+`_fallback_response`, which built cards MECHANICALLY out of retrieved page text. That is why
+a timeout produced cards nobody had written: the fallback answered from the corpus rather
+than from the conversation.
+
+Now the model's text reply is the answer, on every path. When there is text, cards.py parses
+it. When there is no text at all - the deadline landed before the model produced any - the
+student gets one honest sentence rather than machine-assembled referrals. Retrieval no longer
+has a second, card-shaped consumer, so a run that ends early degrades to less, never to
+something invented.
+
+The two caps and their ordering are unchanged, and both still exist for the reason the
+docstring below gives.
+"""
+
 from __future__ import annotations
 
 import json
@@ -11,18 +30,27 @@ from botocore.config import Config
 from settings import Settings
 from models import ChatRequest, ChatResponse
 from cards import (
-    build_statement_cards,
-    cards_from_submission,
-    chunks_to_tool_results,
+    TurnSources,
+    cards_from_parsed,
     create_statement_batch,
-    retrieve_statement_cards,
+    parse_model_response,
+    source_options_for_tool,
+    strip_card_tags,
 )
-from prompts import SYSTEM_PROMPT
-from retrieve import RetrievedChunk, retrieve_chunks
+from prompts import build_system_prompt
+from retrieve import retrieve_chunks
 from safety import apply_safety_handoff_to_response
 from tools import TOOL_CONFIG
 
 logger = logging.getLogger(__name__)
+
+# The ONLY hardcoded reply left on this path, and it is reachable in exactly one situation:
+# the model produced no text whatsoever before the loop ran out of time or iterations. An
+# empty bubble is the alternative, so this is not a substitute for an answer - it is an
+# admission that there is not one.
+_NO_OUTPUT_TEXT = (
+    "I ran out of time putting that together. Ask me again and I'll take another run at it."
+)
 
 # Module scope: built once per container and reused, where camp built one per request
 # (which on Lambda discards the warm container's connection pool every invocation).
@@ -46,14 +74,6 @@ def _bedrock_client(region: str):
     return _BEDROCK_CLIENT
 
 
-def classify_response_mode(response: ChatResponse) -> str:
-    if response.safety_handoff:
-        return "safety"
-    if response.statement_batches and response.statement_batches[0].cards:
-        return "triage"
-    return "talk"
-
-
 def run_chat(
     request: ChatRequest,
     settings: Settings,
@@ -68,18 +88,21 @@ def run_chat(
     derives the deadline from settings.converse_deadline_seconds; the handler passes an
     explicit one so Lambda's real remaining time can narrow it.
 
-    Both caps exit the same way - through _fallback_response, which returns the best
-    answer available from whatever was retrieved so far. That is the point: the
-    alternative is being killed mid-Converse, where the invocation is billed and the
-    student gets a gateway 504 carrying no response at all.
+    Both caps exit through _response_from_text with whatever text the model had produced by
+    then. That is the point: the alternative is being killed mid-Converse, where the
+    invocation is billed and the student gets a gateway 504 carrying no response at all.
     """
     client = _bedrock_client(settings.bedrock_region)
 
     if deadline is None:
         deadline = time.monotonic() + settings.converse_deadline_seconds
 
-    known_chunks: list[RetrievedChunk] = []
+    # The id-to-URL map for this turn. Built here, never persisted, and the only thing that
+    # can put a URL on a card - which is what makes a model-invented URL unrepresentable.
+    sources = TurnSources()
     messages = _build_converse_messages(request, settings)
+    system_prompt = build_system_prompt(settings)
+    last_text = ""
 
     for iteration in range(settings.max_converse_iterations):
         # Checked BEFORE the call, not after: the point is never to start a Converse
@@ -88,20 +111,19 @@ def run_chat(
         if remaining <= 0:
             logger.warning(
                 "Converse loop hit its wall-clock deadline after %s iteration(s); "
-                "returning the best answer available. chunks=%s query=%r",
+                "answering from the text produced so far (%s chars). sources=%s query=%r",
                 iteration,
-                len(known_chunks),
+                len(last_text),
+                len(sources),
                 request.query[:80],
             )
-            return _fallback_response(
-                request, settings, known_chunks, None, allow_retrieval=False
-            )
+            return _response_from_text(last_text, sources, request.query, settings)
 
         logger.info("Converse iteration %s for query=%r", iteration + 1, request.query[:80])
 
         response = client.converse(
             modelId=settings.generation_model_id,
-            system=[{"text": SYSTEM_PROMPT}],
+            system=[{"text": system_prompt}],
             messages=messages,
             toolConfig=TOOL_CONFIG,
             inferenceConfig={
@@ -112,83 +134,72 @@ def run_chat(
 
         assistant_message = response["output"]["message"]
         messages.append(assistant_message)
-        stop_reason = response.get("stopReason")
 
-        if stop_reason != "tool_use":
-            return _fallback_response(request, settings, known_chunks, assistant_message)
+        text = _extract_text(assistant_message)
+        if text:
+            last_text = text
 
         tool_uses = [
             block["toolUse"]
             for block in assistant_message.get("content", [])
             if "toolUse" in block
         ]
-        if not tool_uses:
-            return _fallback_response(request, settings, known_chunks, assistant_message)
+
+        # `end_turn` with no tool call is the answer. A `tool_use` stop reason carrying no
+        # toolUse block is malformed rather than final, but there is nothing further to do
+        # with it either, so it takes the same exit.
+        if response.get("stopReason") != "tool_use" or not tool_uses:
+            return _response_from_text(text, sources, request.query, settings)
 
         tool_results: list[dict[str, Any]] = []
-        final_response: ChatResponse | None = None
-
         for tool_use in tool_uses:
-            tool_name = tool_use["name"]
-            tool_use_id = tool_use["toolUseId"]
-            tool_input = tool_use.get("input") or {}
-
-            if tool_name == "submit_chat_response":
-                final_response = _response_from_submission(
-                    tool_input,
-                    query=request.query,
-                    known_chunks=known_chunks,
-                )
-                tool_results.append(
-                    _tool_result_block(
-                        tool_use_id,
-                        {"status": "submitted"},
-                    )
-                )
-                continue
-
-            if tool_name == "retrieve_campus_resources":
-                search_query = str(tool_input.get("query", request.query)).strip()
-                chunks = retrieve_chunks(search_query, settings)
-                known_chunks = _merge_chunks(known_chunks, chunks)
-                payload = chunks_to_tool_results(chunks)
-                tool_results.append(
-                    _tool_result_block(
-                        tool_use_id,
-                        {
-                            "resultCount": len(payload),
-                            "results": payload,
-                        },
-                    )
-                )
-                continue
-
             tool_results.append(
-                _tool_result_block(
-                    tool_use_id,
-                    {"error": f"Unknown tool: {tool_name}"},
-                    is_error=True,
-                )
+                _run_tool(tool_use, sources=sources, request=request, settings=settings)
             )
 
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
+        messages.append({"role": "user", "content": tool_results})
 
-        if final_response is not None:
-            return final_response
-
-    # The cap was reached without the model calling submit_chat_response. Camp fell
-    # through to the same fallback silently; the cap is configurable here
-    # (MAX_CONVERSE_ITERATIONS, from config.yaml) so this is logged as the distinct
-    # event it is - the alternative is a run that looks identical in the logs to a
-    # model that answered in one turn.
+    # The cap was reached without the model ever ending its turn. Camp fell through to a
+    # mechanical card builder here; now the student gets whatever the model actually said,
+    # which may be nothing. Logged as the distinct event it is - the alternative is a run
+    # that looks identical in the logs to a model that answered on its first call.
     logger.warning(
-        "Converse loop hit its %s-iteration cap without submit_chat_response; "
-        "returning the retrieval fallback. query=%r",
+        "Converse loop hit its %s-iteration cap without a final reply; answering from the "
+        "text produced so far (%s chars). query=%r",
         settings.max_converse_iterations,
+        len(last_text),
         request.query[:80],
     )
-    return _fallback_response(request, settings, known_chunks, None)
+    return _response_from_text(last_text, sources, request.query, settings)
+
+
+def _run_tool(
+    tool_use: dict[str, Any],
+    *,
+    sources: TurnSources,
+    request: ChatRequest,
+    settings: Settings,
+) -> dict[str, Any]:
+    tool_name = tool_use["name"]
+    tool_use_id = tool_use["toolUseId"]
+    tool_input = tool_use.get("input") or {}
+
+    if tool_name != "retrieve_campus_resources":
+        return _tool_result_block(
+            tool_use_id, {"error": f"Unknown tool: {tool_name}"}, is_error=True
+        )
+
+    search_query = str(tool_input.get("query", request.query)).strip()
+    chunks = retrieve_chunks(search_query, settings)
+    options = sources.add_chunks(chunks, limit=settings.card_max_retrieval_results)
+
+    return _tool_result_block(
+        tool_use_id,
+        {
+            "resultCount": len(options),
+            "results": source_options_for_tool(options),
+        },
+    )
 
 
 def _build_converse_messages(
@@ -240,11 +251,11 @@ def _build_user_message(request: ChatRequest) -> str:
     if request.followup:
         parts.append(
             "UI context: The student clicked a follow-up action on an existing resource card. "
-            "Answer their question narrowly. Keep cards empty unless they clearly changed topic."
+            "Answer their question narrowly. Emit no cards unless they clearly changed topic."
         )
 
     parts.append(
-        "Decide whether to retrieve campus resources, then call submit_chat_response when ready."
+        "Retrieve campus resources if you need them, then write your reply."
     )
     return "\n\n".join(parts)
 
@@ -266,84 +277,46 @@ def _tool_result_block(
     return block
 
 
-def _response_from_submission(
-    tool_input: dict[str, Any],
-    *,
+def _response_from_text(
+    text: str,
+    sources: TurnSources,
     query: str,
-    known_chunks: list[RetrievedChunk],
-) -> ChatResponse:
-    conversational_text = str(tool_input.get("conversationalText", "")).strip()
-    submitted_cards = tool_input.get("cards") or []
-
-    if not conversational_text:
-        conversational_text = (
-            "Here is what I found on campus — take a look at the resources below."
-        )
-
-    needs_safety = bool(tool_input.get("needsSafetyHandoff"))
-    cards = cards_from_submission(submitted_cards, known_chunks=known_chunks)
-    if needs_safety:
-        cards = []
-    batches = [create_statement_batch(cards, query)] if cards else []
-
-    response = ChatResponse(
-        conversationalText=conversational_text,
-        statementBatches=batches or None,
-        talkToPersonAvailable=True,
-    )
-    return apply_safety_handoff_to_response(
-        response,
-        conversational_text=conversational_text,
-        requested=needs_safety,
-    )
-
-
-def _fallback_response(
-    request: ChatRequest,
     settings: Settings,
-    known_chunks: list[RetrievedChunk],
-    assistant_message: dict[str, Any] | None,
-    *,
-    allow_retrieval: bool = True,
 ) -> ChatResponse:
-    """Camp's non-agentic fallback: shape cards from whatever is known, retrieving once
-    if the loop never did.
+    """Parse one model reply into the wire response. The only place cards come from.
 
-    `allow_retrieval=False` is the deadline path. That last-resort retrieval is a fresh
-    network call, so running it after the wall-clock budget is already spent is the one
-    thing the deadline exists to prevent - it would push the function past its timeout
-    while trying to recover from having run out of time.
+    The zero-card branch is the contract's fallback, and it is why a parse failure cannot
+    lose anything: when no card survives, the bubble is rebuilt from the COMPLETE reply with
+    the tags scrubbed, rather than from the text that happened to sit outside the blocks. So
+    a malformed card - an unclosed tag, a block with no title - reaches the student as the
+    model's words instead of vanishing.
     """
-    text = _extract_text(assistant_message)
+    parsed = parse_model_response(text)
 
-    if known_chunks:
-        cards = build_statement_cards(known_chunks, request.query)
-    elif allow_retrieval:
-        cards = retrieve_statement_cards(request.query, settings)
-    else:
+    if parsed.needs_safety:
+        # A safety turn carries no cards by contract. Any the model emitted anyway are
+        # dropped deliberately, so this must NOT take the zero-card fallback below - that
+        # would fold the card text back into the bubble.
         cards = []
+        prose = parsed.prose or strip_card_tags(text)
+    else:
+        cards = cards_from_parsed(parsed.cards, sources, settings)
+        prose = parsed.prose if cards else strip_card_tags(text)
 
-    if not cards and not text:
-        text = (
-            "I pulled together a few campus resources that may help — "
-            "scroll the cards for offices, links, and next steps."
-        )
-    elif not text:
-        text = (
-            "I can help you find SJSU campus resources. "
-            "Tell me a bit more about what you need and I'll point you in the right direction."
-        )
+    if not prose:
+        logger.warning("Model produced no usable text for query=%r", query[:80])
+        prose = _NO_OUTPUT_TEXT
 
-    batches = [create_statement_batch(cards, request.query)] if cards else []
+    batches = [create_statement_batch(cards, query)] if cards else []
     response = ChatResponse(
-        conversationalText=text,
+        conversationalText=prose,
         statementBatches=batches or None,
         talkToPersonAvailable=True,
     )
     return apply_safety_handoff_to_response(
         response,
-        conversational_text=text,
-        requested=False,
+        conversational_text=prose,
+        requested=parsed.needs_safety,
     )
 
 
@@ -357,20 +330,3 @@ def _extract_text(assistant_message: dict[str, Any] | None) -> str:
             parts.append(block["text"])
 
     return "\n".join(parts).strip()
-
-
-def _merge_chunks(
-    existing: list[RetrievedChunk],
-    incoming: list[RetrievedChunk],
-) -> list[RetrievedChunk]:
-    best: dict[str, RetrievedChunk] = {}
-
-    for chunk in existing + incoming:
-        key = chunk.source_url or chunk.s3_uri or chunk.text[:80]
-        current = best.get(key)
-        if current is None or chunk.score > current.score:
-            best[key] = chunk
-
-    merged = list(best.values())
-    merged.sort(key=lambda chunk: chunk.score, reverse=True)
-    return merged

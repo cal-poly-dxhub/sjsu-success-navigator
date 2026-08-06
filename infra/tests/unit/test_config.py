@@ -16,12 +16,14 @@ Run from infra/ with `python -m pytest`.
 """
 
 import copy
+from pathlib import Path
 
 import pytest
 
 from infra.config import (
     DEFAULT_CONFIG_PATH,
     load_config,
+    resolve_cards,
     resolve_chat,
     resolve_chunking,
     resolve_cors_allow_origins,
@@ -54,10 +56,24 @@ def test_real_config_passes_every_validator(config):
 
 
 def test_real_config_path_is_the_repo_root_file():
-    """Resolved relative to __file__, so synth from infra/ finds the root config."""
+    """Resolved relative to __file__, so synth from infra/ finds the root config.
+
+    The repo root is located the same way config.py locates it - by walking up from a known
+    file - rather than by NAME. Asserting the directory was called
+    "sjsu-student-success-navagator" made this test a property of the checkout rather than of
+    the resolution logic: it failed in every git worktree, where the directory is named after
+    the branch, and it would have failed just as hard on a clone into any other folder. What
+    the resolution actually promises is that the config sits at the repo root, beside infra/
+    and the crawl list, and that is what is checked.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+
     assert DEFAULT_CONFIG_PATH.name == "config.yaml"
-    assert DEFAULT_CONFIG_PATH.parent.name == "sjsu-student-success-navagator"
+    assert DEFAULT_CONFIG_PATH.parent == repo_root
     assert DEFAULT_CONFIG_PATH.exists()
+    # The root is the root because these live there too, not because of what it is called.
+    assert (DEFAULT_CONFIG_PATH.parent / "url-list.csv").exists()
+    assert (DEFAULT_CONFIG_PATH.parent / "infra").is_dir()
 
 
 def test_knowledge_base_resolves_to_the_decided_values(config):
@@ -184,6 +200,58 @@ def test_retrieval_and_request_resolve_to_camps_tuned_values(config):
     # Tuned against a corpus that no longer exists; retune with the eval (docs/build-plan.md).
     assert retrieval["min_score"] == 0.35
     assert resolve_request(config)["max_query_chars"] == 2000
+
+
+def test_cards_resolve_to_the_decided_caps(config):
+    """The card contract's numbers. desc_max_chars is DERIVED from the card box at the
+    narrowest supported viewport (the arithmetic is in config.yaml), not chosen - it is
+    pinned here so a later nudge has to be a deliberate edit to a test that says so."""
+    cards = resolve_cards(config)
+    assert cards["max_cards"] == 4
+    assert cards["max_retrieval_results"] == 6
+    assert cards["title_max_chars"] == 60
+    assert cards["desc_max_chars"] == 140
+    assert cards["followup_max_chars"] == 120
+
+
+def test_card_ceiling_above_the_retrieval_count_is_rejected(config):
+    """A ceiling the model cannot reach. It cites one retrieved id per card, so allowing
+    more cards than results is arithmetic that reads like a decision."""
+    config["cards"]["max_retrieval_results"] = 3
+    config["cards"]["max_cards"] = 4
+    with pytest.raises(ValueError, match="must be at least cards.max_cards"):
+        resolve_cards(config)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("desc_max_chars", 14),      # a dropped digit from 140
+        ("title_max_chars", 6),      # from 60
+        ("followup_max_chars", 12),  # from 120
+    ],
+)
+def test_card_cap_with_a_dropped_digit_is_rejected(config, key, value):
+    """The failure this catches is silent: nothing errors, every field is just truncated to
+    a fragment forever, and the prompt faithfully instructs the model to write them that
+    way."""
+    config["cards"][key] = value
+    with pytest.raises(ValueError, match=f"cards.{key}"):
+        resolve_cards(config)
+
+
+def test_missing_cards_block_is_rejected(config):
+    del config["cards"]
+    with pytest.raises(ValueError, match="missing the `cards` block"):
+        resolve_cards(config)
+
+
+def test_validate_config_covers_the_card_caps(config):
+    """Same reason as the chat block: these are read at RUNTIME by the parser and the prompt
+    builder, so a bad value fails the build rather than every answer after the deploy."""
+    config["cards"]["desc_max_chars"] = 14
+    with pytest.raises(ValueError, match="desc_max_chars"):
+        validate_config(config)
 
 
 def test_chat_resolves_the_loop_caps(config):

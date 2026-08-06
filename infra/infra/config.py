@@ -114,6 +114,13 @@ _GUARDRAIL_FILTER_STRENGTHS = ("NONE", "LOW", "MEDIUM", "HIGH")
 _NUMBER_OF_RESULTS_MIN = 1
 _NUMBER_OF_RESULTS_MAX = 100
 
+# Floors for the card field caps. Not design minimums - they are dropped-digit detectors,
+# set low enough that any deliberate value clears them and high enough that 14-for-140 or
+# 6-for-60 does not. See resolve_cards.
+_CARD_TITLE_MIN_CHARS = 20
+_CARD_DESC_MIN_CHARS = 40
+_CARD_FOLLOWUP_MIN_CHARS = 20
+
 # Geographic prefixes that mark a model id as a CROSS-REGION INFERENCE PROFILE rather than a
 # bare on-demand foundation model. The two need different IAM shapes (see the chat Lambda's
 # role in infra_stack.py), so the distinction is resolved here, once.
@@ -649,6 +656,56 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def resolve_cards(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `cards` block: the model-emitted card contract's length and count caps.
+
+    These are validated at synth for the same reason the retrieval knobs are - none of them
+    can fail a deploy, and all of them change what a student sees on every answer afterwards.
+
+    The one relationship worth checking is `max_retrieval_results` against `max_cards`. The
+    model cites a source by the integer id it was handed, so it cannot produce more distinct
+    cards than it was shown sources: a ceiling above the number of results is a ceiling that
+    can never be reached, which reads like a decision and is really an arithmetic mistake.
+
+    The character floors exist to catch a dropped digit. `desc_max_chars: 14` is a plausible
+    typo for 140 and would not fail anything - it would just truncate every description to a
+    fragment, on every answer, and the prompt would faithfully instruct the model to write
+    them that way.
+    """
+    cards_cfg = _require_mapping(config, "cards")
+
+    max_cards = _positive_int(cards_cfg, "cards", "max_cards")
+    max_results = _positive_int(cards_cfg, "cards", "max_retrieval_results")
+    if max_results < max_cards:
+        raise ValueError(
+            f"cards.max_retrieval_results ({max_results}) must be at least cards.max_cards "
+            f"({max_cards}). The model cites one retrieved id per card, so it can never "
+            "emit more cards than it was shown sources - the extra ceiling is unreachable."
+        )
+
+    caps = {}
+    for key, floor in (
+        ("title_max_chars", _CARD_TITLE_MIN_CHARS),
+        ("desc_max_chars", _CARD_DESC_MIN_CHARS),
+        ("followup_max_chars", _CARD_FOLLOWUP_MIN_CHARS),
+    ):
+        value = _positive_int(cards_cfg, "cards", key)
+        if value < floor:
+            raise ValueError(
+                f"cards.{key} ({value}) is below {floor}, which is too small to hold a "
+                "usable value. This is the shape of a dropped digit, and it would fail "
+                "silently: the prompt would tell the model to write to the short cap and "
+                "the server would truncate anything longer."
+            )
+        caps[key] = value
+
+    return {
+        "max_cards": max_cards,
+        "max_retrieval_results": max_results,
+        **caps,
+    }
+
+
 def resolve_http_api(config: Dict[str, Any]) -> Dict[str, Any]:
     """The `http_api` block: the v1 cost fence.
 
@@ -705,6 +762,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_retrieval(config)
     resolve_request(config)
     resolve_chat(config)
+    resolve_cards(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:

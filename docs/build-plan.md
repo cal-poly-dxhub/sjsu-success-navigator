@@ -18,7 +18,12 @@ L1 property values. Nothing pre-flights those without an account.
 - [x] pull gav lambda section: bare handler, not fastapi/mangum; keep pydantic in the deps layer, the camelCase wire contract lives in its aliases (the guardrail rides with it; handler is a validate-only stub until the next two bullets)
 - [x] pull camp agent loop, tool schemas, system prompt and services as files; main.py and the routers are replaced (the loop also carries a wall-clock deadline, not just the iteration cap)
 - [x] pull camp card parsing and the pre-model safety intercept as-is
-- [x] map crawl-list sections to card presets (app/section_presets.py, explicit entry per section, no fallthrough); an unretrieved sourceUrl loses its link
+- [x] ~~map crawl-list sections to card presets (app/section_presets.py, explicit entry per section, no fallthrough); an unretrieved sourceUrl loses its link~~
+      SUPERSEDED by the card tag contract below. section_presets.py is deleted: the
+      follow-up prompt is authored per card by the model, so a table keyed on
+      `section` no longer has anything to answer. `section` still reaches the
+      metadata sidecars and is still required of the crawl list - it is read at
+      retrieval time - it just no longer picks button text.
 - [x] pull gav api gateway: cognito gate on the billable route, our origins, our throttle numbers, route to /chat, Authorization in allow_headers (plus reserved concurrency: rate bounds invocations started, not how many run at once)
 - [x] pull gav frontend s3 + cloudfront, stamping config.json with the api url; site domain joins the api cors allowlist as a deploy token (site content is a placeholder until bullet 10; camp's app is MULTI-PAGE, so directory-index rewriting, not an SPA fallback)
 - [x] bundle astro in a container at synth (minimal placeholder app; dist/ never committed)
@@ -35,7 +40,21 @@ distribution domain into its cors allowlist. Not frozen after its commit.
 
 ## Build ourselves
 
+- [x] cards are parsed from model-emitted tags, not cut out of prose (docs/cards-v2.md).
+      The model writes one text reply - prose plus `<card ref="N">` blocks - and cites
+      sources by a per-turn integer id it was handed; the server resolves the id to a
+      URL. `submit_chat_response` is gone, and so is the mechanical chunk-to-card
+      builder that ran on every timeout. Caps live in config.yaml `cards` and reach both
+      the parser and the prompt. BREAKING: the wire contract is unchanged, but every
+      card's text now comes from the model, so a deploy of this without the matching
+      prompt produces zero cards rather than wrong ones.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
+- [ ] measure the real average character advance for Nunito Sans at 0.875rem in a
+      browser and re-derive cards.desc_max_chars; 140 comes from a 0.5em estimate
+      (config.yaml carries the arithmetic), which is standard for a humanist sans but
+      is not a measurement of this font
+- [ ] cap-violation rate as an eval metric: if the model overruns often, either the
+      prompt or the cap is wrong, and the fixture run says which
 - [ ] retune retrieve_min_score; 0.35 was tuned against a differently shaped corpus (needs account)
 - [ ] update the team repo's audit docs, which still say mangum and fan-out scraper
 

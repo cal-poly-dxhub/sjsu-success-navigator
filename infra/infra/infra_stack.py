@@ -57,6 +57,7 @@ from constructs import Construct
 
 from infra.config import (
     CHAT_LAMBDA_TIMEOUT_SECONDS,
+    resolve_cards,
     resolve_chat,
     resolve_chunking,
     resolve_data_source_name,
@@ -284,6 +285,7 @@ class NavigatorStack(Stack):
         retrieval_cfg = resolve_retrieval(config)
         request_cfg = resolve_request(config)
         chat_cfg = resolve_chat(config)
+        cards_cfg = resolve_cards(config)
         cors_allow_origins = resolve_cors_allow_origins(config)
 
         # The embedding model, region-scoped. Titan v2 at 1024 dimensions is inherited from
@@ -948,7 +950,6 @@ class NavigatorStack(Stack):
                     "!tools.py",
                     "!retrieve.py",
                     "!cards.py",
-                    "!section_presets.py",
                     "!safety.py",
                     "!orchestrator.py",
                 ],
@@ -1001,6 +1002,15 @@ class NavigatorStack(Stack):
                 # killed mid-Converse - billed, with no response reaching the student.
                 # Validated at synth to sit under the function timeout above.
                 "CONVERSE_DEADLINE_SECONDS": str(chat_cfg["converse_deadline_seconds"]),
+                # The card contract's caps. Each one reaches TWO places inside the function -
+                # the parser that enforces it and the system prompt that states it - and both
+                # read it from here, so the number the model is told is by construction the
+                # number the server applies.
+                "CARD_MAX_CARDS": str(cards_cfg["max_cards"]),
+                "CARD_MAX_RETRIEVAL_RESULTS": str(cards_cfg["max_retrieval_results"]),
+                "CARD_TITLE_MAX_CHARS": str(cards_cfg["title_max_chars"]),
+                "CARD_DESC_MAX_CHARS": str(cards_cfg["desc_max_chars"]),
+                "CARD_FOLLOWUP_MAX_CHARS": str(cards_cfg["followup_max_chars"]),
                 # The input screen, pinned to its published numbered version. There is no
                 # OUTPUT_GUARDRAIL_* pair and no GUARDRAIL_TRACE: nothing is attached to
                 # Converse, so there is no trace to configure.
