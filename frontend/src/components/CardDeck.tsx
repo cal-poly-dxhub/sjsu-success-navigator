@@ -7,10 +7,16 @@ import './CardDeck.css';
 
 /**
  * Entrance budget: last card lands at (n - 1) * stagger + duration. At the card ceiling of
- * four that is 0.74s, which is the whole point - the group is readable inside a second and
- * nothing is gated behind it.
+ * four that is 1.46s.
+ *
+ * The stagger is paced against the PROSE, not against itself. The bubble types in at a
+ * reading speed and the cards used to arrive at 0.1s apart, so the turn changed gear
+ * halfway through: unhurried above, dealt out below. 0.34s is one card per beat, close
+ * enough to the typing cadence that the whole turn reads as one rhythm. The duration is
+ * unchanged - a card's own flight was never the problem, the gap between them was - and
+ * nothing is gated behind the deal, so the extra 0.7s costs the student nothing.
  */
-const DEAL_STAGGER_S = 0.1;
+const DEAL_STAGGER_S = 0.34;
 const DEAL_DURATION_S = 0.44;
 const DEAL_EASE = [0.22, 1, 0.36, 1] as const;
 

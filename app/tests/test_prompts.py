@@ -60,12 +60,13 @@ def test_the_prompt_states_the_caps_it_was_built_with():
 
     assert "At most 3 cards" in prompt
     assert "<title> at most 41 characters. <desc> at most 317. <followup> at most 99." in prompt
-    assert "140" not in prompt, "a stale literal cap survived in the prompt text"
+    for stale in ("140", "300"):
+        assert stale not in prompt, f"a stale literal cap ({stale}) survived in the prompt text"
 
 
 def test_the_desc_cap_reaches_the_prompt_from_settings():
     """The cap that just moved. cards.py truncates to this same number."""
-    assert "<desc> at most 300." in build_system_prompt(_SETTINGS)
+    assert "<desc> at most 180." in build_system_prompt(_SETTINGS)
 
 
 def test_every_canonical_example_sits_under_its_cap():
@@ -85,9 +86,14 @@ def test_every_canonical_example_sits_under_its_cap():
 
 
 def test_the_card_descriptions_in_the_examples_carry_real_substance():
-    """The weighting the prompt now asks for: cards hold the answer, prose introduces them.
-    A one-line description is the shape this change exists to move away from, so the examples
-    must not model it - they are what the model copies."""
+    """The weighting the prompt asks for: cards hold the answer, prose introduces them. A
+    one-line description is the shape that weighting exists to move away from, so the
+    examples must not model it - they are what the model copies.
+
+    The floor is deliberately close to the cap. The examples teach a LENGTH, not just an
+    upper bound: two sentences at roughly 150-175 characters, which under a 180 cap is a
+    narrow band on purpose. An example rewritten short would quietly re-teach the one-line
+    card even though nothing about it violates a cap."""
     descs = _examples(build_system_prompt(_SETTINGS), "desc")
 
     for desc in descs:

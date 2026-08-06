@@ -61,8 +61,17 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       clamp are gone, and the prose is never replaced (docs/cards-v2.md, Presentation).
       This is the rework the tag-contract commit deliberately deferred, and the clamp
       it removes is the box the entry above stopped deriving desc_max_chars from.
+- [x] one reading rhythm across the turn: the deal is slower (0.1s -> 0.34s between
+      cards, so four land in ~1.46s rather than 0.74s), card body text is 1rem rather
+      than 0.875rem, and cards.desc_max_chars 300 -> 180 with the prompt re-steered to
+      two sentences - the destination plus the one specific that matters. The three move
+      together: a larger body at the old cap is a paragraph in a box, and dropping the
+      cap without rewriting the prompt's examples truncates cards instead of shortening
+      them. Still no clamp, no fixed height, no minimum height, and reduced motion still
+      presents the grid directly.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
-- [ ] measure the real average character advance for Nunito Sans at 0.875rem in a
+- [ ] measure the real average character advance for Nunito Sans at 0.9375rem (the card
+      TITLE size - the only text the estimate still bears on) in a
       browser and re-derive cards.title_max_chars; 60 comes from a 0.5em estimate
       (config.yaml carries the arithmetic), which is standard for a humanist sans but
       is not a measurement of this font. No longer bears on desc_max_chars, which is

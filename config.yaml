@@ -95,16 +95,18 @@ cards:
   # .statement-card--compact could hold at the narrowest viewport, so the box decided how
   # much a card was allowed to say. That box is gone - the modifier and the clamp are both
   # deleted and a card is as tall as its own text (docs/cards-v2.md, Presentation) - and what
-  # replaces it is a judgement about what a card is FOR: it carries the destination, the
-  # specifics that make it usable, and the next step, while the prose above it is a short
-  # intro rather than the answer. Two or three real sentences is that much room, and 300 is
-  # that.
+  # replaces it is a judgement about what a card is FOR: the destination plus the one
+  # specific that makes it usable, while the prose above it is a short intro rather than the
+  # answer. That is two sentences, and 180 is that.
   #
-  # Still capped, and still capped HERE: the reason for a cap was never the clamp. An
-  # unbounded description is a paid model writing an essay into a card, and past ~300 a card
-  # stops being scannable - which is the point of a card. The number reaches the parser and
-  # the prompt from this one line, so the model is briefed on the budget the server applies.
-  desc_max_chars: 300
+  # It was 300 for one commit, which was two or three sentences. At the card body's larger
+  # size (1rem, not 0.875rem) that much text stopped scanning as a card and started reading
+  # as a paragraph in a box, so the budget came down rather than the type. Still capped, and
+  # still capped HERE: the reason for a cap was never the clamp. The number reaches the
+  # parser and the prompt from this one line, so the model is briefed on the budget the
+  # server applies - and the prompt's canonical examples are written to this length, which
+  # is what actually steers it.
+  desc_max_chars: 180
   # STILL DERIVED FROM THE LAYOUT: one line at the card title size (0.9375rem / 15px)
   # across the text column the narrowest supported viewport leaves (320px, the floor implied
   # by `<meta name="viewport" content="width=device-width">` with no min-width in the CSS):

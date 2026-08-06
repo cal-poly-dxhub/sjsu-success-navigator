@@ -11,7 +11,15 @@
 .statement-card {
 	--card-title-size: 0.9375rem;
 	--card-title-lh: 1.3;
-	--card-body-size: 0.875rem;
+	/*
+	 * 1rem, up from 0.875rem: the prose above these cards is set large and easy to read,
+	 * and a card set smaller made the answer look like a footnote to its own introduction.
+	 * The card grew instead of the text being clipped - there is still no height here - and
+	 * cards.desc_max_chars came down to 180 in the same change so a card stays scannable at
+	 * the larger size. Title stays at 0.9375rem: title_max_chars is derived from one line at
+	 * that size (config.yaml), so moving it would silently invalidate the cap.
+	 */
+	--card-body-size: 1rem;
 	--card-body-lh: 1.5;
 	--card-body-color: #2a3440;
 

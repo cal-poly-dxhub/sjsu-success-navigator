@@ -112,7 +112,7 @@ shortened where it can be measured, never hidden by the layout.
 - Cap violation rate is an eval metric. If the model overruns often, either the
   prompt or the cap is wrong, and the fixture run says which.
 
-### Why desc_max_chars is 300
+### Why desc_max_chars is 180
 
 It was 140, and that number was the four-line clamp's capacity at a 320px
 viewport:
@@ -138,9 +138,13 @@ same 257.6px column. It no longer derives the description: with the clamp gone
 the layout has no opinion about how long a description may be, and the cap
 becomes an editorial judgement instead of a measurement.
 
-The judgement is what a card is for. It carries the destination, the specifics
-that make it usable and the next step, which is two or three real sentences, and
-300 is that much room. The cap does not go away with the box - the reason for
+The judgement is what a card is for. It carries the destination and the one
+specific that makes it usable, which is two real sentences, and 180 is that much
+room. It was 300 for one commit, when the card body was 0.875rem; it came down in
+the same change that set the body to 1rem, because the length that scans as a card
+at 14px reads as a paragraph at 16px. The prompt's canonical examples moved with
+it, to roughly 150-175 characters, which is the part that actually steers the
+model. The cap does not go away with the box - the reason for
 capping was never the clamp. An uncapped description is a paid model writing an
 essay into a card, and past roughly this length a card stops being scannable,
 which is the property that makes it a card rather than a paragraph.
@@ -167,7 +171,8 @@ nowhere left to hide text.
   card group, once, when the group first appears.
 - **The group enters by dealing off a deck.** Cards leave the deck one at a
   time, top card first, and land in final form; the last card is down inside
-  0.75s at the card ceiling of four. There is no reveal button and nothing to
+  1.5s at the card ceiling of four (0.34s between cards, 0.44s of flight each),
+  which is paced to the prose above rather than to itself. There is no reveal button and nothing to
   press - the prose finishing typing is what brings the cards out. The composer
   stays interactive throughout, and a click on a card mid-entrance does nothing
   rather than landing on a card that is about to move out from under it.

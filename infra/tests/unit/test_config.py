@@ -207,12 +207,13 @@ def test_cards_resolve_to_the_decided_caps(config):
     test that says so. title_max_chars is DERIVED from the card box at the narrowest
     supported viewport (the arithmetic is in config.yaml). desc_max_chars is not: it was
     140 while a four-line clamp decided how much a card could hold, and it is now an
-    editorial budget for a card that carries the substance of the answer."""
+    editorial budget for a card that carries the substance of the answer: two sentences,
+    the destination plus the one specific that matters."""
     cards = resolve_cards(config)
     assert cards["max_cards"] == 4
     assert cards["max_retrieval_results"] == 6
     assert cards["title_max_chars"] == 60
-    assert cards["desc_max_chars"] == 300
+    assert cards["desc_max_chars"] == 180
     assert cards["followup_max_chars"] == 120
 
 
@@ -228,7 +229,7 @@ def test_card_ceiling_above_the_retrieval_count_is_rejected(config):
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("desc_max_chars", 30),      # a dropped digit from 300
+        ("desc_max_chars", 18),      # a dropped digit from 180
         ("title_max_chars", 6),      # from 60
         ("followup_max_chars", 12),  # from 120
     ],
@@ -251,7 +252,7 @@ def test_missing_cards_block_is_rejected(config):
 def test_validate_config_covers_the_card_caps(config):
     """Same reason as the chat block: these are read at RUNTIME by the parser and the prompt
     builder, so a bad value fails the build rather than every answer after the deploy."""
-    config["cards"]["desc_max_chars"] = 30
+    config["cards"]["desc_max_chars"] = 18
     with pytest.raises(ValueError, match="desc_max_chars"):
         validate_config(config)
 
