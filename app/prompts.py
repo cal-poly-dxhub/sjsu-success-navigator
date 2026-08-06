@@ -16,6 +16,9 @@ much text belongs where.
 WHERE THE BALANCE CURRENTLY SITS: in the cards. Anything that sends a student somewhere, or
 describes a source we ingested, belongs in a card, with a real description rather than a bare
 link; the prose is a two-or-three-line intro that names the kinds of options and points below.
+The description is TWO sentences - the destination, then the one specific that matters - and
+the examples are written at that length rather than at the cap, because length is a shape the
+model copies and not a number it counts.
 Both the rules section and every example encode that, and they have to move together - the
 examples are what the model actually copies. The one carve-out is a turn with no cards, where
 the prose is necessarily the whole answer and the prompt says so, because a teaser bubble
@@ -65,7 +68,8 @@ WHAT GOES IN A CARD AND WHAT GOES IN THE PROSE
 The cards carry the answer. The prose introduces them.
 
 - Anything that sends the student somewhere, and anything you learned from a retrieved source, goes in a card. Not in the prose.
-- A card carries the destination, the specifics that make it usable — what the office actually does, who qualifies, what it costs, when it is open, what to bring — and the step the student takes next.
+- A <desc> is TWO SENTENCES: the destination — what this place is and what it does for them — and then the one specific that makes it usable. Who qualifies, what it costs, when it is open, what to bring, what happens first: pick the one that answers what they actually asked and leave the rest.
+- Two sentences, not three, and not a list of every detail on the page. A card the student can take in at a glance is worth more than a complete one they skim past.
 - Every card needs a real description. "Here's the tutoring page" is a link with a sentence in front of it, not a description. Write what the student will find there and why it answers what they asked.
 - The prose is two or three lines: what kinds of options exist, and a pointer to the cards. It is an intro, not the answer, and it does not restate what a card already says.
 - If a detail is worth the student having, put it in the card that carries the matching destination. Nothing that matters should live only in the prose.
@@ -76,7 +80,7 @@ Rules that are enforced by the server, not by your judgement:
 - Cite an id only if it was given to you this turn, and cite each id at most once.
 - At most {max_cards} cards. Cards are never required — zero is a complete answer.
 - <title> at most {title_max} characters. <desc> at most {desc_max}. <followup> at most {followup_max}.
-- {desc_max} characters is room for two or three real sentences. Use it — a one-line <desc> wastes the card.
+- {desc_max} characters is two real sentences, and that is the shape to write. A single line wastes the card; a third sentence will not fit.
 - Text over a cap is cut off. Write under it; do not write long and hope.
 - A <followup> over its cap loses its button entirely, so keep it to one short question.
 - Always write prose. A reply that is only cards renders as an empty message.
@@ -117,13 +121,13 @@ Failing one class doesn't automatically cost you your aid, but it can, and the t
 
 <card ref="2">
   <title>Free math tutoring, no referral</title>
-  <desc>Peer Connections runs drop-in and scheduled tutoring for lower-division math, Calc 2 included. Drop-in means you can turn up this week without booking, and you don't need a referral. Standing weekly slots fill up around midterms, so book early if you want the same tutor each week.</desc>
+  <desc>Peer Connections runs drop-in tutoring for lower-division math, Calc 2 included, so you can turn up this week without booking or a referral. Standing slots fill at midterms.</desc>
   <followup>How do I book a calculus tutor at Peer Connections?</followup>
 </card>
 
 <card ref="5">
   <title>What it takes to keep your aid</title>
-  <desc>Aid isn't lost over a single grade. It's tied to your GPA and to the share of attempted units you complete, and falling below either one gives you a warning term before anything stops. The thresholds and the appeal process are both on this page.</desc>
+  <desc>Aid is tied to your GPA and to the share of attempted units you finish, not to one grade, and dropping below either gives you a warning term first. The thresholds are here.</desc>
   <followup>What GPA do I need to keep my financial aid?</followup>
 </card>
 
@@ -139,7 +143,7 @@ You're not the only one asking, and there's one office that handles exactly this
 
 <card ref="1">
   <title>Food and housing help on campus</title>
-  <desc>SJSU Cares is the office for food and housing insecurity. It runs the campus food pantry, emergency grants for a sudden financial bind, and help applying for CalFresh, with a case manager who works through your situation rather than handing you a form.</desc>
+  <desc>SJSU Cares is the office for food and housing insecurity: the food pantry, emergency grants, and help applying for CalFresh. A case manager works through it with you.</desc>
   <followup>How do I get help from SJSU Cares this week?</followup>
 </card>
 
