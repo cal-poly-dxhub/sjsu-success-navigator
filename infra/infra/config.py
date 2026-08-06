@@ -115,7 +115,7 @@ _NUMBER_OF_RESULTS_MIN = 1
 _NUMBER_OF_RESULTS_MAX = 100
 
 # Floors for the card field caps. Not design minimums - they are dropped-digit detectors,
-# set low enough that any deliberate value clears them and high enough that 14-for-140 or
+# set low enough that any deliberate value clears them and high enough that 30-for-300 or
 # 6-for-60 does not. See resolve_cards.
 _CARD_TITLE_MIN_CHARS = 20
 _CARD_DESC_MIN_CHARS = 40
@@ -667,8 +667,8 @@ def resolve_cards(config: Dict[str, Any]) -> Dict[str, Any]:
     cards than it was shown sources: a ceiling above the number of results is a ceiling that
     can never be reached, which reads like a decision and is really an arithmetic mistake.
 
-    The character floors exist to catch a dropped digit. `desc_max_chars: 14` is a plausible
-    typo for 140 and would not fail anything - it would just truncate every description to a
+    The character floors exist to catch a dropped digit. `desc_max_chars: 30` is a plausible
+    typo for 300 and would not fail anything - it would just truncate every description to a
     fragment, on every answer, and the prompt would faithfully instruct the model to write
     them that way.
     """

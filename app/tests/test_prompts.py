@@ -1,0 +1,106 @@
+"""The system prompt: the caps in it are the caps the server applies, and the examples obey.
+
+Two things are worth a test here, and neither is about wording.
+
+The caps are interpolated from Settings rather than written as literals, so the prompt cannot
+drift from cards.py. A literal would not fail anything - the model would simply be briefed on
+one budget while the server truncated to another, and the only symptom would be descriptions
+quietly losing their tails. Asserting against a NON-default Settings is what makes that real:
+a hardcoded 300 would pass a test that used the default and fail this one.
+
+The canonical examples are the primary steer on length (a model copies a shape far more
+reliably than it counts characters), which only holds while they actually sit under the caps.
+An example that overruns teaches the shape the server then truncates.
+"""
+
+import re
+
+from prompts import build_system_prompt
+from settings import Settings
+
+_SETTINGS = Settings(
+    knowledge_base_id="KB123",
+    generation_model_id="us.anthropic.claude-sonnet-4-6",
+    bedrock_region="us-west-2",
+    input_guardrail_id="gr-1",
+    input_guardrail_version="3",
+)
+
+_FIELD_RE = {
+    name: re.compile(rf"<{name}>(.*?)</{name}>", re.DOTALL)
+    for name in ("title", "desc", "followup")
+}
+
+
+def _settings(**overrides):
+    return Settings(**{**_SETTINGS.__dict__, **overrides})
+
+
+def _examples(prompt: str, field: str) -> list[str]:
+    """The field's text from every card block in the prompt, minus the shape sketch.
+
+    The sketch under HOW YOUR REPLY IS READ describes what to write rather than being an
+    example of it, so it is not held to the caps - it is excluded by its ref, which is the
+    same `ref="2"` the first real example uses, hence matching on the whole block.
+    """
+    body = prompt.split("EXAMPLES", 1)[1]
+    return [match.strip() for match in _FIELD_RE[field].findall(body)]
+
+
+def test_the_prompt_states_the_caps_it_was_built_with():
+    """Not the default values - the values it was HANDED. This is the drift test."""
+    prompt = build_system_prompt(
+        _settings(
+            card_max_cards=3,
+            card_title_max_chars=41,
+            card_desc_max_chars=317,
+            card_followup_max_chars=99,
+        )
+    )
+
+    assert "At most 3 cards" in prompt
+    assert "<title> at most 41 characters. <desc> at most 317. <followup> at most 99." in prompt
+    assert "140" not in prompt, "a stale literal cap survived in the prompt text"
+
+
+def test_the_desc_cap_reaches_the_prompt_from_settings():
+    """The cap that just moved. cards.py truncates to this same number."""
+    assert "<desc> at most 300." in build_system_prompt(_SETTINGS)
+
+
+def test_every_canonical_example_sits_under_its_cap():
+    """The examples are the primary steer on length; one that overruns teaches the shape the
+    server then truncates."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    for field, cap in (
+        ("title", _SETTINGS.card_title_max_chars),
+        ("desc", _SETTINGS.card_desc_max_chars),
+        ("followup", _SETTINGS.card_followup_max_chars),
+    ):
+        examples = _examples(prompt, field)
+        assert examples, f"no <{field}> examples found in the prompt"
+        for text in examples:
+            assert len(text) <= cap, f"<{field}> example is {len(text)} chars, cap {cap}: {text!r}"
+
+
+def test_the_card_descriptions_in_the_examples_carry_real_substance():
+    """The weighting the prompt now asks for: cards hold the answer, prose introduces them.
+    A one-line description is the shape this change exists to move away from, so the examples
+    must not model it - they are what the model copies."""
+    descs = _examples(build_system_prompt(_SETTINGS), "desc")
+
+    for desc in descs:
+        assert len(desc) >= 150, f"a thin <desc> example undercuts the weighting: {desc!r}"
+
+
+def test_the_prompt_tells_the_model_where_the_answer_goes():
+    """The editorial division, asserted as presence rather than wording: destinations and
+    retrieved detail belong in cards, the prose is a short intro. If a later rewrite drops
+    the division entirely, this fails; if it rephrases it, this is the line to update."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "WHAT GOES IN A CARD AND WHAT GOES IN THE PROSE" in prompt
+    assert "The cards carry the answer. The prose introduces them." in prompt
+    # The carve-out that keeps a zero-card turn from becoming a teaser above empty space.
+    assert "WHEN YOU EMIT NO CARDS, the prose is the whole answer" in prompt
