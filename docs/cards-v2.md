@@ -61,6 +61,20 @@ instruction the model follows or ignores.
   that reaches the model without passing both.
 - The prompt is length-capped. Missing, empty, or over the cap means the button
   is not rendered; the card still shows.
+- "Ordinary user turn" includes the answer: a follow-up can carry cards, and a
+  student asking for more detail is asking for the specific destination, so it
+  usually should. Nothing in the prompt or the request path withholds them.
+
+The request still carries a `followup` boolean and the frontend still sets it on
+a click, but nothing on the backend reads it. It shipped injecting "emit no
+cards unless they clearly changed topic" into the user message, with the system
+prompt repeating the suppression, which is why a clicked question produced no
+cards while the same question typed by hand did. Alongside it went "do not
+repeat cards the student already has": history carries prose only, so the model
+cannot see which cards were shown, and an instruction it cannot evaluate
+collapses into avoiding cards altogether. The flag stays on the wire because a
+client-visible field is not worth breaking to delete a branch; if something
+later wants to know how a turn was sent, it is already there.
 
 An over-cap follow-up is dropped rather than truncated, unlike the display
 fields. A shortened question is a different question, and this text is never

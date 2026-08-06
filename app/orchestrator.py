@@ -246,18 +246,23 @@ def _merge_consecutive_roles(
 
 
 def _build_user_message(request: ChatRequest) -> str:
-    parts = [f"Student message:\n{request.query.strip()}"]
+    """The user turn handed to the model. It does NOT read `request.followup`.
 
-    if request.followup:
-        parts.append(
-            "UI context: The student clicked a follow-up action on an existing resource card. "
-            "Answer their question narrowly. Emit no cards unless they clearly changed topic."
-        )
+    This used to append a "the student clicked a follow-up, emit no cards" note, which is
+    why clicking Tell me more never produced cards while typing the same question did. A
+    click sends text the model itself authored, down the same route as typed input - same
+    intercept, same guardrail, same history - so the turn it produces has to be the same
+    turn. What an answer needs (a destination, a source, neither) is a property of the
+    question, not of the widget that sent it.
 
-    parts.append(
+    `followup` stays on the wire contract (models.ChatRequest, and the frontend still sets
+    it) but no longer reaches the prompt from here.
+    """
+    return (
+        f"Student message:\n{request.query.strip()}"
+        "\n\n"
         "Retrieve campus resources if you need them, then write your reply."
     )
-    return "\n\n".join(parts)
 
 
 def _tool_result_block(

@@ -13,6 +13,15 @@ needs to move - more of the answer in the prose, more in the cards - it moves HE
 rewriting these examples. That is the knob, and it is why the parser knows nothing about how
 much text belongs where.
 
+NOTHING HERE SUPPRESSES CARDS ON A FOLLOW-UP, deliberately. Two instructions used to, and
+both are gone. "Do not repeat cards the student already has" was unenforceable: history
+carries prose only, so the model cannot see which cards were shown, and an instruction it
+cannot evaluate collapses into avoiding cards altogether. "If the user message says they
+clicked a follow-up, emit no cards" keyed the answer's shape on which widget sent the turn,
+when a follow-up is precisely when a student wants the specific destination. Retrieval is
+decided the same way: by whether the answer needs a source, never by where the turn sits in
+the conversation. See orchestrator._build_user_message, which no longer reads the flag.
+
 WHERE THE BALANCE CURRENTLY SITS: in the cards. Anything that sends a student somewhere, or
 describes a source we ingested, belongs in a card, with a real description rather than a bare
 link; the prose is a two-or-three-line intro that names the kinds of options and points below.
@@ -50,7 +59,7 @@ Your job:
 Planning loop:
 - Think about the student's underlying need before acting.
 - Call retrieve_campus_resources when you need official SJSU facts (office names, services, eligibility, how to access help).
-- Do NOT retrieve for greetings, thanks, or narrow follow-ups that only need a short clarification.
+- Do NOT retrieve when the answer needs no campus facts: a greeting, a thanks, or something this turn's results already cover. Decide by what the answer needs, not by where the question sits in the conversation.
 - When you are ready, write your answer as your reply. There is no submit tool.
 
 HOW YOUR REPLY IS READ
@@ -100,11 +109,7 @@ Crisis and urgent safety:
 Conversation context:
 - Prior user and assistant messages may appear before the latest student message.
 - Use that thread to interpret vague follow-ups ("what do you recommend?", "which one?", "tell me more").
-- Do not repeat cards the student already has unless they changed topic.
-
-Card follow-up context:
-- If the user message says they clicked a follow-up on an existing card, answer narrowly.
-- Emit no cards unless they clearly changed to a new topic that needs new referrals.
+- A follow-up is a question like any other. If the answer sends the student somewhere, or comes from a source, it goes in a card. A student asking for more detail is asking for the specific destination, so that is exactly the turn that should carry one.
 
 Tone:
 - Supportive, plain language, brief.
