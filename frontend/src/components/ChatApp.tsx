@@ -12,10 +12,10 @@ import {
 } from '../lib/conversationTurns';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
-import { PressableButton } from './PressableButton';
 import { SammyStage } from './SammyStage';
 import { SideNav } from './SideNav';
 import { SjsuCaresModal } from './SjsuCaresModal';
+import { TalkToPersonPill } from './TalkToPersonPill';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { currentUsername, signOut } from '../lib/auth';
 import { inferSjsuCaresServiceTheme } from '../lib/sjsuCares';
@@ -402,13 +402,7 @@ export default function ChatApp() {
 			</div>
 
 			{(response.talkToPersonAvailable ?? true) ? (
-				<PressableButton
-					variant="secondary"
-					className="chat-app__talk-person"
-					onClick={() => setShowSjsuCaresModal(true)}
-				>
-					Talk to a person
-				</PressableButton>
+				<TalkToPersonPill onClick={() => setShowSjsuCaresModal(true)} />
 			) : null}
 
 			<SjsuCaresModal
