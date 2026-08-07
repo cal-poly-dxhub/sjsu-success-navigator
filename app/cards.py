@@ -19,7 +19,10 @@ output has no room for. The failure mode is not reduced, it is unrepresentable.
 WHERE THE CAPS COME FROM. Every length cap arrives on Settings, sourced from config.yaml,
 and is read in exactly two places: here, where it is enforced, and prompts.py, where it is
 written into the contract the model is given. One value, so the number the model is told is
-by construction the number the server applies.
+by construction the number the server applies. The caps are GUARDS against a runaway
+response, set far above the length the prompt steers toward: an ellipsis in production
+means the prompt or the model is broken, so every truncation is logged at WARNING. Length
+steering is the prompt's job, not this module's.
 
 AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
 reason is observability: a card that renders without its source button is a visible symptom,
@@ -244,6 +247,9 @@ def truncate_to_cap(text: str, cap: int) -> str:
     Shortening happens here, where it can be measured, rather than in the layout, where v1
     did it: a CSS line clamp hides text without shortening it, so the model was never held to
     a budget and roughly a third of every description was cut with no ellipsis to show it.
+
+    The caps this enforces are runaway guards, not editorial budgets - see _capped, which is
+    where enforcement actually routes and where hitting one is logged.
     """
     normalized = _WHITESPACE_RE.sub(" ", text or "").strip()
     if len(normalized) <= cap:
@@ -258,6 +264,27 @@ def truncate_to_cap(text: str, cap: int) -> str:
     return head.rstrip(" ,;:.-") + "…"
 
 
+def _capped(text: str, cap: int, field: str, ref_id: int | None) -> str:
+    """Apply one display field's guard cap, logging when it actually bites.
+
+    The caps sit far above what the prompt asks for, so a truncation here is a bug in the
+    prompt or the model rather than routine length variance - the WARNING is what turns a
+    quiet ellipsis on screen into a diagnosable event in the logs.
+    """
+    normalized = _WHITESPACE_RE.sub(" ", text or "").strip()
+    if len(normalized) > cap:
+        logger.warning(
+            "A card %s ran past its guard cap (%s chars, cap %s, ref=%r) and was "
+            "truncated. The cap sits far above the length the prompt steers toward, so "
+            "hitting it means the prompt or the model is broken.",
+            field,
+            len(normalized),
+            cap,
+            ref_id,
+        )
+    return truncate_to_cap(normalized, cap)
+
+
 def cards_from_parsed(
     parsed_cards: list[ParsedCard],
     sources: TurnSources,
@@ -267,7 +294,8 @@ def cards_from_parsed(
 
     A card needs a title and a description to exist at all - those are the card. Everything
     else degrades rather than dropping: an unresolvable ref costs the source button (see the
-    module docstring), and a missing, empty or over-cap follow-up costs the follow-up button.
+    module docstring), and only a missing or empty follow-up costs the follow-up button - an
+    over-cap one keeps it, logged, with the prompt sent whole.
     """
     cards: list[StatementCard] = []
 
@@ -280,8 +308,8 @@ def cards_from_parsed(
             )
             break
 
-        title = truncate_to_cap(parsed.title, settings.card_title_max_chars)
-        desc = truncate_to_cap(parsed.desc, settings.card_desc_max_chars)
+        title = _capped(parsed.title, settings.card_title_max_chars, "title", parsed.ref_id)
+        desc = _capped(parsed.desc, settings.card_desc_max_chars, "description", parsed.ref_id)
         if not title or not desc:
             logger.warning(
                 "Dropping a card block with no %s (ref=%r).",
@@ -303,20 +331,23 @@ def cards_from_parsed(
         if source is not None:
             actions.append(SourceAction(label=SOURCE_ACTION_LABEL))
 
-        # Over-cap follow-ups lose the button rather than being truncated. A shortened
-        # question is a DIFFERENT question, and this text is not displayed - it is sent as
-        # the student's next turn - so trimming it would silently ask something else.
+        # A follow-up is never truncated - a shortened question is a DIFFERENT question -
+        # and past the cap it keeps its button anyway. The prompt is sent, and shown, as
+        # the student's next turn, where it wraps like any typed message, so an over-long
+        # one costs nothing visible; the overrun is logged because the cap is a guard on a
+        # paid model input, and passing it means the prompt or the model is broken.
         followup = _WHITESPACE_RE.sub(" ", parsed.followup).strip()
-        if followup and len(followup) <= settings.card_followup_max_chars:
-            actions.append(
-                FollowupAction(label=FOLLOWUP_ACTION_LABEL, prompt=followup)
-            )
-        elif followup:
+        if followup and len(followup) > settings.card_followup_max_chars:
             logger.warning(
-                "Dropping an over-cap follow-up prompt (%s chars, cap %s) on card ref=%r.",
+                "An over-cap follow-up prompt (%s chars, cap %s) on card ref=%r. Keeping "
+                "the button and sending the prompt whole.",
                 len(followup),
                 settings.card_followup_max_chars,
                 parsed.ref_id,
+            )
+        if followup:
+            actions.append(
+                FollowupAction(label=FOLLOWUP_ACTION_LABEL, prompt=followup)
             )
 
         cards.append(

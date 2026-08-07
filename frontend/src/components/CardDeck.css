@@ -9,6 +9,11 @@
 	 * 15.5rem is measured against this layout, not picked: the panel is 546px at a 1280px
 	 * viewport (13rem side nav, then the 1.05fr of the split stage), and two 15.5rem
 	 * tracks plus the gap need 509.6px. A 17rem floor left a 1280px laptop in one column.
+	 *
+	 * A LONG card does not sit in one track: CardDeck.tsx gives it (and any card a long
+	 * card would strand beside a hole) an inline `grid-column: <start> / -1`, so a long
+	 * card takes its whole row instead of making its row tall and its neighbour float on
+	 * dead space. The lone-card rule above is about short cards; a lone long card spans.
 	 */
 	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
 	/* Each card is as tall as its own content. Nothing stretches to match its row. */

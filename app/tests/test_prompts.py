@@ -66,7 +66,7 @@ def test_the_prompt_states_the_caps_it_was_built_with():
 
 def test_the_desc_cap_reaches_the_prompt_from_settings():
     """The cap that just moved. cards.py truncates to this same number."""
-    assert "<desc> at most 180." in build_system_prompt(_SETTINGS)
+    assert "<desc> at most 600." in build_system_prompt(_SETTINGS)
 
 
 def test_every_canonical_example_sits_under_its_cap():

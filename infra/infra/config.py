@@ -115,10 +115,10 @@ _NUMBER_OF_RESULTS_MIN = 1
 _NUMBER_OF_RESULTS_MAX = 100
 
 # Floors for the card field caps. Not design minimums - they are dropped-digit detectors,
-# set low enough that any deliberate value clears them and high enough that 18-for-180 or
-# 6-for-60 does not. See resolve_cards.
+# set low enough that any deliberate value clears them and high enough that 60-for-600,
+# 9-for-90 or 12-for-120 does not. See resolve_cards.
 _CARD_TITLE_MIN_CHARS = 20
-_CARD_DESC_MIN_CHARS = 40
+_CARD_DESC_MIN_CHARS = 100
 _CARD_FOLLOWUP_MIN_CHARS = 20
 
 # Geographic prefixes that mark a model id as a CROSS-REGION INFERENCE PROFILE rather than a
@@ -667,8 +667,8 @@ def resolve_cards(config: Dict[str, Any]) -> Dict[str, Any]:
     cards than it was shown sources: a ceiling above the number of results is a ceiling that
     can never be reached, which reads like a decision and is really an arithmetic mistake.
 
-    The character floors exist to catch a dropped digit. `desc_max_chars: 18` is a plausible
-    typo for 180 and would not fail anything - it would just truncate every description to a
+    The character floors exist to catch a dropped digit. `desc_max_chars: 60` is a plausible
+    typo for 600 and would not fail anything - it would just truncate every description to a
     fragment, on every answer, and the prompt would faithfully instruct the model to write
     them that way.
     """
