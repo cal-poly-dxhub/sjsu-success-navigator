@@ -81,12 +81,13 @@ class Settings:
     # The card contract (config.yaml `cards`). Each value is read by BOTH the parser in
     # cards.py and the prompt builder in prompts.py, which is the whole point of it being one
     # value: the cap the model is told is the cap the server enforces. Defaults match
-    # config.yaml, where each number is explained - desc_max_chars is an editorial budget for
-    # how much of the answer a card carries, title_max_chars is derived from the card box.
+    # config.yaml, where each number is explained - the length caps are guards against a
+    # runaway response, set far above the length the prompt steers toward, so a truncation
+    # is a bug worth a WARNING rather than a daily event.
     card_max_cards: int = 4
     card_max_retrieval_results: int = 6
-    card_title_max_chars: int = 60
-    card_desc_max_chars: int = 180
+    card_title_max_chars: int = 90
+    card_desc_max_chars: int = 600
     card_followup_max_chars: int = 120
 
 
@@ -110,7 +111,7 @@ def load_settings() -> Settings:
         converse_deadline_seconds=_int("CONVERSE_DEADLINE_SECONDS", 22),
         card_max_cards=_int("CARD_MAX_CARDS", 4),
         card_max_retrieval_results=_int("CARD_MAX_RETRIEVAL_RESULTS", 6),
-        card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 60),
-        card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 180),
+        card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 90),
+        card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 600),
         card_followup_max_chars=_int("CARD_FOLLOWUP_MAX_CHARS", 120),
     )

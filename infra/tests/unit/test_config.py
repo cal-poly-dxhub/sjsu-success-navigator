@@ -204,16 +204,16 @@ def test_retrieval_and_request_resolve_to_camps_tuned_values(config):
 
 def test_cards_resolve_to_the_decided_caps(config):
     """The card contract's numbers, pinned so a later nudge has to be a deliberate edit to a
-    test that says so. title_max_chars is DERIVED from the card box at the narrowest
-    supported viewport (the arithmetic is in config.yaml). desc_max_chars is not: it was
-    140 while a four-line clamp decided how much a card could hold, and it is now an
-    editorial budget for a card that carries the substance of the answer: two sentences,
-    the destination plus the one specific that matters."""
+    test that says so. The length caps are GUARDS against a runaway response, sitting far
+    above the length the prompt steers toward: desc was 180, sized to the two-sentence
+    editorial target itself, and against a real model that put an ellipsis on nearly every
+    card. Length steering lives in the prompt; the caps exist so a runaway response cannot
+    ship an essay into a card, and cards.py logs a WARNING when one is hit."""
     cards = resolve_cards(config)
     assert cards["max_cards"] == 4
     assert cards["max_retrieval_results"] == 6
-    assert cards["title_max_chars"] == 60
-    assert cards["desc_max_chars"] == 180
+    assert cards["title_max_chars"] == 90
+    assert cards["desc_max_chars"] == 600
     assert cards["followup_max_chars"] == 120
 
 
@@ -229,8 +229,8 @@ def test_card_ceiling_above_the_retrieval_count_is_rejected(config):
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("desc_max_chars", 18),      # a dropped digit from 180
-        ("title_max_chars", 6),      # from 60
+        ("desc_max_chars", 60),      # a dropped digit from 600
+        ("title_max_chars", 9),      # from 90
         ("followup_max_chars", 12),  # from 120
     ],
 )
@@ -252,7 +252,7 @@ def test_missing_cards_block_is_rejected(config):
 def test_validate_config_covers_the_card_caps(config):
     """Same reason as the chat block: these are read at RUNTIME by the parser and the prompt
     builder, so a bad value fails the build rather than every answer after the deploy."""
-    config["cards"]["desc_max_chars"] = 18
+    config["cards"]["desc_max_chars"] = 60
     with pytest.raises(ValueError, match="desc_max_chars"):
         validate_config(config)
 

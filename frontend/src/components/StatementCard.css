@@ -14,10 +14,10 @@
 	/*
 	 * 1rem, up from 0.875rem: the prose above these cards is set large and easy to read,
 	 * and a card set smaller made the answer look like a footnote to its own introduction.
-	 * The card grew instead of the text being clipped - there is still no height here - and
-	 * cards.desc_max_chars came down to 180 in the same change so a card stays scannable at
-	 * the larger size. Title stays at 0.9375rem: title_max_chars is derived from one line at
-	 * that size (config.yaml), so moving it would silently invalidate the cap.
+	 * The card grew instead of the text being clipped - there is still no height here.
+	 * Card length is steered by the prompt and guarded, far above that steer, by
+	 * cards.desc_max_chars; neither number is derived from this box any more, and the
+	 * title (still 0.9375rem) wraps rather than being held to one derived line.
 	 */
 	--card-body-size: 1rem;
 	--card-body-lh: 1.5;

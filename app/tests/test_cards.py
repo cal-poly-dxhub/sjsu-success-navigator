@@ -205,50 +205,13 @@ def test_an_id_from_a_previous_turn_is_as_unresolvable_as_an_invented_one():
 # --- Over-cap text ------------------------------------------------------------------------
 
 
-def test_an_over_cap_description_is_shortened_at_a_word_boundary():
+def test_an_over_cap_description_is_shortened_at_a_word_boundary(caplog):
     """Shortened where it can be measured, never hidden by the layout. v1 capped at 220 and
     let a 4-line CSS clamp swallow the rest, so roughly a third of every description was cut
-    with nothing on screen to show it had been."""
+    with nothing on screen to show it had been. The cap is a runaway guard now, far above
+    the length the prompt steers toward, so hitting it is also a WARNING: an ellipsis on
+    screen means a bug, and the log is where the bug is diagnosable."""
     settings = _settings(card_desc_max_chars=40)
-    turn = _sources(_chunk())
-
-    card = cards_from_parsed(
-        [
-            ParsedCard(
-                ref_id=1,
-                title="T",
-                desc="Drop-in tutoring is available every weekday afternoon in the library.",
-                followup="",
-            )
-        ],
-        turn,
-        settings,
-    )[0]
-
-    assert len(card.body) <= 40
-    assert card.body.endswith("…")
-    assert not card.body[:-1].endswith(" "), "the ellipsis must follow a whole word"
-    assert "Drop-in tutoring is available" in card.body
-
-
-def test_an_over_cap_title_is_shortened_the_same_way():
-    settings = _settings(card_title_max_chars=20)
-    turn = _sources(_chunk())
-
-    card = cards_from_parsed(
-        [ParsedCard(ref_id=1, title="Peer Connections tutoring and academic coaching", desc="D", followup="")],
-        turn,
-        settings,
-    )[0]
-
-    assert len(card.title) <= 20
-    assert card.title.endswith("…")
-
-
-def test_an_over_cap_followup_loses_its_button_rather_than_being_trimmed(caplog):
-    """A shortened question is a DIFFERENT question. This text is never displayed - it is
-    sent as the student's next turn - so truncating it would silently ask something else."""
-    settings = _settings(card_followup_max_chars=20)
     turn = _sources(_chunk())
 
     with caplog.at_level("WARNING"):
@@ -257,15 +220,78 @@ def test_an_over_cap_followup_loses_its_button_rather_than_being_trimmed(caplog)
                 ParsedCard(
                     ref_id=1,
                     title="T",
-                    desc="D",
-                    followup="How do I book an appointment with a calculus tutor this week?",
+                    desc="Drop-in tutoring is available every weekday afternoon in the library.",
+                    followup="",
                 )
             ],
             turn,
             settings,
         )[0]
 
-    assert [action.type for action in card.actions] == ["source"]
+    assert len(card.body) <= 40
+    assert card.body.endswith("…")
+    assert not card.body[:-1].endswith(" "), "the ellipsis must follow a whole word"
+    assert "Drop-in tutoring is available" in card.body
+    assert "guard cap" in caplog.text
+
+
+def test_an_over_cap_title_is_shortened_the_same_way(caplog):
+    settings = _settings(card_title_max_chars=20)
+    turn = _sources(_chunk())
+
+    with caplog.at_level("WARNING"):
+        card = cards_from_parsed(
+            [ParsedCard(ref_id=1, title="Peer Connections tutoring and academic coaching", desc="D", followup="")],
+            turn,
+            settings,
+        )[0]
+
+    assert len(card.title) <= 20
+    assert card.title.endswith("…")
+    assert "guard cap" in caplog.text
+
+
+def test_fields_within_their_caps_log_no_warning(caplog):
+    """The WARNING is the ellipsis-means-a-bug signal. An ordinary response must not emit
+    it, or the signal drowns in routine noise and stops meaning anything."""
+    turn = _sources(_chunk())
+
+    with caplog.at_level("WARNING"):
+        cards_from_parsed(
+            [
+                ParsedCard(
+                    ref_id=1,
+                    title="Free math tutoring",
+                    desc="Drop-in tutoring for lower-division math.",
+                    followup="How do I book a tutor?",
+                )
+            ],
+            turn,
+            _SETTINGS,
+        )
+
+    assert caplog.text == ""
+
+
+def test_an_over_cap_followup_keeps_its_button_and_is_logged(caplog):
+    """A shortened question is a DIFFERENT question, so a follow-up is never truncated -
+    and it no longer loses its button either. The prompt is sent, and shown, as the
+    student's next turn, where a long one simply wraps, so dropping the button was a
+    visible regression guarding against nothing visible. The overrun is logged instead:
+    the cap is a guard, and passing it means the prompt or the model is broken."""
+    settings = _settings(card_followup_max_chars=20)
+    turn = _sources(_chunk())
+    long_followup = "How do I book an appointment with a calculus tutor this week?"
+
+    with caplog.at_level("WARNING"):
+        card = cards_from_parsed(
+            [ParsedCard(ref_id=1, title="T", desc="D", followup=long_followup)],
+            turn,
+            settings,
+        )[0]
+
+    assert [action.type for action in card.actions] == ["source", "followup"]
+    assert card.actions[1].prompt == long_followup, "the prompt must go through whole"
     assert "over-cap follow-up" in caplog.text
 
 

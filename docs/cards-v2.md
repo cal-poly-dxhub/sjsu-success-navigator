@@ -59,8 +59,9 @@ instruction the model follows or ignores.
   transcript as the student's own message and runs the deterministic safety
   intercept and the input guardrail exactly like typed input. There is no path
   that reaches the model without passing both.
-- The prompt is length-capped. Missing, empty, or over the cap means the button
-  is not rendered; the card still shows.
+- The prompt is length-capped as a guard on a paid model input. Missing or empty
+  means the button is not rendered; the card still shows. Over the cap the
+  button stays and the prompt goes through whole - see below.
 - "Ordinary user turn" includes the answer: a follow-up can carry cards, and a
   student asking for more detail is asking for the specific destination, so it
   usually should. Nothing in the prompt or the request path withholds them.
@@ -76,10 +77,14 @@ collapses into avoiding cards altogether. The flag stays on the wire because a
 client-visible field is not worth breaking to delete a branch; if something
 later wants to know how a turn was sent, it is already there.
 
-An over-cap follow-up is dropped rather than truncated, unlike the display
-fields. A shortened question is a different question, and this text is never
-displayed - it is sent as the student's next turn - so trimming it would
-silently ask something other than what the model wrote.
+An over-cap follow-up is neither truncated nor dropped. Truncation was never on
+the table - a shortened question is a different question, so trimming it would
+silently ask something other than what the model wrote. Dropping the button
+guarded nothing visible while costing something visible: the text IS displayed
+on click, as the student's own turn, where a long question simply wraps like any
+typed message. So it goes through whole, button intact, and the overrun is
+logged at WARNING - the cap is a runaway guard, and passing it means the prompt
+or the model is broken.
 
 ## Editorial balance is a prompt knob, not architecture
 
@@ -112,60 +117,46 @@ the server capped at 220 characters and a 4-line CSS clamp swallowed the rest
 with nothing on screen to show it had happened. That is banned. Text is
 shortened where it can be measured, never hidden by the layout.
 
-- Every card field is capped: title one line, desc, followup.
+- Every card field is capped: title, desc, followup.
 - The cap is ONE value per field, in config.yaml `cards`. The server enforces it
   and the prompt is built with that number in it. Two literals would drift.
-- Where a cap answers to the layout, it is derived rather than chosen:
-  narrowest supported viewport, card font size, the line budget the design
-  allows. `title_max_chars` still is. `desc_max_chars` no longer is - see below.
-- Three layers, each catching a different failure. The prompt states the cap
-  and every canonical example sits under it (primary steer, not a guarantee).
-  The server truncates at a word boundary before the card leaves the backend,
-  so the frontend can never receive text it cannot fit. The frontend renders
-  capped text without clipping.
+- No cap answers to the layout any more. The card has no fixed height, the
+  title wraps, and a long card widens (see Presentation), so the box has no
+  opinion about how much text a field may hold. `title_max_chars` was the last
+  derived one - one estimated line of the narrowest viewport's text column -
+  and the derivation is retired along with the open item to measure Nunito
+  Sans's real advance, which fed nothing but that arithmetic.
+- The caps are RUNAWAY GUARDS, not editorial budgets. Length steering is the
+  prompt's job: it states the editorial target and its canonical examples sit
+  at that length, which is the layer that actually moves the model. The cap
+  sits far above the steer, so the server truncating (at a word boundary,
+  before the card leaves the backend) is a WARNING-logged bug, not a daily
+  event - an ellipsis on screen means something is broken, and the frontend
+  still renders whatever it receives without clipping.
 - Cap violation rate is an eval metric. If the model overruns often, either the
   prompt or the cap is wrong, and the fixture run says which.
 
-### Why desc_max_chars is 180
+### Why desc_max_chars is 600
 
-It was 140, and that number was the four-line clamp's capacity at a 320px
-viewport:
+It has been 140 (the four-line clamp's capacity at a 320px viewport), then 300,
+then 180 - each of those a number that tried to say how long a description
+SHOULD be, first as a box measurement and then as an editorial budget for the
+two-sentence card. The editorial judgement was right and stays; putting it in
+the cutter was wrong. Against a real model, output length is a distribution,
+not a promise: the model routinely wrote a little past the 180 it was told, the
+server cut the text at the cap, and nearly every card ended mid-thought in an
+ellipsis. A cap sized AT the steered length converts ordinary variance into
+routine truncation, and a card whose last sentence is missing is a worse card
+than one that runs a sentence long.
 
-```
-320px  viewport
--32px  .chat-app__stage   width: min(1120px, 100% - 2rem)
-=288px panel (single column below the 860px breakpoint)
--30.4  .statement-card horizontal padding (0.95rem x 2)
-=257.6px text column
-/7.0px avg char advance, Nunito Sans at 0.875rem (14px), ~0.5em
-=36.8  characters per line
-x4     lines (.statement-card--compact -webkit-line-clamp: 4)
-=147   minus wrap loss at line ends
-```
-
-**The last two lines of that sum no longer hold.** The 4-line clamp and the
-`--compact` modifier are both deleted (see Presentation below), so there is no
-line budget left to multiply by. The width arithmetic above is still current -
-the panel is 288px at the 320px floor and the card's horizontal padding is
-unchanged - and it still derives `title_max_chars`, which is one line across the
-same 257.6px column. It no longer derives the description: with the clamp gone
-the layout has no opinion about how long a description may be, and the cap
-becomes an editorial judgement instead of a measurement.
-
-The judgement is what a card is for. It carries the destination and the one
-specific that makes it usable, which is two real sentences, and 180 is that much
-room. It was 300 for one commit, when the card body was 0.875rem; it came down in
-the same change that set the body to 1rem, because the length that scans as a card
-at 14px reads as a paragraph at 16px. The prompt's canonical examples moved with
-it, to roughly 150-175 characters, which is the part that actually steers the
-model. The cap does not go away with the box - the reason for
-capping was never the clamp. An uncapped description is a paid model writing an
-essay into a card, and past roughly this length a card stops being scannable,
-which is the property that makes it a card rather than a paragraph.
-
-Both numbers still rest on a 0.5em advance, the standard estimate for a humanist
-sans rather than a measurement of Nunito Sans; measuring the real advance is an
-open item in docs/build-plan.md, and it now bears on the title cap only.
+So the two jobs are now in separate places. The prompt still steers to two
+sentences - its stated shape and its examples are unchanged in intent - and the
+cap moved to roughly 3x that target, where the only thing it can catch is a
+runaway response shipping an essay into a card. At 600 an ellipsis means a bug,
+and cards.py logs every hit at WARNING so the bug is diagnosable rather than
+quietly absorbed by the UI. Title moved 60 to 90 on the same reasoning, its
+one-line derivation retired: titles wrap, so the layout was never protecting
+anything worth a mid-thought cut.
 
 ## Presentation
 
@@ -180,6 +171,13 @@ nowhere left to hide text.
   when the panel is wide enough, one column at the 320px viewport floor. The
   floor is measured against this layout, not picked - two tracks plus the gap
   need 509.6px and the panel is 546px at a 1280px viewport.
+- **A long card takes its whole row.** Past roughly 280 body characters a card
+  spans every column instead of one track. In one track it would set its row's
+  height, and the two-line card beside it would float on top of the row's dead
+  space; wider, it renders the same text in fewer lines and nothing sits beside
+  a hole. A card a long one would strand in a partial row stretches to the end
+  of that row for the same reason. Order is never changed to fill a hole -
+  cards still render in emitted order, some just wider.
 - **The prose stays.** It is never replaced, scaled away or scrolled off by the
   cards. The column grows underneath it and the view anchors to the top of the
   card group, once, when the group first appears.

@@ -26,7 +26,49 @@ const DECK_LIFT_PX = 12;
 const DECK_STEP_PX = 5;
 const DECK_TILT_DEG = [-1.6, 1.3, -0.9, 1.7];
 
+/**
+ * A card whose body runs past this is LONG and takes its whole grid row rather than one
+ * track. The prompt steers descriptions to roughly two sentences (~150-175 chars) and the
+ * server cap is a far-off runaway guard, so a long card is the exception - and squeezing
+ * one into a 15.5rem track beside a two-line neighbour makes the row as tall as the long
+ * card, with the neighbour floating on top of its dead space. Width instead of a clamp:
+ * every character still renders, in fewer lines.
+ */
+const WIDE_CARD_MIN_CHARS = 280;
+
 type DeckOffset = { x: number; y: number };
+
+/**
+ * Grid placement for each card, as a 1-based start line for `grid-column: <start> / -1`,
+ * or null for ordinary auto placement in one track.
+ *
+ * A long card spans the full row. That can strand the card before it in a partial row, so
+ * the stranded card stretches to the end of its row instead of sitting beside a hole, and
+ * the same goes for a trailing partial row once any card in the deck is long. Order is
+ * never changed to fill a hole - a stretched card is still the same card in the same
+ * place. A lone SHORT card keeps one track (the auto-fill decision in CardDeck.css); a
+ * lone long card is exactly the case the span exists for.
+ */
+function computeColumnStarts(bodyLengths: number[], columns: number): (number | null)[] {
+	const starts: (number | null)[] = bodyLengths.map(() => null);
+	if (columns <= 1 || !bodyLengths.some((length) => length >= WIDE_CARD_MIN_CHARS)) {
+		return starts;
+	}
+
+	let column = 0;
+	bodyLengths.forEach((length, index) => {
+		if (length >= WIDE_CARD_MIN_CHARS) {
+			if (column > 0) starts[index - 1] = column;
+			starts[index] = 1;
+			column = 0;
+		} else {
+			column = (column + 1) % columns;
+		}
+	});
+	if (column > 0 && bodyLengths.length > 1) starts[bodyLengths.length - 1] = column;
+
+	return starts;
+}
 
 type CardDeckProps = {
 	cards: StatementCardData[];
@@ -54,6 +96,22 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 	const measuredRef = useRef(false);
 	const [offsets, setOffsets] = useState<DeckOffset[] | null>(null);
 	const [landed, setLanded] = useState(false);
+	const [columns, setColumns] = useState(1);
+
+	// How many tracks the auto-fill grid actually resolved to, kept current across
+	// resizes. ResizeObserver delivers before paint, so a span computed for the old track
+	// count is corrected before it is ever seen.
+	useLayoutEffect(() => {
+		const grid = gridRef.current;
+		if (!grid) return;
+
+		const read = () =>
+			setColumns(getComputedStyle(grid).gridTemplateColumns.split(' ').length);
+		read();
+		const observer = new ResizeObserver(read);
+		observer.observe(grid);
+		return () => observer.disconnect();
+	}, []);
 
 	useLayoutEffect(() => {
 		// Measured once. A re-render mid-flight must never re-derive offsets, or the
@@ -61,6 +119,13 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 		if (!dealing || measuredRef.current) return;
 		const grid = gridRef.current;
 		if (!grid) return;
+
+		// The offsets must be measured against the SPANNED layout. On the first commit
+		// this effect runs before the track count above has reached the render, so wait
+		// for the re-render that applies it rather than measuring a layout about to move.
+		if (getComputedStyle(grid).gridTemplateColumns.split(' ').length !== columns) {
+			return;
+		}
 
 		const items = Array.from(grid.children) as HTMLElement[];
 		const deck = items[0]?.getBoundingClientRect();
@@ -73,7 +138,12 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 				return { x: deck.left - rect.left, y: deck.top - rect.top };
 			}),
 		);
-	}, [dealing]);
+	}, [dealing, columns]);
+
+	const columnStarts = computeColumnStarts(
+		cards.map((card) => card.body.length),
+		columns,
+	);
 
 	const inFlight = dealing && !landed;
 
@@ -85,6 +155,8 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 		>
 			{cards.map((card, index) => {
 				const offset = offsets?.[index];
+				const start = columnStarts[index];
+				const gridColumn = start === null ? undefined : `${start} / -1`;
 
 				// First pass with `dealing` renders the finished layout so it can be
 				// measured. It is hidden rather than unmounted because the measurement
@@ -92,7 +164,11 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 				// pass is never on screen.
 				if (dealing && !offset) {
 					return (
-						<div key={card.id} className="card-deck__item" style={{ visibility: 'hidden' }}>
+						<div
+							key={card.id}
+							className="card-deck__item"
+							style={{ visibility: 'hidden', gridColumn }}
+						>
 							<StatementCard card={card} onFollowup={onFollowup} />
 						</div>
 					);
@@ -100,7 +176,7 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 
 				if (!offset) {
 					return (
-						<div key={card.id} className="card-deck__item">
+						<div key={card.id} className="card-deck__item" style={{ gridColumn }}>
 							<StatementCard card={card} onFollowup={onFollowup} />
 						</div>
 					);
@@ -110,7 +186,7 @@ export function CardDeck({ cards, onFollowup, deal = false }: CardDeckProps) {
 					<motion.div
 						key={card.id}
 						className="card-deck__item"
-						style={{ zIndex: landed ? undefined : cards.length - index }}
+						style={{ zIndex: landed ? undefined : cards.length - index, gridColumn }}
 						initial={{
 							x: offset.x,
 							y: offset.y - DECK_LIFT_PX + index * DECK_STEP_PX,

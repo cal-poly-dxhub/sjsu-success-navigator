@@ -76,13 +76,25 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       blanket avoidance. Retrieval guidance now turns on whether the answer needs a source
       rather than on the turn's position. `followup` stays on the wire contract with no
       backend reader.
+- [x] cards size to their content instead of truncating (docs/cards-v2.md, Length caps).
+      Real-model testing put an ellipsis on nearly every card: output length is a
+      distribution, and a cap sized AT the two-sentence steer (180) turned ordinary
+      variance into daily truncation. The per-field caps become runaway guards far above
+      normal output - desc 180 -> 600, title 60 -> 90, follow-up 120 unchanged - each hit
+      logged at WARNING, so an ellipsis now means a bug. Length steering stays in the
+      prompt. An over-cap follow-up keeps its button and is sent whole (it displays as
+      the student's turn and wraps there). A card past ~280 body chars spans its whole
+      grid row so a short neighbour never floats on its dead space.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
-- [ ] measure the real average character advance for Nunito Sans at 0.9375rem (the card
+- [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a
       browser and re-derive cards.title_max_chars; 60 comes from a 0.5em estimate
       (config.yaml carries the arithmetic), which is standard for a humanist sans but
       is not a measurement of this font. No longer bears on desc_max_chars, which is
-      no longer derived from the box.
+      no longer derived from the box.~~
+      SUPERSEDED by the card-sizing entry above: title_max_chars is a runaway guard now
+      (90), not a one-line derivation, so there is no arithmetic left for a measured
+      advance to feed.
 - [ ] cap-violation rate as an eval metric: if the model overruns often, either the
       prompt or the cap is wrong, and the fixture run says which
 - [ ] retune retrieve_min_score; 0.35 was tuned against a differently shaped corpus (needs account)
