@@ -317,6 +317,73 @@ def test_truncation_never_exceeds_the_cap_including_the_ellipsis():
         assert len(result) <= cap, f"cap {cap} produced {len(result)} chars"
 
 
+# --- Dash normalisation ---------------------------------------------------------------------
+
+# The dashes under test are written as escapes, not characters, so grepping the repo for a
+# literal em or en dash stays a meaningful check.
+_EM = "\u2014"
+_EN = "\u2013"
+
+
+def test_an_em_dash_in_a_card_becomes_a_comma():
+    """The prompt bans em and en dashes; this is the deterministic backstop for when the
+    model writes one anyway. A dash in running text is doing a comma's job, so the rewrite
+    keeps the sentence rather than the character."""
+    parsed = parse_model_response(
+        '<card ref="1">'
+        f"<title>Tutoring {_EM} free</title>"
+        f"<desc>Drop-in help {_EM} no referral needed {_EM} for lower-division math.</desc>"
+        "<followup>How do I book?</followup>"
+        "</card>"
+    )
+    result = cards_from_parsed(parsed.cards, _sources(_chunk()), _SETTINGS)
+
+    assert result[0].title == "Tutoring, free"
+    assert result[0].body == "Drop-in help, no referral needed, for lower-division math."
+
+
+def test_prose_dashes_are_normalised_like_card_text():
+    assert (
+        strip_card_tags(f"One office {_EM} SJSU Cares {_EM} handles this.")
+        == "One office, SJSU Cares, handles this."
+    )
+
+
+def test_an_en_dash_between_digits_becomes_a_hyphen():
+    """The one place an en dash carries meaning a comma would destroy: "10, 12" says two
+    numbers where "10-12" says a span."""
+    assert cards.normalise_dashes(f"Open 10{_EN}12 on weekdays.") == "Open 10-12 on weekdays."
+
+
+def test_ascii_hyphens_pass_through_untouched():
+    assert (
+        cards.normalise_dashes("drop-in tutoring, call 408-924-5678")
+        == "drop-in tutoring, call 408-924-5678"
+    )
+
+
+def test_dashes_are_normalised_before_the_cap_is_measured():
+    """The cap must measure the string the student reads. A spaced em dash is three
+    characters and ", " is two, so a description measured before the rewrite would be
+    truncated even though what actually renders fits."""
+    desc = ("a" * 10) + f" {_EM} " + ("b" * 9)  # 22 chars as written, 21 once rewritten
+    parsed = [ParsedCard(ref_id=1, title="T", desc=desc, followup="")]
+
+    result = cards_from_parsed(parsed, _sources(_chunk()), _settings(card_desc_max_chars=21))
+
+    assert result[0].body == ("a" * 10) + ", " + ("b" * 9)
+    assert "…" not in result[0].body
+
+
+def test_each_dash_substitution_is_logged(caplog):
+    """The INFO line per substitution is how the dash rate stays measurable: if the
+    prompt's ban is working, these lines stop appearing in the logs."""
+    with caplog.at_level("INFO"):
+        cards.normalise_dashes(f"stress {_EM} sleep {_EN} both")
+
+    assert caplog.text.count("Normalised") == 2
+
+
 def test_the_card_ceiling_is_enforced(caplog):
     settings = _settings(card_max_cards=2)
     turn = _sources(_chunk())

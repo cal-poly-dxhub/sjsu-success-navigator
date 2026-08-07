@@ -36,15 +36,21 @@ def _settings(**overrides):
     return Settings(**{**_SETTINGS.__dict__, **overrides})
 
 
-def _examples(prompt: str, field: str) -> list[str]:
-    """The field's text from every card block in the prompt, minus the shape sketch.
+_EXAMPLE_BLOCK_RE = re.compile(r"<example>(.*?)</example>", re.DOTALL)
 
-    The sketch under HOW YOUR REPLY IS READ describes what to write rather than being an
-    example of it, so it is not held to the caps - it is excluded by its ref, which is the
-    same `ref="2"` the first real example uses, hence matching on the whole block.
+
+def _examples(prompt: str, field: str) -> list[str]:
+    """The field's text from every card inside the worked <example> blocks.
+
+    The shape sketch under "How your reply is read" describes what to write rather than
+    being an example of it, so it is not held to the caps - it sits outside the <example>
+    blocks, which is what scopes this to the examples the model actually copies.
     """
-    body = prompt.split("EXAMPLES", 1)[1]
-    return [match.strip() for match in _FIELD_RE[field].findall(body)]
+    blocks = _EXAMPLE_BLOCK_RE.findall(prompt)
+    assert blocks, "no <example> blocks found in the prompt"
+    return [
+        match.strip() for block in blocks for match in _FIELD_RE[field].findall(block)
+    ]
 
 
 def test_the_prompt_states_the_caps_it_was_built_with():
@@ -90,10 +96,10 @@ def test_the_card_descriptions_in_the_examples_carry_real_substance():
     one-line description is the shape that weighting exists to move away from, so the
     examples must not model it - they are what the model copies.
 
-    The floor is deliberately close to the cap. The examples teach a LENGTH, not just an
-    upper bound: two sentences at roughly 150-175 characters, which under a 180 cap is a
-    narrow band on purpose. An example rewritten short would quietly re-teach the one-line
-    card even though nothing about it violates a cap."""
+    The examples teach a LENGTH, not just an upper bound: two sentences at roughly 150-175
+    characters. The cap is a guard sitting far above that, so it holds no floor of its own -
+    an example rewritten short would quietly re-teach the one-line card even though nothing
+    about it violates a cap. This assertion is the floor."""
     descs = _examples(build_system_prompt(_SETTINGS), "desc")
 
     for desc in descs:
@@ -129,7 +135,7 @@ def test_the_prompt_tells_the_model_where_the_answer_goes():
     the division entirely, this fails; if it rephrases it, this is the line to update."""
     prompt = build_system_prompt(_SETTINGS)
 
-    assert "WHAT GOES IN A CARD AND WHAT GOES IN THE PROSE" in prompt
+    assert "What goes in a card and what goes in the prose" in prompt
     assert "The cards carry the answer. The prose introduces them." in prompt
     # The carve-out that keeps a zero-card turn from becoming a teaser above empty space.
-    assert "WHEN YOU EMIT NO CARDS, the prose is the whole answer" in prompt
+    assert "When you emit no cards, the prose is the whole answer" in prompt

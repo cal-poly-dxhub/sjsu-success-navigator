@@ -7,7 +7,7 @@ from models import ChatResponse, SafetyContact, SafetyHandoff
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
-# Hard gate only — explicit crisis / harm language. Broader distress is handled by the agent.
+# Hard gate only: explicit crisis / harm language. Broader distress is handled by the agent.
 _SAFETY_PHRASES: tuple[str, ...] = (
     "suicide",
     "suicidal",
@@ -47,7 +47,7 @@ _SAFETY_HANDOFF = SafetyHandoff(
         SafetyContact(
             id="988",
             label="Call or text 988",
-            detail="Suicide & Crisis Lifeline — 24/7",
+            detail="Suicide & Crisis Lifeline, 24/7",
             href="https://988lifeline.org/",
         ),
         SafetyContact(
@@ -72,7 +72,7 @@ _SAFETY_HANDOFF = SafetyHandoff(
 )
 
 _SAFETY_CONVERSATIONAL_TEXT = (
-    "Thanks for telling me. I'm not able to give counseling myself — please reach a "
+    "Thanks for telling me. I'm not able to give counseling myself, so please reach a "
     "real person using the options below. You're not alone, and help is available right now."
 )
 
@@ -99,7 +99,7 @@ def detect_safety(query: str) -> SafetyMatch | None:
 
 
 def get_standard_safety_handoff() -> SafetyHandoff:
-    """Fixed crisis panel shown in the UI — not LLM-generated."""
+    """Fixed crisis panel shown in the UI, not LLM-generated."""
     return _SAFETY_HANDOFF
 
 
