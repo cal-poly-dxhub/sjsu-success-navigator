@@ -23,7 +23,8 @@ When to use a card
 What is in a card
 - the description says what the resource is and, above all, WHY it helps this
   student's situation
-- personal, not tacked on: two to four sentences, up to {desc_max_chars}
+- personal, not tacked on: two to four sentences; {desc_max_chars} is a
+  ceiling far above that, never a length to write toward
 - it says only what the cited source supports, nothing inferred about hours,
   cost, eligibility or who is on the other end
 - cite the id only, never write a URL

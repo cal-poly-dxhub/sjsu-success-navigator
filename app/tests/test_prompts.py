@@ -96,10 +96,10 @@ def test_the_card_descriptions_in_the_examples_carry_real_substance():
     one-line description is the shape that weighting exists to move away from, so the
     examples must not model it - they are what the model copies.
 
-    The floor is deliberately close to the cap. The examples teach a LENGTH, not just an
-    upper bound: two sentences at roughly 150-175 characters, which under a 180 cap is a
-    narrow band on purpose. An example rewritten short would quietly re-teach the one-line
-    card even though nothing about it violates a cap."""
+    The examples teach a LENGTH, not just an upper bound: two sentences at roughly 150-175
+    characters. The cap is a guard sitting far above that, so it holds no floor of its own -
+    an example rewritten short would quietly re-teach the one-line card even though nothing
+    about it violates a cap. This assertion is the floor."""
     descs = _examples(build_system_prompt(_SETTINGS), "desc")
 
     for desc in descs:
