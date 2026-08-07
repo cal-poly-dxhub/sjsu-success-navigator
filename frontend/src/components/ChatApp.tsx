@@ -50,7 +50,7 @@ function tileAlignedSlideDistance(): number {
  */
 const WELCOME_RESPONSE: ChatResponse = {
 	conversationalText:
-		"Hi! I'm Sammy. Ask me anything about SJSU campus resources — tutoring, advising, wellness, housing help, and more.",
+		"Hi! I'm Sammy. Ask me anything about SJSU campus resources: tutoring, advising, wellness, housing help, and more.",
 	talkToPersonAvailable: true,
 	statementBatches: [],
 };

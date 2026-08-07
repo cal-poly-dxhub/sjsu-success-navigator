@@ -61,6 +61,18 @@ SOURCE_EXCERPT_CHARS = 500
 _WHITESPACE_RE = re.compile(r"\s+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
+# Em and en dashes are rewritten out of everything the student reads. The prompt bans them
+# and its examples model the ban; this is the deterministic backstop for when the model
+# writes one anyway. An en dash between digits is a range and becomes a hyphen ("10-12");
+# every other em or en dash, with whatever whitespace surrounds it, becomes a comma and a
+# space, which is the punctuation doing the same job. ASCII hyphens pass through untouched.
+# Escapes rather than the characters themselves, so grepping the repo for a literal dash
+# stays a meaningful check.
+_EM_DASH = "\u2014"
+_EN_DASH = "\u2013"
+_DIGIT_RANGE_EN_DASH_RE = re.compile(rf"(?<=\d){_EN_DASH}(?=\d)")
+_EM_EN_DASH_RE = re.compile(rf"\s*[{_EM_DASH}{_EN_DASH}]\s*")
+
 # A <card> block: any attributes, any body, non-greedy so two adjacent cards do not collapse
 # into one. `ref` is pulled out of the attributes separately rather than being required by
 # this pattern, because a card whose ref is MISSING still has to be found - it is a card that
@@ -222,6 +234,27 @@ def parse_model_response(text: str) -> ParsedResponse:
     )
 
 
+def normalise_dashes(text: str) -> str:
+    """Rewrite em and en dashes into punctuation the UI is allowed to show.
+
+    Runs on the display path BEFORE cap truncation, so the caps measure the rewritten
+    string rather than the one the model typed. Each substitution is logged at INFO so the
+    model's dash rate stays measurable from the logs alone: if the prompt's ban is working,
+    these lines stop appearing.
+    """
+
+    def _to_hyphen(match: re.Match[str]) -> str:
+        logger.info("Normalised an en dash in a digit range to a hyphen.")
+        return "-"
+
+    def _to_comma(match: re.Match[str]) -> str:
+        logger.info("Normalised a dash (%r) in display text to a comma.", match.group(0))
+        return ", "
+
+    result = _DIGIT_RANGE_EN_DASH_RE.sub(_to_hyphen, text or "")
+    return _EM_EN_DASH_RE.sub(_to_comma, result)
+
+
 def _first_field(pattern: re.Pattern[str], body: str) -> str:
     match = pattern.search(body)
     if match is None:
@@ -232,6 +265,7 @@ def _first_field(pattern: re.Pattern[str], body: str) -> str:
 def _clean_prose(text: str) -> str:
     """Scrub every known tag and normalise the blank lines a removed block leaves behind."""
     stripped = _ANY_KNOWN_TAG_RE.sub("", text)
+    stripped = normalise_dashes(stripped)
     stripped = _BLANK_LINES_RE.sub("\n\n", stripped)
     return "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
 
@@ -308,8 +342,14 @@ def cards_from_parsed(
             )
             break
 
-        title = _capped(parsed.title, settings.card_title_max_chars, "title", parsed.ref_id)
-        desc = _capped(parsed.desc, settings.card_desc_max_chars, "description", parsed.ref_id)
+        # Dashes are normalised before the cap is applied, so the cap measures the string
+        # the student will actually read.
+        title = _capped(
+            normalise_dashes(parsed.title), settings.card_title_max_chars, "title", parsed.ref_id
+        )
+        desc = _capped(
+            normalise_dashes(parsed.desc), settings.card_desc_max_chars, "description", parsed.ref_id
+        )
         if not title or not desc:
             logger.warning(
                 "Dropping a card block with no %s (ref=%r).",
