@@ -20,6 +20,17 @@ const DEAL_STAGGER_S = 0.34;
 const DEAL_DURATION_S = 0.44;
 const DEAL_EASE = [0.22, 1, 0.36, 1] as const;
 
+/**
+ * When the last card lands, in ms. Exported because the prose the model wrote UNDER the
+ * cards waits for it: the group has to finish arriving before the next thing to read
+ * appears, and mounting that bubble mid-flight would also put a growing element below cards
+ * that are still animating.
+ */
+export function dealDurationMs(cardCount: number): number {
+	if (cardCount <= 0) return 0;
+	return Math.round(((cardCount - 1) * DEAL_STAGGER_S + DEAL_DURATION_S) * 1000);
+}
+
 /** The deck sits just above the first grid slot, so even the top card travels. */
 const DECK_LIFT_PX = 12;
 /** Per-card depth in the stack. */

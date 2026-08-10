@@ -24,6 +24,13 @@ response, set far above the length the prompt steers toward: an ellipsis in prod
 means the prompt or the model is broken, so every truncation is logged at WARNING. Length
 steering is the prompt's job, not this module's.
 
+THE CARDS RENDER WHERE THE MODEL PUT THEM. The reply is split ONCE, at the end of the last
+card block: prose before it becomes the bubble above the grid, prose after it becomes the
+bubble below. One split rather than a general block list because a turn produces exactly one
+card group, so the only thing there is to preserve is which side of that group each piece of
+prose was on. This is what keeps a closing question under the cards it refers to instead of
+above the answer it is asking about.
+
 AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
 reason is observability: a card that renders without its source button is a visible symptom,
 where a silently dropped card is a student seeing three cards instead of four and nobody
@@ -207,6 +214,9 @@ class ParsedResponse:
     # None = no safety tag. An empty tuple = a bare <safety/> (the standard panel). Keys are
     # the model's triage choice; app/safety.py owns what each one resolves to.
     safety_keys: tuple[str, ...] | None
+    # Prose the model wrote AFTER its last card block, which renders BELOW the grid. Empty
+    # for the ordinary reply that ends with its cards.
+    trailing_prose: str = ""
 
     @property
     def needs_safety(self) -> bool:
@@ -214,7 +224,16 @@ class ParsedResponse:
 
 
 def parse_model_response(text: str) -> ParsedResponse:
-    """Split one model turn into its prose and its card blocks.
+    """Split one model turn into its prose and its card blocks, keeping the card group's
+    position in the reply.
+
+    ONE SPLIT POINT, at the end of the last card block: prose before it is the lead-in that
+    renders above the grid, prose after it renders below. That is deliberately not a general
+    block-interleaving parser, because a turn can only ever produce ONE card group - the
+    cards become a single StatementBatch, dealt as one deck, anchored to once - so the only
+    position information there is to keep is which side of that group a piece of prose was
+    on. Prose written BETWEEN two card blocks joins the lead: nothing can render inside the
+    grid, and it was written to introduce the cards that follow it.
 
     The prose is everything OUTSIDE the card blocks, which is the fallback's whole mechanism:
     if no block is well-formed then nothing is removed, every known tag is scrubbed, and the
@@ -223,9 +242,12 @@ def parse_model_response(text: str) -> ParsedResponse:
     """
     source = text or ""
 
+    matches = list(_CARD_BLOCK_RE.finditer(source))
+
     cards: list[ParsedCard] = []
-    for attrs, body in _CARD_BLOCK_RE.findall(source):
-        ref_match = _REF_ATTR_RE.search(attrs)
+    for match in matches:
+        ref_match = _REF_ATTR_RE.search(match.group(1))
+        body = match.group(2)
         cards.append(
             ParsedCard(
                 ref_id=int(ref_match.group(1)) if ref_match else None,
@@ -235,26 +257,42 @@ def parse_model_response(text: str) -> ParsedResponse:
             )
         )
 
-    prose = _CARD_BLOCK_RE.sub("\n\n", source)
-
-    safety_keys: tuple[str, ...] | None = None
-    block_contents = _SAFETY_BLOCK_RE.findall(prose)
-    if block_contents:
-        keys: list[str] = []
-        for content in block_contents:
-            keys.extend(m.group(0).lower() for m in _SAFETY_KEY_RE.finditer(content))
-        safety_keys = tuple(keys)
-        prose = _SAFETY_BLOCK_RE.sub("\n\n", prose)
-    if safety_keys is None and _SAFETY_TAG_RE.search(prose):
-        # A bare <safety/> (or a stray unclosed <safety>): the tag still fires the handoff,
-        # with no keys, which resolves to the default crisis set.
-        safety_keys = ()
+    split_at = matches[-1].end() if matches else len(source)
+    lead = _CARD_BLOCK_RE.sub("\n\n", source[:split_at])
+    trailing = source[split_at:]
 
     return ParsedResponse(
-        prose=_clean_prose(prose),
+        prose=_clean_prose(lead),
         cards=cards,
-        safety_keys=safety_keys,
+        safety_keys=_safety_keys_in(lead, trailing),
+        trailing_prose=_clean_prose(trailing),
     )
+
+
+def _safety_keys_in(*parts: str) -> tuple[str, ...] | None:
+    """The model's safety keys, read from both sides of the split.
+
+    Both sides, because a tag written under the cards is still a tag and losing it would
+    cost the panel entirely - the one failure this module cannot afford. Called with the
+    card blocks already removed, so a stray tag inside a card body does not fire a handoff.
+    """
+    block_contents = [content for part in parts for content in _SAFETY_BLOCK_RE.findall(part)]
+    if block_contents:
+        return tuple(
+            match.group(0).lower()
+            for content in block_contents
+            for match in _SAFETY_KEY_RE.finditer(content)
+        )
+    if any(_SAFETY_TAG_RE.search(part) for part in parts):
+        # A bare <safety/> (or a stray unclosed <safety>): the tag still fires the handoff,
+        # with no keys, which resolves to the default crisis set.
+        return ()
+    return None
+
+
+def join_prose(*parts: str | None) -> str:
+    """Put a split reply back together as one bubble, blank line between the halves."""
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
 
 def normalise_dashes(text: str) -> str:

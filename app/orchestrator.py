@@ -33,6 +33,7 @@ from cards import (
     TurnSources,
     cards_from_parsed,
     create_statement_batch,
+    join_prose,
     parse_model_response,
     source_options_for_tool,
     strip_card_tags,
@@ -290,6 +291,11 @@ def _response_from_text(
 ) -> ChatResponse:
     """Parse one model reply into the wire response. The only place cards come from.
 
+    The reply reaches the student in the order it was written: `conversationalText` is the
+    prose above the card group and `trailingText` the prose below it, so a closing question
+    lands under the cards it refers to. Both fall back to one bubble - the safety branch and
+    the zero-card branch below each have a reason there is nothing left to split around.
+
     The zero-card branch is the contract's fallback, and it is why a parse failure cannot
     lose anything: when no card survives, the bubble is rebuilt from the COMPLETE reply with
     the tags scrubbed, rather than from the text that happened to sit outside the blocks. So
@@ -303,26 +309,42 @@ def _response_from_text(
         # dropped deliberately, so this must NOT take the zero-card fallback below - that
         # would fold the card text back into the bubble. An empty prose falls back to the
         # server's one authored sentence: the panel needs an introduction, not silence.
+        #
+        # The reply is also un-split here: with the cards gone there is nothing for trailing
+        # prose to sit under, and the panel's placement - directly under the whole message,
+        # never buried between two halves of it - is a safety property, not a layout one.
         cards = []
-        prose = parsed.prose or strip_card_tags(text) or SAFETY_FALLBACK_TEXT
+        prose = join_prose(parsed.prose, parsed.trailing_prose) or strip_card_tags(text)
+        prose = prose or SAFETY_FALLBACK_TEXT
+        trailing = ""
         logger.info("chat route=safety keys=%s", list(parsed.safety_keys or ()))
     else:
         cards = cards_from_parsed(parsed.cards, sources, settings)
-        prose = parsed.prose if cards else strip_card_tags(text)
+        if cards:
+            # The split survives only when there is a card group to split around.
+            prose, trailing = parsed.prose, parsed.trailing_prose
+        else:
+            # The zero-card fallback rebuilds the bubble from the COMPLETE reply, so there
+            # is no position left to preserve: with no grid on screen, prose that was
+            # written under the cards is just the end of the message.
+            prose, trailing = strip_card_tags(text), ""
 
-    if not prose:
+    if not prose and not trailing:
         logger.warning("Model produced no usable text for query=%r", query[:80])
         prose = _NO_OUTPUT_TEXT
 
     batches = [create_statement_batch(cards, query)] if cards else []
     response = ChatResponse(
         conversationalText=prose,
+        trailingText=trailing or None,
         statementBatches=batches or None,
         talkToPersonAvailable=True,
     )
+    # The whole message is screened, both sides of the split: a hotline named under the
+    # cards has to attach the panel exactly as one named above them.
     return apply_safety_handoff_to_response(
         response,
-        conversational_text=prose,
+        conversational_text=join_prose(prose, trailing),
         safety_keys=parsed.safety_keys,
     )
 

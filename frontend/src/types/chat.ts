@@ -42,6 +42,12 @@ export type SafetyHandoff = {
 
 export type ChatResponse = {
 	conversationalText: string;
+	/**
+	 * Prose the model wrote after its cards. Renders BELOW the card group, which is what
+	 * keeps a closing question under the answer instead of over it. Absent on the ordinary
+	 * reply that ends with its cards, and always absent on a safety turn.
+	 */
+	trailingText?: string;
 	statementBatches?: StatementBatch[];
 	safetyHandoff?: SafetyHandoff;
 	talkToPersonAvailable?: boolean;
@@ -67,6 +73,8 @@ export type RagPhase = 'conversational' | 'grid';
 export type ConversationTurn = {
 	id: string;
 	text: string;
+	/** Prose emitted after the cards; renders under the grid, never above it. */
+	trailingText?: string;
 	cards: StatementCard[];
 	safetyHandoff?: SafetyHandoff;
 	/** Active RAG flow phase; talk-only turns stay conversational. */

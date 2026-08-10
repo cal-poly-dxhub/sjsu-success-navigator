@@ -163,6 +163,7 @@ export default function ChatApp() {
 			const incomingCards = incomingBatchFromResponse(next);
 			const turn = createConversationTurn(next.conversationalText, {
 				cards: incomingCards,
+				trailingText: next.trailingText,
 				safetyHandoff: next.safetyHandoff,
 				query,
 			});

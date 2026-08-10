@@ -26,8 +26,47 @@ prose answer here, unwrapped
 ```
 
 - Prose outside card blocks becomes the bubble.
-- Cards render in emitted order.
+- Cards render in emitted order, and in the emitted POSITION: prose written before them
+  renders above the grid, prose written after it renders below.
 - `ref` is an id from this turn's retrieval list. The model never emits a URL.
+
+## Where the cards sit in the reply
+
+The reply is split ONCE, at the end of the last card block. Everything before it, blocks
+removed, is `conversationalText`; everything after is `trailingText`; the grid renders
+between them. That is what keeps a closing question under the cards it refers to rather
+than over the answer it is asking about, which is how it read while the whole reply was
+one bubble above the grid.
+
+One split point rather than a general list of interleaved blocks, because a turn produces
+exactly ONE card group: the cards become a single `StatementBatch`, dealt as one deck,
+anchored to once. There is no second grid for a third prose block to sit between, so the
+only position information that exists is which side of the group each piece of prose was
+on, and a block list would put a general structure on the wire and in the turn model to
+carry two slots. Prose written BETWEEN two card blocks joins the lead: nothing can render
+inside the grid, and it was written to introduce the cards that follow it.
+
+Three cases collapse back to one bubble, each because there is no group left to split
+around:
+
+- **A safety turn.** The cards are dropped by contract, so trailing prose would render
+  under the contact panel with nothing between them. The panel sits directly under the
+  whole message; that placement is a safety property, and it is enforced in
+  `apply_safety_handoff_to_response` beside the card drop rather than left to the caller.
+- **Zero cards parsed.** The fallback rebuilds the bubble from the complete reply, so
+  prose that was under the cards is just the end of the message.
+- **No cards emitted at all.** Nothing to split.
+
+`trailingText` is a new key on the wire and the only change to the response shape. It is
+absent (`null`) on every one of those cases and on the ordinary reply that ends with its
+cards. Frontend history sends both halves as the assistant's turn, because history carries
+prose only and a "which one?" is answering the question the model asked under its cards.
+
+On screen the trailing bubble waits for the deal to finish before it appears, then types
+like the lead-in does. Two reasons, and the first is not cosmetic: the entrance is
+transform-only so nothing reflows while cards are in the air, and a bubble growing under
+them would be exactly that reflow. The second is rhythm - lead-in, cards landing, then the
+question about them, in the order they are meant to be read.
 
 ## Retrieval contract
 
@@ -227,8 +266,10 @@ the guarantee needed is only that OUR tags never surface.
 The safety intercept stays deterministic, ahead of the guardrail and ahead of
 any model call, and emits its card directly. No tags, no model involvement.
 
-The wire contract is unchanged: same camelCase keys, same `StatementCard`
-shape, same actions array. Only the source of the text changed.
+The wire contract keeps its camelCase keys, its `StatementCard` shape and its actions
+array. `trailingText` is added alongside them (see Where the cards sit in the reply); an
+older client that ignores it renders the lead-in and the cards exactly as before, minus the
+prose under them.
 
 ## Decisions that differ from the original draft
 

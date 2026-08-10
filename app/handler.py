@@ -177,6 +177,7 @@ def lambda_handler(event, context):
             200,
             {
                 "conversationalText": blocked_text,
+                "trailingText": None,
                 "statementBatches": None,
                 "safetyHandoff": None,
                 "talkToPersonAvailable": True,

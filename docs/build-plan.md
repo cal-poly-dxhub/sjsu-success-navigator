@@ -130,6 +130,17 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       ground-truth pairs that assumed intercepts for housing/family/intake are reclassified
       rag-answer. The roster adds SAS and UPD, so a survivor disclosure can resolve to the
       confidential advocate instead of a generic crisis set.
+- [x] cards render in the model's emitted position (2026-08-10, docs/cards-v2.md, Where the
+      cards sit in the reply). The reply is split once, at the end of the last card block:
+      prose before it renders above the grid, prose after it below, so a closing question stops
+      landing over the answer it asks about. One split point, not a general block list - a turn
+      makes exactly one card group, so the only position there is to keep is which side of it
+      each piece of prose was on. `trailingText` joins the wire contract and is the only shape
+      change; it is null on a safety turn, on the zero-card fallback and on the ordinary reply
+      that ends with its cards, because each of those has no group left to split around. The
+      panel's placement is unchanged by construction: attaching it collapses the reply back into
+      one bubble. The trailing bubble waits out the deal before it types, which keeps the
+      entrance transform-only.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

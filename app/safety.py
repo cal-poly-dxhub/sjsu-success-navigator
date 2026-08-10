@@ -189,7 +189,13 @@ def apply_safety_handoff_to_response(
 ) -> ChatResponse:
     """Attach the resolved panel when the model emitted a safety tag, or the default panel
     when its prose cites crisis lines without one. `safety_keys=None` means no tag; an
-    empty tuple means a bare tag. A safety turn carries no cards."""
+    empty tuple means a bare tag. A safety turn carries no cards.
+
+    Attaching the panel also collapses a split reply back into one bubble. The cards it
+    dropped are what trailing prose renders under, so leaving the split would put half the
+    message below the panel - and the panel sits directly under the message it belongs to,
+    never buried inside it. That placement is a safety property, so it is enforced here,
+    beside the card drop, rather than left to the caller."""
     if response.safety_handoff is not None:
         return response
 
@@ -200,9 +206,17 @@ def apply_safety_handoff_to_response(
     else:
         handoff = resolve_safety_handoff(safety_keys)
 
+    whole_message = "\n\n".join(
+        part.strip()
+        for part in (response.conversational_text, response.trailing_text)
+        if part and part.strip()
+    )
+
     return response.model_copy(
         update={
             "safety_handoff": handoff,
             "statement_batches": None,
+            "conversational_text": whole_message,
+            "trailing_text": None,
         }
     )
