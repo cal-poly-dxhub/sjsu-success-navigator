@@ -39,7 +39,7 @@ from cards import (
 )
 from prompts import build_system_prompt
 from retrieve import retrieve_chunks
-from safety import apply_safety_handoff_to_response
+from safety import SAFETY_FALLBACK_TEXT, apply_safety_handoff_to_response
 from tools import TOOL_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -301,9 +301,11 @@ def _response_from_text(
     if parsed.needs_safety:
         # A safety turn carries no cards by contract. Any the model emitted anyway are
         # dropped deliberately, so this must NOT take the zero-card fallback below - that
-        # would fold the card text back into the bubble.
+        # would fold the card text back into the bubble. An empty prose falls back to the
+        # server's one authored sentence: the panel needs an introduction, not silence.
         cards = []
-        prose = parsed.prose or strip_card_tags(text)
+        prose = parsed.prose or strip_card_tags(text) or SAFETY_FALLBACK_TEXT
+        logger.info("chat route=safety keys=%s", list(parsed.safety_keys or ()))
     else:
         cards = cards_from_parsed(parsed.cards, sources, settings)
         prose = parsed.prose if cards else strip_card_tags(text)
@@ -321,7 +323,7 @@ def _response_from_text(
     return apply_safety_handoff_to_response(
         response,
         conversational_text=prose,
-        requested=parsed.needs_safety,
+        safety_keys=parsed.safety_keys,
     )
 
 

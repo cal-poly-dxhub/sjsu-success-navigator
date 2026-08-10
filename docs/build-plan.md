@@ -110,14 +110,26 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       corrupted fact. Verified against all 228 live pages: 0 failures, phones 39/203 -> 192/228,
       emails 52/203 -> 192/228. Every fingerprint changes, so the next deploy re-uploads and
       re-ingests the whole corpus - deliberate; the corpus was the bug.
-- [x] ground-truth QA baseline (eval/ground-truth.yaml): 77 pairs known correct
+- [x] ground-truth QA baseline (eval/ground-truth.yaml): 82 pairs known correct
       independently of the program - sponsor sheets first, every load-bearing fact verified
       against the live public pages on 2026-08-10, sheet-vs-sheet conflicts resolved by the
       live site and the sheets' errors recorded in the file header. Covers routing, factual,
-      process and disambiguation questions plus ten safety-intercept cases (the brief's five
-      forbidden-guidance categories; a fluent model answer there is a FAIL) and five
-      honest-gap probes for content deliberately outside the corpus. This is the fixture set
-      the harness below consumes.
+      process and disambiguation questions plus safety-intercept cases (the safety panel
+      must appear; a fluent reply without it is a FAIL) and five honest-gap probes for
+      content deliberately outside the corpus. This is the fixture set the harness below
+      consumes.
+- [x] safety is the model's triage call, resolved server-side (2026-08-10). The pre-model
+      phrase gate is gone: the system prompt carries the emergency instruction and a keyed
+      resource roster (built from app/safety.py's table, the same table the resolver reads,
+      so a taught key always resolves), the model emits <safety>key, key</safety>, and the
+      server turns keys into the fixed contact panel - label, number and link are
+      table-authored, never model-authored, the card-ref construction applied to crisis
+      contacts. Unknown keys drop at WARNING; nothing valid resolves to the default crisis
+      set; prose citing a hotline without the tag still gets the panel. Emergencies only:
+      SJSU Cares and other office processes are ordinary routing answers, and the four
+      ground-truth pairs that assumed intercepts for housing/family/intake are reclassified
+      rag-answer. The roster adds SAS and UPD, so a survivor disclosure can resolve to the
+      confidential advocate instead of a generic crisis set.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

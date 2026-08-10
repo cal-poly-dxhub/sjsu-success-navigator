@@ -472,12 +472,45 @@ def test_the_safety_tag_is_detected_and_never_rendered():
     parsed = parse_model_response("<safety/>\n\nPlease reach out to someone below.")
 
     assert parsed.needs_safety is True
+    assert parsed.safety_keys == ()
     assert "<safety" not in parsed.prose
     assert parsed.prose == "Please reach out to someone below."
 
 
 def test_no_safety_tag_means_no_safety_request():
-    assert parse_model_response("Here is the tutoring office.").needs_safety is False
+    parsed = parse_model_response("Here is the tutoring office.")
+    assert parsed.needs_safety is False
+    assert parsed.safety_keys is None
+
+
+def test_a_keyed_safety_block_yields_its_keys_and_leaks_nothing_into_the_prose():
+    """The keys are instructions to the server, not text for the student: the WHOLE block
+    goes, so 'crisis-988, caps' can never surface in the bubble."""
+    parsed = parse_model_response(
+        "You're not alone, and help is close.\n\n<safety>crisis-988, caps</safety>"
+    )
+
+    assert parsed.safety_keys == ("crisis-988", "caps")
+    assert parsed.prose == "You're not alone, and help is close."
+    assert "crisis-988" not in parsed.prose
+
+
+def test_safety_keys_survive_odd_spacing_case_and_separators():
+    parsed = parse_model_response("<safety>\n  SAS,  crisis-988\n</safety>\n\nHelp is here.")
+    assert parsed.safety_keys == ("sas", "crisis-988")
+
+
+def test_a_keyed_block_with_no_valid_tokens_is_a_bare_tag():
+    parsed = parse_model_response("<safety> , </safety>\n\nHelp is below.")
+    assert parsed.needs_safety is True
+    assert parsed.safety_keys == ()
+
+
+def test_the_fallback_scrub_removes_a_safety_block_whole():
+    """The zero-card fallback path rebuilds the bubble from the raw reply, so it must drop
+    the block's key content too, not just the tags around it."""
+    text = "Support is below.\n\n<safety>sas</safety>"
+    assert strip_card_tags(text) == "Support is below."
 
 
 # --- The id map ---------------------------------------------------------------------------

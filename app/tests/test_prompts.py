@@ -129,6 +129,38 @@ def test_the_prompt_never_withholds_cards_because_a_turn_is_a_follow_up():
     assert "A follow-up is a question like any other." in prompt
 
 
+def test_the_prompt_draws_the_scope_line():
+    """Sammy answers campus questions and declines everything else, including questions it
+    could answer correctly - eval/ground-truth.yaml's out-of-scope pairs measure exactly
+    this, so the instruction and the example that steers it must both be present."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "Scope:" in prompt
+    assert "give none of the requested content" in prompt
+    # The worked example, because examples steer harder than instructions.
+    assert "restaurant picks are outside my lane" in prompt
+
+
+def test_the_safety_roster_in_the_prompt_is_the_resolvers_table():
+    """Safety triage is the model's call and the keys are its whole vocabulary: every key
+    the prompt teaches must be one the server resolves. Both halves read app/safety.py's
+    table, which is what this pins - a new resource is one table entry away from being
+    teachable and resolvable, and an entry removed disappears from both at once."""
+    import safety
+
+    prompt = build_system_prompt(_SETTINGS)
+    roster = safety.safety_roster_for_prompt()
+    assert roster
+    for key, when in roster:
+        assert f"- {key}: when {when}" in prompt
+
+    # The panel owns every number. The section teaching the keys must not leak contact
+    # digits into text the model might copy into prose (key NAMES like crisis-988 are fine).
+    safety_section = prompt.split("Safety:")[1].split("Never:")[0]
+    assert "408-924" not in safety_section
+    assert "<safety>crisis-988, caps</safety>" in prompt
+
+
 def test_the_prompt_tells_the_model_where_the_answer_goes():
     """The editorial division, asserted as presence rather than wording: destinations and
     retrieved detail belong in cards, the prose is a short intro. If a later rewrite drops

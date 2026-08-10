@@ -8,7 +8,7 @@ and run Student Affairs' 5-10 query test set.
 
 ## ground-truth.yaml
 
-The fixed baseline the harness scores against: 77 question/answer pairs known
+The fixed baseline the harness scores against: 82 question/answer pairs known
 correct INDEPENDENTLY of the program - sourced from the sponsor resource sheets
 and the challenge brief, with every load-bearing fact verified against the live
 public pages on 2026-08-10 (raw HTML, not our pipeline). The file header
@@ -16,9 +16,11 @@ documents the schema, the scoring guidance, and the sponsor-sheet errors found
 during verification (do not "fix" entries back to the sheets' dead URLs or
 stale contacts).
 
-Composition: 32 routing, 17 factual, 8 process, 5 disambiguation, 10
-safety-intercept (the deterministic handoff MUST fire; a fluent model answer is
-a failure), 5 honest-gap (the corpus has no page; inventing one is a failure).
+Composition: 36 routing, 17 factual, 8 process, 5 disambiguation, 6
+safety-intercept (the safety panel MUST appear, model-triaged with
+server-resolved contacts; a fluent reply without it is a failure), 5 honest-gap
+(the corpus has no page; inventing one is a failure), 5 out-of-scope (nothing
+to do with SJSU; answering the question is the failure, declining is the pass).
 21 pairs are sensitivity-flagged and carry a tone rubric on top of fact checks.
 
 ## Running it
