@@ -129,6 +129,38 @@ def test_the_prompt_never_withholds_cards_because_a_turn_is_a_follow_up():
     assert "A follow-up is a question like any other." in prompt
 
 
+def test_the_prompt_states_the_order_the_reply_is_read_in():
+    """The other half of the emitted-position change. The server now renders prose written
+    after the cards BELOW them, so the prompt has to say where a closing question goes -
+    otherwise the model keeps putting it above the answer it asks about, which is what it
+    read like while the whole reply was one bubble over the grid. Asserted as presence: a
+    rewrite may rephrase this, but dropping it leaves the placement to chance."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "a short lead-in, then the cards, then any question you want to ask" in prompt
+    assert "Your reply renders in the order you wrote it" in prompt
+    # And that the question is optional, so the order does not become a script.
+    assert "a closing question is an option, not a habit" in prompt
+
+
+def test_the_examples_model_the_order_rather_than_only_stating_it():
+    """Examples steer harder than instructions, so the order has to be shown. One example
+    ends with a question under its last card and one ends on its cards: the first teaches
+    where a closing question goes, the second that it is optional."""
+    blocks = _EXAMPLE_BLOCK_RE.findall(build_system_prompt(_SETTINGS))
+    carded = [block for block in blocks if "</card>" in block]
+    assert carded, "no worked example emits a card"
+
+    after_last_card = [block.rsplit("</card>", 1)[1].strip() for block in carded]
+    assert any(after_last_card), "no example models prose written under the cards"
+    assert not all(after_last_card), "no example models a reply that ends on its cards"
+
+    # The lead-in is still there: an example that opened with its cards would teach an
+    # empty bubble, which is the one shape the contract cannot render.
+    for block in carded:
+        assert block.split("<card", 1)[0].strip(), "an example opens with its cards"
+
+
 def test_the_prompt_draws_the_scope_line():
     """Sammy answers campus questions and declines everything else, including questions it
     could answer correctly - eval/ground-truth.yaml's out-of-scope pairs measure exactly

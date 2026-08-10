@@ -71,6 +71,7 @@ h1 { font-size: 1.35rem; margin: 0 0 4px; }
         padding-left: 8px; margin-top: 8px; }
 .prose { white-space: pre-wrap; font-size: 0.9rem; background: #f6f8fa; border-radius: 8px;
          padding: 10px 12px; }
+.prose.trailing { margin-top: 8px; }
 .card { border: 1px solid #d1d9e0; border-left: 4px solid #1a7f37; border-radius: 8px;
         padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
 .card .t { font-weight: 700; }
@@ -152,6 +153,10 @@ def actual_col(result: dict) -> str:
             link = f'<a href="{esc(url)}">{esc(url)}</a>' if url else ""
             parts.append(f'<div class="card"><div class="t">{esc(card.get("title"))}</div>'
                          f'<div>{esc(card.get("body"))}</div>{link}{followups}</div>')
+    # Below the cards, because that is where it renders for the student - a closing question
+    # shown above the grid on this page would misreport the thing the page exists to show.
+    if response.get("trailingText"):
+        parts.append(f'<div class="prose trailing">{esc(response["trailingText"])}</div>')
     parts.append("</div>")
     return "".join(parts)
 

@@ -8,6 +8,14 @@ import type {
 const MAX_HISTORY_TURNS = 6;
 const MAX_HISTORY_MESSAGES = MAX_HISTORY_TURNS * 2;
 
+/** One turn's prose, both sides of the card group, as the model wrote it. */
+function turnProse(turn: ConversationTurn): string {
+	return [turn.text, turn.trailingText]
+		.map((part) => part?.trim())
+		.filter(Boolean)
+		.join('\n\n');
+}
+
 /** Spoken user/assistant lines from completed turns (excludes the in-flight prompt). */
 export function historyFromTurns(turns: ConversationTurn[]): ChatHistoryMessage[] {
 	const messages: ChatHistoryMessage[] = [];
@@ -18,7 +26,10 @@ export function historyFromTurns(turns: ConversationTurn[]): ChatHistoryMessage[
 			messages.push({ role: 'user', text: query });
 		}
 
-		const text = turn.text.trim();
+		// Both halves, because history is prose only: the question the model asked under
+		// its cards is the half a "which one?" reply is answering, and dropping it would
+		// leave the next turn reading a lead-in that never asked anything.
+		const text = turnProse(turn);
 		if (text) {
 			messages.push({ role: 'assistant', text });
 		}
@@ -32,6 +43,7 @@ export function createConversationTurn(
 	text: string,
 	options?: {
 		cards?: StatementCard[];
+		trailingText?: string;
 		safetyHandoff?: ChatResponse['safetyHandoff'];
 		query?: string;
 		id?: string;
@@ -44,6 +56,7 @@ export function createConversationTurn(
 	return {
 		id: options?.id ?? `turn-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
 		text,
+		trailingText: options?.trailingText,
 		cards,
 		safetyHandoff: options?.safetyHandoff,
 		query: options?.query,
@@ -83,6 +96,7 @@ export function turnsFromResponse(response: ChatResponse): ConversationTurn[] {
 		}
 		return [
 			createConversationTurn(response.conversationalText, {
+				trailingText: response.trailingText,
 				phase: 'conversational',
 			}),
 		];
@@ -93,6 +107,9 @@ export function turnsFromResponse(response: ChatResponse): ConversationTurn[] {
 			index === batches.length - 1 ? response.conversationalText : batch.query ?? '',
 			{
 				cards: batch.cards,
+				// The response carries the prose of its LAST turn only, so only that turn
+				// can own the half of it that sits under the cards.
+				trailingText: index === batches.length - 1 ? response.trailingText : undefined,
 				query: batch.query,
 				id: batch.id,
 				createdAt: batch.createdAt,
@@ -121,6 +138,7 @@ export function responseFromTurns(
 	const last = turns[turns.length - 1];
 	return {
 		conversationalText: last?.text ?? '',
+		trailingText: last?.trailingText,
 		statementBatches: batchesFromTurns(turns),
 		safetyHandoff: last?.safetyHandoff ?? base?.safetyHandoff,
 		talkToPersonAvailable: base?.talkToPersonAvailable ?? true,

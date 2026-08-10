@@ -64,6 +64,10 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     conversational_text: str = Field(alias="conversationalText")
+    # Prose the model wrote AFTER its cards, which renders below the card group rather than
+    # above it. None for the ordinary reply that ends with its cards, and always None on a
+    # safety turn, where the message is one bubble above the panel.
+    trailing_text: str | None = Field(default=None, alias="trailingText")
     statement_batches: list[StatementBatch] | None = Field(
         default=None,
         alias="statementBatches",

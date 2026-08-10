@@ -168,6 +168,137 @@ def test_the_model_is_handed_numbered_sources_and_no_urls(monkeypatch):
     assert "sjsu.edu" not in sent, "a URL in the transcript is a URL the model can copy"
 
 
+def _tutoring_retrieval(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator,
+        "retrieve_chunks",
+        lambda query, settings: [
+            RetrievedChunk(
+                text="Drop-in tutoring for math.",
+                score=0.9,
+                source_url="https://www.sjsu.edu/tutoring/index.php",
+                title="Peer Connections",
+                section="tutoring-academic-support",
+                s3_uri=None,
+            )
+        ],
+    )
+
+
+def test_prose_written_after_the_cards_reaches_the_wire_below_them(monkeypatch):
+    """The acceptance case, end to end: a reply with prose on both sides of its cards
+    arrives split the way it was written. `conversationalText` is what renders above the
+    grid, `trailingText` what renders below, so the closing question stops appearing over
+    the answer it is asking about."""
+    _tutoring_retrieval(monkeypatch)
+
+    fake = _FakeBedrock(
+        [
+            _retrieval_turn(),
+            _text_turn(
+                "Tutoring is free, and here is where to start.\n\n"
+                '<card ref="1">'
+                "<title>Free math tutoring</title>"
+                "<desc>Drop-in help for lower-division math.</desc>"
+                "<followup>How do I book a tutor?</followup></card>\n\n"
+                "Want me to look at writing help too?"
+            ),
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.conversational_text == "Tutoring is free, and here is where to start."
+    assert response.trailing_text == "Want me to look at writing help too?"
+    assert [card.title for card in response.statement_batches[0].cards] == ["Free math tutoring"]
+
+    body = response.model_dump(by_alias=True)
+    assert body["trailingText"] == "Want me to look at writing help too?"
+
+
+def test_a_reply_that_ends_with_its_cards_carries_no_trailing_text(monkeypatch):
+    """The ordinary shape stays exactly as it was: one bubble, then the grid."""
+    _tutoring_retrieval(monkeypatch)
+
+    fake = _FakeBedrock(
+        [
+            _retrieval_turn(),
+            _text_turn(
+                'Tutoring is free.\n\n<card ref="1"><title>T</title><desc>D</desc></card>'
+            ),
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.conversational_text == "Tutoring is free."
+    assert response.trailing_text is None
+
+
+def test_a_reply_whose_prose_is_all_below_the_cards_keeps_it_there(monkeypatch):
+    """Nothing promotes the prose back above the grid to fill the empty bubble. The model
+    put it under the cards, so that is where it goes, and the no-output fallback must not
+    fire on a turn that plainly has output."""
+    _tutoring_retrieval(monkeypatch)
+
+    fake = _FakeBedrock(
+        [
+            _retrieval_turn(),
+            _text_turn(
+                '<card ref="1"><title>T</title><desc>D</desc></card>\n\nThat is the one I would try.'
+            ),
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.conversational_text == ""
+    assert response.trailing_text == "That is the one I would try."
+    assert orchestrator._NO_OUTPUT_TEXT not in (response.conversational_text or "")
+
+
+def test_a_safety_turn_is_one_bubble_above_the_panel(monkeypatch, no_retrieval):
+    """The panel's placement is a safety property. A safety turn drops its cards, so prose
+    the model wrote under them has nothing left to sit below - and half a message rendering
+    beneath the contact panel is exactly the burying this must not do."""
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "You're not alone.\n\n<safety>crisis-988</safety>\n\n"
+                '<card ref="1"><title>T</title><desc>D</desc></card>\n\n'
+                "I can help with the rest whenever you want."
+            )
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.safety_handoff is not None
+    assert response.trailing_text is None
+    assert response.statement_batches is None
+    assert response.conversational_text == (
+        "You're not alone.\n\nI can help with the rest whenever you want."
+    )
+
+
+def test_a_hotline_named_under_the_cards_still_attaches_the_panel(monkeypatch):
+    """The output scanner reads the whole message, both sides of the split. A crisis line
+    mentioned below the grid is as much a bare mention as one above it."""
+    _tutoring_retrieval(monkeypatch)
+
+    fake = _FakeBedrock(
+        [
+            _retrieval_turn(),
+            _text_turn(
+                'Here is the tutoring office.\n\n<card ref="1"><title>T</title><desc>D</desc></card>'
+                "\n\nAnd if it gets heavier than coursework, call 988."
+            ),
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert response.safety_handoff is not None
+    assert response.statement_batches is None
+    assert response.trailing_text is None
+    assert "call 988" in response.conversational_text
+
+
 def test_an_unparseable_reply_becomes_one_bubble_with_the_tags_stripped(monkeypatch, no_retrieval):
     """The regression that must never come back. v1 answered a broken reply with cards built
     out of retrieved page text - confident referrals nobody had written."""
@@ -335,6 +466,7 @@ def test_the_response_serialises_to_camps_camelcase_wire_contract(monkeypatch, n
     response = _run(monkeypatch, fake)
     body = response.model_dump(by_alias=True)
     assert body["conversationalText"] == "Here you go."
+    assert "trailingText" in body
     assert "statementBatches" in body
     assert "safetyHandoff" in body
     assert "talkToPersonAvailable" in body

@@ -14,6 +14,13 @@ editorial balance - more of the answer in the prose, more in the cards - rewrite
 examples. That is the knob, and it is why the parser knows nothing about how much text
 belongs where.
 
+They carry the reply's ORDER for the same reason. cards.py splits the reply at its last
+card block, so where a sentence sits relative to the blocks is now where it sits on screen,
+and a closing question written above the cards renders above the answer it is asking about.
+The rules state the order; the first example models it by ending with a question under its
+cards, and the second models the other half by ending on its cards, because a question in
+every example teaches a habit rather than an option.
+
 The template bans em and en dashes and the examples model their absence. The display path
 (cards.normalise_dashes) rewrites any that slip through into commas as a backstop, but a
 dash inside this file would TEACH the habit the server then edits, examples steering harder
@@ -73,10 +80,13 @@ Your reply is prose plus zero or more card blocks: the prose becomes the chat bu
   <followup>the question this student would ask next</followup>
 </card>
 
+Your reply renders in the order you wrote it: prose above your first card block appears above the cards, and prose after your last one appears below them.
+
 Always write prose: a reply that is only cards renders as an empty bubble.
 
 What goes in a card and what goes in the prose:
 The cards carry the answer. The prose introduces them.
+- Write it in one order: a short lead-in, then the cards, then any question you want to ask. A question placed above the cards reaches the student before the answer it is asking about, so it goes last, under the final block. Ending on the cards is fine when there is nothing worth asking; a closing question is an option, not a habit.
 - The prose is a lead-in of two or three short lines that names the kinds of options and points below, not the answer itself. It never restates a card: a student who reads the same fact twice stops reading.
 - One card for every place you send them; no destination lives only in the prose, because without a card there is no link and the student has no way to get there.
 - Prose alone when nothing external is being named: explaining, encouraging, and asking a clarifying question need no card.
@@ -142,6 +152,8 @@ Friday is plenty of time! 😄 One office does exactly this, and the fair itself
   <desc>Handshake is SJSU's job platform, and it lists every employer registered for the fair. Pick your five targets tonight instead of wandering the floor on Friday.</desc>
   <followup>How do I find career fair employers on Handshake?</followup>
 </card>
+
+Want me to dig up interview prep too, or is the resume the main worry this week?
 </example>
 
 <example>

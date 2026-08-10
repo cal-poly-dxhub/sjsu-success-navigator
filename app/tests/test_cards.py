@@ -145,6 +145,95 @@ def test_the_followup_prompt_is_model_authored_not_derived_from_a_section():
     assert card.actions[-1].prompt == "Can I get help with Calc 2 specifically?"
 
 
+# --- Where the cards sit in the reply -----------------------------------------------------
+
+
+_PROSE_ON_BOTH_SIDES = """Two offices handle this, and they are below.
+
+<card ref="1">
+  <title>Free math tutoring</title>
+  <desc>Drop-in and scheduled tutoring for math courses.</desc>
+  <followup>How do I book a calculus tutor?</followup>
+</card>
+
+Does either of those sound like what you need?"""
+
+
+def test_prose_before_and_after_the_cards_keeps_its_side():
+    """The ordering this contract exists for. The model writes a lead-in, its cards, then a
+    closing question, and the student has to read them in that order - a question that
+    renders above the grid is asking about an answer they have not reached yet."""
+    parsed = parse_model_response(_PROSE_ON_BOTH_SIDES)
+
+    assert parsed.prose == "Two offices handle this, and they are below."
+    assert parsed.trailing_prose == "Does either of those sound like what you need?"
+    assert [card.title for card in parsed.cards] == ["Free math tutoring"]
+
+
+def test_prose_between_two_cards_joins_the_lead():
+    """The grid is one group, so there is no inside for prose to render in. It joins the
+    lead rather than the trailer because it was written to introduce the cards after it."""
+    parsed = parse_model_response(
+        "Start here.\n\n"
+        '<card ref="1"><title>A</title><desc>D</desc></card>\n\n'
+        "And if that is not it:\n\n"
+        '<card ref="2"><title>B</title><desc>D</desc></card>\n\n'
+        "Which one fits?"
+    )
+
+    assert parsed.prose == "Start here.\n\nAnd if that is not it:"
+    assert parsed.trailing_prose == "Which one fits?"
+
+
+def test_a_reply_that_ends_with_its_cards_has_no_trailing_prose():
+    """The ordinary shape. Nothing after the last block means nothing renders below the
+    grid, which is the case that must stay exactly as it was."""
+    parsed = parse_model_response(_WELL_FORMED)
+    assert parsed.trailing_prose == ""
+
+
+def test_a_reply_with_no_cards_is_never_split():
+    parsed = parse_model_response("Glad that helped. Come back any time.")
+    assert parsed.trailing_prose == ""
+
+
+def test_an_unclosed_block_leaves_the_reply_unsplit():
+    """No card parsed means no grid on screen, so there is no position to preserve and the
+    fallback's one bubble must carry everything."""
+    parsed = parse_model_response(
+        'Here is what I found.\n\n<card ref="1"><title>T</title><desc>D.\n\nAnything else?'
+    )
+
+    assert parsed.cards == []
+    assert parsed.trailing_prose == ""
+    assert "Anything else?" in parsed.prose
+
+
+def test_a_safety_tag_under_the_cards_still_fires():
+    """Read from both sides of the split. Losing a tag because of where it was written
+    would cost the panel outright, which is the one failure this must not have."""
+    parsed = parse_model_response(
+        '<card ref="1"><title>T</title><desc>D</desc></card>\n\n<safety>crisis-988</safety>'
+    )
+
+    assert parsed.safety_keys == ("crisis-988",)
+    assert "crisis-988" not in parsed.trailing_prose
+
+
+def test_stray_tags_in_trailing_prose_are_scrubbed():
+    parsed = parse_model_response(
+        '<card ref="1"><title>T</title><desc>D</desc></card>\n\nAnything else? </desc>'
+    )
+    assert "</desc>" not in parsed.trailing_prose
+    assert "Anything else?" in parsed.trailing_prose
+
+
+def test_joining_a_split_reply_puts_a_blank_line_between_the_halves():
+    assert cards.join_prose("Above.", "Below.") == "Above.\n\nBelow."
+    assert cards.join_prose("Above.", "") == "Above."
+    assert cards.join_prose("", "  ", None) == ""
+
+
 # --- Missing ref --------------------------------------------------------------------------
 
 
@@ -340,6 +429,15 @@ def test_an_em_dash_in_a_card_becomes_a_comma():
 
     assert result[0].title == "Tutoring, free"
     assert result[0].body == "Drop-in help, no referral needed, for lower-division math."
+
+
+def test_trailing_prose_dashes_are_normalised_like_the_lead():
+    """The prose under the cards goes through the same display path as the prose above it."""
+    parsed = parse_model_response(
+        '<card ref="1"><title>T</title><desc>D</desc></card>\n\n'
+        f"Want the hours {_EM} or the location?"
+    )
+    assert parsed.trailing_prose == "Want the hours, or the location?"
 
 
 def test_prose_dashes_are_normalised_like_card_text():
