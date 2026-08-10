@@ -11,7 +11,7 @@
 	padding: 0;
 	border: none;
 	background: var(--pressable-edge);
-	border-radius: 14px;
+	border-radius: var(--control-radius);
 	color: var(--pressable-text);
 	font: inherit;
 	font-weight: 700;
@@ -21,7 +21,7 @@
 	cursor: pointer;
 	user-select: none;
 	-webkit-tap-highlight-color: transparent;
-	box-shadow: 0 4px 0 var(--pressable-edge);
+	box-shadow: 0 var(--control-edge) 0 var(--pressable-edge);
 	transform: translateY(0);
 	transition: box-shadow 80ms ease, filter 120ms ease;
 }
@@ -49,9 +49,9 @@
 	gap: 0.4rem;
 	width: 100%;
 	padding: 0.7rem 1.05rem;
-	border-radius: 14px;
+	border-radius: var(--control-radius);
 	background: var(--pressable-face);
-	border: 2px solid color-mix(in srgb, var(--pressable-face) 70%, white 30%);
+	border: var(--control-border) solid color-mix(in srgb, var(--pressable-face) 70%, white 30%);
 	border-bottom-color: transparent;
 	line-height: 1.15;
 	text-align: center;

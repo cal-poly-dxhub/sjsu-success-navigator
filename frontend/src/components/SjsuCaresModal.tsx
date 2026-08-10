@@ -13,6 +13,7 @@ import {
 	SJSU_CARES_SERVICES_INDEX,
 } from '../lib/sjsuCares';
 import type { SjsuCaresService } from '../lib/sjsuCares';
+import { PressableButton } from './PressableButton';
 import './SjsuCaresModal.css';
 
 type SjsuCaresModalProps = {
@@ -127,18 +128,26 @@ export function SjsuCaresModal({
 						<div className="cares__body">
 							<p className="cares__intro">{SJSU_CARES_OVERVIEW}</p>
 
-							<a className="cares__primary" href={SJSU_CARES_REQUEST_FORM} target="_blank" rel="noopener noreferrer">
+							<PressableButton
+								variant="secondary"
+								className="cares__primary"
+								href={SJSU_CARES_REQUEST_FORM}
+							>
 								<span className="cares__primary-label">Request assistance</span>
 								<span className="cares__primary-hint">The fastest way to reach a case manager</span>
-							</a>
+							</PressableButton>
 
 							<div className="cares__direct">
-								<a className="cares__direct-link" href={TEL_HREF}>
+								<PressableButton variant="ghost" className="cares__direct-link" href={TEL_HREF}>
 									Call {SJSU_CARES_PHONE}
-								</a>
-								<a className="cares__direct-link" href={`mailto:${SJSU_CARES_EMAIL}`}>
+								</PressableButton>
+								<PressableButton
+									variant="ghost"
+									className="cares__direct-link"
+									href={`mailto:${SJSU_CARES_EMAIL}`}
+								>
 									Email {SJSU_CARES_EMAIL}
-								</a>
+								</PressableButton>
 							</div>
 
 							<dl className="cares__facts">
@@ -153,16 +162,15 @@ export function SjsuCaresModal({
 							</dl>
 
 							{recommended ? (
-								<a
+								<PressableButton
+									variant="ghost"
 									className="cares__service"
 									href={recommended.href}
-									target="_blank"
-									rel="noopener noreferrer"
 								>
 									<span className="cares__service-badge">Recommended for your question</span>
 									<span className="cares__service-title">{recommended.title}</span>
 									<span className="cares__service-desc">{recommended.description}</span>
-								</a>
+								</PressableButton>
 							) : null}
 
 							<div className="cares__more">

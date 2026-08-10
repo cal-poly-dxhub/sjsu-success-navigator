@@ -100,19 +100,18 @@
 	line-height: 1.5;
 }
 
-.cares__primary {
-	display: grid;
+/*
+ * The three controls below are .pressable, not bespoke rectangles: this panel's buttons
+ * were the ones that read as belonging to a different product. Only the face padding and
+ * the stacked text layout are set here - shape, edge and press come from the shared
+ * pattern. The stacked face is the same arrangement SafetyHandoff already uses.
+ */
+.cares__primary .pressable__face {
+	flex-direction: column;
+	align-items: flex-start;
 	gap: 0.15rem;
 	padding: 0.8rem 1rem;
-	border-radius: 12px;
-	background: var(--accent-blue);
-	color: #fff;
-	text-decoration: none;
-}
-
-.cares__primary:hover,
-.cares__primary:focus-visible {
-	background: color-mix(in srgb, var(--accent-blue) 88%, #000);
+	text-align: left;
 }
 
 .cares__primary-label {
@@ -131,20 +130,18 @@
 	gap: 0.6rem;
 }
 
-.cares__direct-link {
+.cares__direct-link .pressable__face {
 	padding: 0.65rem 0.85rem;
-	border: 1px solid color-mix(in srgb, var(--accent-blue) 35%, transparent);
-	border-radius: 12px;
+	border-color: color-mix(in srgb, var(--accent-blue) 22%, #fff);
+	border-bottom-color: transparent;
 	color: var(--accent-blue);
 	font-size: 0.92rem;
-	font-weight: 700;
-	text-align: center;
-	text-decoration: none;
 }
 
-.cares__direct-link:hover,
-.cares__direct-link:focus-visible {
-	background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+.cares__direct-link:hover .pressable__face {
+	border-color: color-mix(in srgb, var(--accent-blue) 45%, #fff);
+	border-bottom-color: transparent;
+	background: color-mix(in srgb, var(--accent-blue) 5%, #fff);
 }
 
 .cares__facts {
@@ -168,21 +165,25 @@
 	line-height: 1.45;
 }
 
+/* Gold is the recommendation marker. It moves from a left rule to the button's own bottom
+   edge, which keeps it an accent rather than a second border treatment. */
 .cares__service {
-	display: grid;
-	gap: 0.2rem;
-	padding: 0.8rem 0.9rem;
-	border: 1px solid color-mix(in srgb, var(--sjsu-gray) 45%, transparent);
-	border-left: 4px solid var(--sjsu-gold);
-	border-radius: 12px;
-	color: inherit;
-	text-decoration: none;
+	--pressable-edge: var(--sjsu-gold);
 }
 
-.cares__service:hover,
-.cares__service:focus-visible {
-	border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
-	border-left-color: var(--sjsu-gold);
+.cares__service .pressable__face {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.2rem;
+	padding: 0.8rem 0.9rem;
+	border-color: color-mix(in srgb, var(--sjsu-gray) 30%, #fff);
+	border-bottom-color: transparent;
+	text-align: left;
+}
+
+.cares__service:hover .pressable__face {
+	border-color: color-mix(in srgb, var(--accent-blue) 35%, #fff);
+	border-bottom-color: transparent;
 }
 
 .cares__service-badge {

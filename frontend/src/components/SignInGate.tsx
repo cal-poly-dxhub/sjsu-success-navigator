@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { AuthError, isSignedIn, signIn } from '../lib/auth';
 import ChatApp from './ChatApp';
+import { PressableButton } from './PressableButton';
 import './SignInGate.css';
 
 /**
@@ -82,9 +83,9 @@ export default function SignInGate() {
 					</p>
 				) : null}
 
-				<button className="sign-in__submit" type="submit" disabled={busy}>
+				<PressableButton className="sign-in__submit" type="submit" disabled={busy}>
 					{busy ? 'Signing in…' : 'Sign in'}
-				</button>
+				</PressableButton>
 			</form>
 		</main>
 	);
