@@ -46,3 +46,7 @@ coverage/
 
 # Claude
 .claude
+
+# Eval run artifacts (transcripts, rendered pages, judgments) - local records, not source
+eval/results/
+eval/judgments/
