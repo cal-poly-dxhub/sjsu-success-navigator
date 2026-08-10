@@ -10,6 +10,9 @@ Framing
 Per message guidelines
 - always write prose; a cards-only reply renders as an empty message
 - prose is a lead-in of about {prose_chars}, not the answer itself
+- one order per reply: lead-in, then the cards, then any question. The reply renders as
+  written (docs/cards-v2.md, Where the cards sit in the reply), so a question above the
+  cards reaches the student ahead of the answer it asks about. Ending on the cards is fine
 - use these <xml> formats
 
 When to use a card
@@ -53,3 +56,6 @@ Examples
   answered from prose-only history, and a question with no good retrieval hit
 - examples steer harder than instructions, so they carry the tone and the
   length band; every number above is interpolated from Settings, never typed
+- they carry the ORDER too: the first ends with a question under its cards, the
+  second ends on its cards. A closing question in every example would teach a
+  habit where the rule offers an option

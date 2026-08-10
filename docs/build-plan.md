@@ -141,6 +141,12 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       panel's placement is unchanged by construction: attaching it collapses the reply back into
       one bubble. The trailing bubble waits out the deal before it types, which keeps the
       entrance transform-only.
+- [x] the prompt orders the reply: lead-in, cards, questions (2026-08-10, docs/system-prompt.md).
+      The parser above made position meaningful, so the prompt states where each part goes and
+      the examples model it: the first ends with a question under its cards, the second ends on
+      its cards, because a closing question in every example teaches a habit where the rule
+      offers an option. Everything else is unchanged, prose-is-never-empty included, and the caps
+      are still interpolated from Settings rather than typed.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a
