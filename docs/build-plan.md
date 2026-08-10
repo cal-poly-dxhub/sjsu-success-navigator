@@ -110,6 +110,14 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       corrupted fact. Verified against all 228 live pages: 0 failures, phones 39/203 -> 192/228,
       emails 52/203 -> 192/228. Every fingerprint changes, so the next deploy re-uploads and
       re-ingests the whole corpus - deliberate; the corpus was the bug.
+- [x] ground-truth QA baseline (eval/ground-truth.yaml): 77 pairs known correct
+      independently of the program - sponsor sheets first, every load-bearing fact verified
+      against the live public pages on 2026-08-10, sheet-vs-sheet conflicts resolved by the
+      live site and the sheets' errors recorded in the file header. Covers routing, factual,
+      process and disambiguation questions plus ten safety-intercept cases (the brief's five
+      forbidden-guidance categories; a fluent model answer there is a FAIL) and five
+      honest-gap probes for content deliberately outside the corpus. This is the fixture set
+      the harness below consumes.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""Collect the deployed system's answers to the ground-truth questions. NO SCORING.
+
+This runner is deliberately judgment-free: it sends each ground-truth question to the real
+deployed endpoint - genuine HTTP through API Gateway with a Cognito access token from
+InitiateAuth, exactly the frontend's path - and records what came back. Accuracy is decided
+by humans (and by Claude reading the transcript), never by this script. The only derived
+field is `behavior_fired`, a mechanical classification of the response shape (safety card
+present / cards present / prose only / error), so the rendered page can badge each answer.
+
+Artifacts, per run, under --out-dir:
+    eval-<UTC stamp>.json   the transcript: run metadata + every wire response verbatim
+    eval-<UTC stamp>.html   the side-by-side page (golden vs actual), via render_results.py
+
+Auth mirrors frontend/src/lib/auth.ts: one unsigned USER_PASSWORD_AUTH InitiateAuth call,
+and the ACCESS token (not the id token) as the Bearer. The shared pilot password comes from
+the EVAL_PASSWORD env var or --password-file - never argv, never this repo.
+
+Endpoint discovery reads the CloudFormation stack outputs (ChatApiUrl,
+ChatUserPoolClientId) so nothing is hardcoded; --api-url and --client-id override for
+testing against a different deployment.
+
+Dependencies (this repo pins nothing for eval/): boto3, httpx, PyYAML.
+    python3 -m pip install boto3 httpx PyYAML
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import datetime
+import fnmatch
+import json
+import os
+import statistics
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import boto3
+import httpx
+import yaml
+
+DEFAULT_STACK = "SjsuNavigatorStack"
+DEFAULT_PROFILE = "gavilan"
+DEFAULT_REGION = "us-west-2"
+DEFAULT_USERNAME = "sjsupilot"
+# Per-request ceiling: the HTTP API integration cap is 30s, so anything past ~32s is the
+# gateway timing out, not the answer still coming.
+REQUEST_TIMEOUT_S = 35.0
+
+
+def discover_endpoint(profile: str, region: str, stack_name: str) -> dict:
+    """ChatApiUrl and ChatUserPoolClientId from the stack outputs."""
+    session = boto3.Session(profile_name=profile, region_name=region)
+    stacks = session.client("cloudformation").describe_stacks(StackName=stack_name)
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stacks["Stacks"][0]["Outputs"]}
+    missing = [k for k in ("ChatApiUrl", "ChatUserPoolClientId") if k not in outputs]
+    if missing:
+        raise SystemExit(f"stack {stack_name} is missing output(s): {', '.join(missing)}")
+    return {"api_url": outputs["ChatApiUrl"], "client_id": outputs["ChatUserPoolClientId"]}
+
+
+def sign_in(client_id: str, region: str, username: str, password: str) -> str:
+    """The frontend's exact sign-in: one unsigned InitiateAuth, access token back."""
+    resp = httpx.post(
+        f"https://cognito-idp.{region}.amazonaws.com/",
+        headers={
+            "Content-Type": "application/x-amz-json-1.1",
+            "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+        },
+        json={
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "ClientId": client_id,
+            "AuthParameters": {"USERNAME": username, "PASSWORD": password},
+        },
+        timeout=20.0,
+    )
+    body = resp.json()
+    if resp.status_code != 200:
+        raise SystemExit(
+            f"sign-in failed ({resp.status_code}): {body.get('message') or body.get('__type')}"
+        )
+    token = (body.get("AuthenticationResult") or {}).get("AccessToken")
+    if not token:
+        # A challenge here means the pool user is not in a permanent-password state.
+        raise SystemExit(f"sign-in returned no access token: {json.dumps(body)[:300]}")
+    return token
+
+
+def classify(status: int | None, response: dict | None) -> str:
+    """Mechanical response-shape classification for the page badge. Not a judgment."""
+    if status != 200 or response is None:
+        return "error"
+    if response.get("safetyHandoff"):
+        return "safety"
+    batches = response.get("statementBatches") or []
+    if any(batch.get("cards") for batch in batches):
+        return "cards"
+    return "prose-only"
+
+
+def ask_one(client: httpx.Client, api_url: str, token: str, pair: dict) -> dict:
+    """POST one question as a fresh single-turn conversation. One retry on throttle."""
+    payload = {"query": pair["question"], "followup": False}
+    headers = {"Authorization": f"Bearer {token}"}
+    attempts = 0
+    while True:
+        attempts += 1
+        started = time.monotonic()
+        status, response, error = None, None, None
+        try:
+            r = client.post(api_url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT_S)
+            status = r.status_code
+            try:
+                response = r.json()
+            except ValueError:
+                error = f"non-JSON body: {r.text[:500]}"
+        except httpx.HTTPError as exc:
+            error = f"{exc.__class__.__name__}: {exc}"
+        latency = round(time.monotonic() - started, 2)
+        if status == 429 and attempts == 1:
+            time.sleep(2.0)
+            continue
+        if status is not None and status != 200 and response is not None:
+            error = json.dumps(response)[:500]
+            response = None
+        return {
+            "id": pair["id"],
+            "question": pair["question"],
+            "status": status,
+            "latency_s": latency,
+            "attempts": attempts,
+            "behavior_fired": classify(status, response),
+            "response": response,
+            "error": error,
+        }
+
+
+def git_commit(repo_root: Path) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def main() -> None:
+    here = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--ground-truth", default=str(here / "ground-truth.yaml"))
+    parser.add_argument("--ids", action="append", default=[],
+                        help="glob over pair ids, repeatable (e.g. --ids 'safety-*')")
+    parser.add_argument("--concurrency", type=int, default=3,
+                        help="parallel questions; stay well under the 10 rps throttle")
+    parser.add_argument("--stack-name", default=DEFAULT_STACK)
+    parser.add_argument("--profile", default=DEFAULT_PROFILE)
+    parser.add_argument("--region", default=DEFAULT_REGION)
+    parser.add_argument("--api-url", default=None, help="skip discovery, use this POST /chat URL")
+    parser.add_argument("--client-id", default=None, help="skip discovery, use this app client id")
+    parser.add_argument("--username", default=os.environ.get("EVAL_USERNAME", DEFAULT_USERNAME))
+    parser.add_argument("--password-file", default=None,
+                        help="file holding the pilot password (keep it OUTSIDE the repo); "
+                             "default is the EVAL_PASSWORD env var")
+    parser.add_argument("--out-dir", default=str(here / "results"))
+    parser.add_argument("--no-render", action="store_true")
+    args = parser.parse_args()
+
+    password = None
+    if args.password_file:
+        password = Path(args.password_file).read_text().strip()
+    else:
+        password = os.environ.get("EVAL_PASSWORD")
+    if not password:
+        raise SystemExit("no password: set EVAL_PASSWORD or pass --password-file")
+
+    doc = yaml.safe_load(Path(args.ground_truth).read_text())
+    pairs = doc["pairs"]
+    if args.ids:
+        pairs = [p for p in pairs if any(fnmatch.fnmatch(p["id"], g) for g in args.ids)]
+    if not pairs:
+        raise SystemExit("no pairs matched --ids")
+
+    if args.api_url and args.client_id:
+        endpoint = {"api_url": args.api_url, "client_id": args.client_id}
+    else:
+        endpoint = discover_endpoint(args.profile, args.region, args.stack_name)
+        if args.api_url:
+            endpoint["api_url"] = args.api_url
+
+    token = sign_in(endpoint["client_id"], args.region, args.username, password)
+    print(f"signed in as {args.username}; asking {len(pairs)} question(s) "
+          f"at {endpoint['api_url']} (concurrency {args.concurrency})")
+
+    with httpx.Client() as client:
+        # Best-effort warm: the ungated GET /warm route exists for exactly this.
+        try:
+            client.get(endpoint["api_url"].replace("/chat", "/warm"), timeout=15.0)
+        except httpx.HTTPError:
+            pass
+
+        started = time.monotonic()
+        results: list[dict | None] = [None] * len(pairs)
+        done = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            futures = {
+                pool.submit(ask_one, client, endpoint["api_url"], token, pair): i
+                for i, pair in enumerate(pairs)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                i = futures[future]
+                result = future.result()
+                results[i] = result
+                done += 1
+                print(f"  {done}/{len(pairs)}  {result['id']:<28} "
+                      f"{result['status'] or 'ERR'!s:>4}  {result['latency_s']:>5}s  "
+                      f"{result['behavior_fired']}")
+        duration = round(time.monotonic() - started, 1)
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    latencies = [r["latency_s"] for r in results if r["status"] == 200]
+    transcript = {
+        "run": {
+            "timestamp_utc": stamp,
+            "api_url": endpoint["api_url"],
+            "ground_truth": str(Path(args.ground_truth).name),
+            "git_commit": git_commit(here.parent),
+            "question_count": len(pairs),
+            "duration_s": duration,
+            "median_latency_s": round(statistics.median(latencies), 2) if latencies else None,
+        },
+        "results": results,
+    }
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    transcript_path = out_dir / f"eval-{stamp}.json"
+    transcript_path.write_text(json.dumps(transcript, indent=1))
+
+    fired = {}
+    for r in results:
+        fired[r["behavior_fired"]] = fired.get(r["behavior_fired"], 0) + 1
+    print(f"\ndone in {duration}s; behaviors: {fired}")
+    print(f"transcript: {transcript_path}")
+
+    if not args.no_render:
+        sys.path.insert(0, str(here))
+        import render_results
+        html_path = transcript_path.with_suffix(".html")
+        render_results.render(transcript_path, Path(args.ground_truth), None, html_path)
+        print(f"page:       {html_path}")
+
+
+if __name__ == "__main__":
+    main()
