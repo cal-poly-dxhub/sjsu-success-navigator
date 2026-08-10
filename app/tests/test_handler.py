@@ -1,8 +1,8 @@
-"""The handler's request pipeline: validate, then the guardrail screen.
+"""The handler's request pipeline: validate, guardrail screen, agent loop.
 
-The safety intercept (step 2) and the agent loop (step 4) land at bullet 6; the test that
-pins safety AHEAD of the guardrail lands with them, because until safety.py exists there
-is no ordering to assert.
+There is no pre-model safety gate (decision, 2026-08-10): safety is the model's triage
+call, resolved server-side from its emitted keys. The pipeline test for that lives in
+test_safety.py.
 """
 
 import json

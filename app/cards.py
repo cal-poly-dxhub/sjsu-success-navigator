@@ -80,6 +80,11 @@ _EM_EN_DASH_RE = re.compile(rf"\s*[{_EM_DASH}{_EN_DASH}]\s*")
 _CARD_BLOCK_RE = re.compile(r"<card\b([^>]*)>(.*?)</card\s*>", re.DOTALL | re.IGNORECASE)
 _REF_ATTR_RE = re.compile(r"\bref\s*=\s*[\"']?\s*(\d+)", re.IGNORECASE)
 _SAFETY_TAG_RE = re.compile(r"<safety\s*/?>", re.IGNORECASE)
+# A keyed safety block: <safety>crisis-988, caps</safety>. The content is resource KEYS the
+# server resolves into the contact panel (app/safety.py), so the whole block - keys included -
+# is removed from the prose: the keys are instructions to the server, not text for the student.
+_SAFETY_BLOCK_RE = re.compile(r"<safety\s*>(.*?)</safety\s*>", re.DOTALL | re.IGNORECASE)
+_SAFETY_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
 
 
 def _field_re(name: str) -> re.Pattern[str]:
@@ -199,7 +204,13 @@ class ParsedCard:
 class ParsedResponse:
     prose: str
     cards: list[ParsedCard]
-    needs_safety: bool
+    # None = no safety tag. An empty tuple = a bare <safety/> (the standard panel). Keys are
+    # the model's triage choice; app/safety.py owns what each one resolves to.
+    safety_keys: tuple[str, ...] | None
+
+    @property
+    def needs_safety(self) -> bool:
+        return self.safety_keys is not None
 
 
 def parse_model_response(text: str) -> ParsedResponse:
@@ -225,12 +236,24 @@ def parse_model_response(text: str) -> ParsedResponse:
         )
 
     prose = _CARD_BLOCK_RE.sub("\n\n", source)
-    needs_safety = bool(_SAFETY_TAG_RE.search(prose))
+
+    safety_keys: tuple[str, ...] | None = None
+    block_contents = _SAFETY_BLOCK_RE.findall(prose)
+    if block_contents:
+        keys: list[str] = []
+        for content in block_contents:
+            keys.extend(m.group(0).lower() for m in _SAFETY_KEY_RE.finditer(content))
+        safety_keys = tuple(keys)
+        prose = _SAFETY_BLOCK_RE.sub("\n\n", prose)
+    if safety_keys is None and _SAFETY_TAG_RE.search(prose):
+        # A bare <safety/> (or a stray unclosed <safety>): the tag still fires the handoff,
+        # with no keys, which resolves to the default crisis set.
+        safety_keys = ()
 
     return ParsedResponse(
         prose=_clean_prose(prose),
         cards=cards,
-        needs_safety=needs_safety,
+        safety_keys=safety_keys,
     )
 
 
@@ -263,8 +286,13 @@ def _first_field(pattern: re.Pattern[str], body: str) -> str:
 
 
 def _clean_prose(text: str) -> str:
-    """Scrub every known tag and normalise the blank lines a removed block leaves behind."""
-    stripped = _ANY_KNOWN_TAG_RE.sub("", text)
+    """Scrub every known tag and normalise the blank lines a removed block leaves behind.
+
+    Safety blocks go WHOLE, content included, before the tag sweep: their content is resource
+    keys addressed to the server, and a fallback path that only stripped the tags would leak
+    "crisis-988, caps" into the bubble as text."""
+    stripped = _SAFETY_BLOCK_RE.sub("\n\n", text)
+    stripped = _ANY_KNOWN_TAG_RE.sub("", stripped)
     stripped = normalise_dashes(stripped)
     stripped = _BLANK_LINES_RE.sub("\n\n", stripped)
     return "\n".join(line.rstrip() for line in stripped.splitlines()).strip()

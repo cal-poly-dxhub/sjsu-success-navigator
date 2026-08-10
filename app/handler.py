@@ -3,19 +3,17 @@
 Camp's main.py and its routers are replaced by this file; the service modules alongside it
 (settings, models, prompts, tools, retrieve, cards, safety, orchestrator) move in as files.
 
-Request order is LOAD-BEARING and is enforced here rather than anywhere downstream
-(docs/synthesis.md, docs/architecture-v1.py:146):
+Request order:
 
   1. validate    - parse the body, reject a missing or oversized query as a clean 400 before
                    anything is billed.
-  2. safety      - the deterministic in-Lambda intercept, BEFORE any AWS call. A crisis
-                   message returns the fixed handoff panel and never reaches the guardrail or
-                   the model. This runs first because a guardrail block returns a fixed
-                   refusal string: screening first would answer a student in crisis with
-                   "I can't help with that" whenever their message also tripped the screen.
-  3. guardrail   - ApplyGuardrail(source=INPUT) on the BARE query, PROMPT_ATTACK only. A block
+  2. guardrail   - ApplyGuardrail(source=INPUT) on the BARE query, PROMPT_ATTACK only. A block
                    returns the configured message with no retrieval and no generation.
-  4. agent loop  - the Bedrock Converse tool-use loop under Sammy's system prompt.
+  3. agent loop  - the Bedrock Converse tool-use loop under Sammy's system prompt. Safety is
+                   the model's triage call (decision, 2026-08-10): the prompt carries the
+                   emergency instruction and a keyed resource roster, the model emits a
+                   <safety> block, and app/safety.py resolves the keys into the fixed contact
+                   panel. There is no pre-model phrase gate.
 
 Wiring comes from env vars set by the CDK stack (see settings.py). The response body is the
 camelCase wire contract the frontend expects, produced by the pydantic aliases in models.py.
@@ -31,7 +29,6 @@ from botocore.config import Config
 
 from models import ChatRequest
 from orchestrator import run_chat
-from safety import try_safety_response
 from settings import load_settings
 
 logger = logging.getLogger()
@@ -160,10 +157,9 @@ def _chat_response(response):
 
 
 def lambda_handler(event, context):
-    """POST /chat, in the order the module docstring fixes: validate, safety, guardrail,
-    loop. The safety intercept is FIRST and is deterministic - no model, no AWS call - so
-    a crisis message cannot be pre-empted by a guardrail block or by anything the model
-    decides."""
+    """POST /chat, in the order the module docstring fixes: validate, guardrail, loop.
+    Safety handoffs come out of the loop - the model triages and emits keys, the server
+    resolves them into the fixed panel (app/safety.py)."""
     data = _parse_body(event)
     query = (data or {}).get("query")
     if not isinstance(query, str) or not query.strip():
@@ -174,15 +170,7 @@ def lambda_handler(event, context):
             {"error": f"Query exceeds {SETTINGS.max_query_chars} characters."},
         )
 
-    # STEP 2 - the deterministic intercept, ahead of every AWS call. Camp's phrase gate
-    # and its fixed contact panel, unchanged: on a match the student gets the panel and
-    # the request ends here.
-    safety_response = try_safety_response(query)
-    if safety_response is not None:
-        logger.info("chat route=safety")
-        return _chat_response(safety_response)
-
-    # STEP 3 - the guardrail screen, only for messages the intercept did not claim.
+    # STEP 2 - the guardrail screen.
     blocked_text = apply_input_guardrail(query)
     if blocked_text is not None:
         return _response(
@@ -195,7 +183,7 @@ def lambda_handler(event, context):
             },
         )
 
-    # STEP 4 - the agent loop, under both caps (iterations and wall clock).
+    # STEP 3 - the agent loop, under both caps (iterations and wall clock).
     try:
         request = ChatRequest(
             query=query,
