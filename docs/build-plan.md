@@ -85,6 +85,31 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       prompt. An over-cap follow-up keeps its button and is sent whole (it displays as
       the student's turn and wraps there). A card past ~280 body chars spans its whole
       grid row so a short neighbour never floats on its dead space.
+- [x] crawl list covers every office in the sponsor reference sheets (2026-08-10 coverage
+      audit): +25 pages to 228. Campus safety (UPD, BIT, Alert SJSU, the Title IX landing page),
+      five identity centers, ASPIRE/McNair/Office of Research, study abroad, supported
+      instruction, IT, parking, the AS services, wellbeing, off-campus housing, the H&A success
+      center (the advising hub lists 7 college centers, not the sheets' 9), and the
+      enrollment-management directory. Four new sections: campus-safety, research, study-abroad,
+      campus-services; nothing in app code switches on section values. Deliberately excluded:
+      spartanrecreation.com, events.sjsu.edu, sjsuspartans.com, one.sjsu.edu (likely JS apps,
+      off the three-host set) and the library CAT page (404 at every candidate URL). The sheets
+      themselves carry errors - a dead CAPS intake URL, a dead /pridecenter link, conflicting
+      CAPS phone / SJSU Cares location / pantry hours between sheets - which matters when they
+      become eval ground truth.
+- [x] scraper extraction recovers what trafilatura's article model drops (2026-08-10 audit of
+      the LIVE corpus: 39 of 203 ingested docs carried any phone number, 52 any email; EOP's and
+      AEC's contact info appeared in none). Both causes are static HTML - the JS hypothesis was
+      tested and is false, so no browser automation. (1) The www.sjsu.edu CMS puts each office's
+      phone/email/hours in a role="complementary" band OUTSIDE main, which an article extractor
+      rightly reads as chrome; even contact-us.php pages keep their facts there. (2) Landing-page
+      link-tile grids are pruned as link-dense boilerplate, and trafilatura's favor_recall /
+      include_links measurably do not bring them back. Fix: a second lxml pass appends the band
+      and any content-region block missing from the body, deduplicated on letters-and-digits
+      normalization; <br> tails become spaces so "Phone: X<br>Monday" cannot glue into a
+      corrupted fact. Verified against all 228 live pages: 0 failures, phones 39/203 -> 192/228,
+      emails 52/203 -> 192/228. Every fingerprint changes, so the next deploy re-uploads and
+      re-ingests the whole corpus - deliberate; the corpus was the bug.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

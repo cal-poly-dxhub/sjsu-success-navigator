@@ -296,6 +296,136 @@ def test_extract_markdown_keeps_article_drops_boilerplate():
     assert title and "Academic Advising" in title
 
 
+# --- the template supplement pass (static fixtures, no network) --------------------------------
+#
+# The www.sjsu.edu CMS template, reduced to the two layouts that break an article extractor
+# (2026-08-10 corpus audit): the office's phone/email/hours in a styled band OUTSIDE <main>
+# (role="complementary"), and main content carried as link-tile grids rather than paragraphs.
+# trafilatura drops both; the supplement pass must bring both back, without duplicating the
+# prose trafilatura did keep and without letting nav/footer chrome back in.
+
+FIXTURE_SJSU_TEMPLATE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Bursar's Office | SJSU</title></head>
+<body>
+  <header><nav><ul>
+    <li><a href="/">Home</a></li><li><a href="/bursar/">Bursar</a></li>
+  </ul></nav></header>
+  <main id="sjsu-maincontent" role="main">
+    <h1>Bursar's Office</h1>
+    <p>We are proud to offer an affordable high-quality education to all of our students, and
+       the Bursar's Office keeps student accounts accurate from registration to graduation.</p>
+    <div class="o-grid">
+      <div class="o-grid__item">
+        <h2><a href="/bursar/fees-due-dates/">Fees and Due Dates</a></h2>
+        <div>See how tuition and fees vary by semester, course, program or student type.</div>
+      </div>
+      <div class="o-grid__item">
+        <h2><a href="/bursar/payment-refunds/">Payment Plans</a></h2>
+        <div>Installment payment plans spread tuition across the term for eligible students.</div>
+      </div>
+    </div>
+  </main>
+  <div class="o-region--contact u-bg--typeface-pattern-diamonds" role="complementary">
+    <div class="o-region--contact__label"><h2 class="o-region--contact__title">Bursar's Office</h2></div>
+    <div class="o-region--contact__block">
+      <h3 class="o-region--contact__heading">Contact Us</h3>
+      <div class="o-region--contact__detail">
+        <p><strong>Urgent inquiries:</strong><br>Phone: <a href="tel:4089241601">408-924-1601</a><br>
+           Monday - Friday 9:00 a.m. - 4:00 p.m.<br>
+           Email: <a href="mailto:bursar@sjsu.edu">bursar@sjsu.edu</a></p>
+      </div>
+    </div>
+  </div>
+  <footer><p>&copy; 2026 San Jose State University. Footer boilerplate and privacy policy.</p></footer>
+</body>
+</html>
+"""
+
+# A landing page that is ONLY tiles - no paragraph for trafilatura to anchor on. Before the
+# supplement pass this page could extract to nothing and fail as "no content extracted".
+FIXTURE_TILES_ONLY_HTML = """
+<!DOCTYPE html>
+<html><head><title>Get Help | Library</title></head>
+<body>
+  <div class="navbar" role="banner"><a href="/">Library Home</a><a href="/hours">Hours</a></div>
+  <div role="main">
+    <div class="tiles">
+      <div class="tile"><a href="/chat">Chat with a Librarian</a></div>
+      <div class="tile"><a href="/email">Email a research question to the reference desk</a></div>
+      <div class="tile"><a href="/onesearch">OneSearch the catalog and databases</a></div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+def test_contact_band_reaches_the_markdown():
+    """The band lives outside <main> with role="complementary" - exactly what an article
+    extractor strips - and it holds the facts a routing answer needs. It must survive."""
+    _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
+    assert markdown
+    assert "408-924-1601" in markdown
+    assert "bursar@sjsu.edu" in markdown
+    assert "Monday - Friday 9:00 a.m. - 4:00 p.m." in markdown
+    # The band separates its lines with <br> alone; text extraction must not glue them into
+    # "408-924-1601Monday", which is a corrupted fact rather than a phone number and an hours line.
+    assert "408-924-1601 Monday" in markdown
+
+
+def test_link_tile_text_reaches_the_markdown_and_chrome_still_does_not():
+    _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
+    assert markdown
+    # Tile labels and descriptions - the actual content of a landing page.
+    assert "Fees and Due Dates" in markdown
+    assert "Installment payment plans spread tuition" in markdown
+    # The supplement pass must not reopen the door to chrome.
+    assert "Footer boilerplate" not in markdown
+    assert "privacy policy" not in markdown
+
+
+def test_supplement_pass_adds_nothing_twice():
+    """Prose that trafilatura already kept is also a region block; dedup must keep it single.
+    Dedup is on letters-and-digits normalization, so markdown escaping cannot fake a difference."""
+    _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
+    assert markdown.count("affordable high-quality education") == 1
+    assert markdown.count("Installment payment plans") == 1
+    assert markdown.count("408-924-1601") == 1
+
+
+def test_tiles_only_page_still_extracts():
+    """A page with no paragraphs at all must still produce a document, not an ok=False result -
+    ask-librarian is this shape."""
+    _, markdown = scraper.extract_markdown(FIXTURE_TILES_ONLY_HTML, url="https://library.sjsu.edu/ask-librarian")
+    assert markdown
+    assert "Chat with a Librarian" in markdown
+    assert "OneSearch" in markdown
+
+
+def test_supplement_pass_skips_chrome_marked_by_aria_role():
+    """The LibGuides template marks its navbar with role="banner" on a plain <div>, so tag names
+    alone cannot exclude it. Asserted on the supplement pass directly: on a fixture this small
+    trafilatura's own heuristics keep everything (unlike on real pages), so the public output
+    cannot distinguish whose text the chrome was."""
+    tree = scraper._parse_tree(FIXTURE_TILES_ONLY_HTML)
+    blocks = []
+    # Walk the whole body, not the content region: the banner sits outside role="main", so only
+    # a body-wide walk (the fallback for pages with no marked region) exercises the role skip.
+    scraper._collect_blocks(tree.find("body"), blocks)
+    assert any("Chat with a Librarian" in b for b in blocks)
+    assert not any("Library Home" in b for b in blocks)
+
+
+def test_supplement_pass_survives_unparseable_html():
+    """lxml failing must degrade to plain trafilatura behaviour, never raise."""
+    title, markdown = scraper.extract_markdown("", url="https://www.sjsu.edu/empty/")
+    assert markdown is None
+    title, markdown = scraper.extract_markdown("<<<not really html", url="https://www.sjsu.edu/garbage/")
+    assert title is None or isinstance(title, str)
+
+
 # --- replacement-char scrubbing (baked-in source mojibake, no network) -------------------------
 
 

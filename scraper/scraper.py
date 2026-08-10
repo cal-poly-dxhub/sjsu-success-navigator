@@ -2,8 +2,8 @@
 
 Fetches the pages named in the curated crawl list over plain HTTP (every page on the list was
 confirmed server-rendered HTML - no SPA, no browser automation), extracts main-content markdown
-with trafilatura, and - via the CLI - writes a markdown file plus a JSON metadata sidecar per page
-for manual inspection.
+with trafilatura plus a template-aware supplement pass (see extract_markdown), and - via the CLI -
+writes a markdown file plus a JSON metadata sidecar per page for manual inspection.
 
 Split of concerns, so the Lambda wrapper needs none of the local-only surface:
   - `scrape_pages(pages)` does fetch + extract only and returns `ScrapeResult` objects. It
@@ -38,10 +38,11 @@ from typing import Dict, List, Optional
 
 import httpx
 import trafilatura
+from lxml import html as lxml_html
 
 LOG = logging.getLogger("scraper")
 
-SCRAPER_VERSION = "1"
+SCRAPER_VERSION = "2"
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_USER_AGENT = "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
 DEFAULT_OUTPUT_DIR = "./scraper_output"
@@ -271,27 +272,190 @@ def _extract_title(html: str) -> Optional[str]:
     return title or None
 
 
-def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-    """Extract (title, main-content markdown) from a page's HTML.
+# --- Template-aware supplement pass ---------------------------------------------------------
+#
+# trafilatura models a page as an article: prose in the middle, boilerplate around it. Two layouts
+# in this corpus break that model, measured against the live KB (2026-08-10 audit: 39 of 203
+# ingested docs carried any phone number; EOP's and AEC's contact info appeared in none):
+#
+#   1. The www.sjsu.edu CMS stamps each office's phone/email/hours into a styled band OUTSIDE
+#      <main> (class `o-region--contact`, role="complementary"). Template chrome to an article
+#      extractor; per-office data to us - for a routing assistant, the most valuable text on the
+#      page. Even the offices' dedicated contact-us pages keep their facts in this band.
+#   2. Landing pages carry their content as link-tile grids (heading + link + one-line
+#      description, repeated). Link-dense and paragraph-poor, so the boilerplate heuristics prune
+#      it - and trafilatura's own favor_recall/include_links options measurably do not bring it
+#      back (bursar index: 341 of 1,491 in-main chars survive, identical with favor_recall).
+#
+# So trafilatura stays - it is right about real chrome and good at prose - and a second lxml pass
+# recovers what its model wrongly drops: the contact band, plus any content-region text block
+# missing from its output. Dedup is on letters-and-digits-only normalization, so markdown escaping
+# and whitespace reflow cannot make the same sentence look new.
 
-    Uses trafilatura, which strips nav/header/footer/sidebar boilerplate. Tables are kept (office
-    hours and eligibility criteria are often tabular); comments are dropped. Returns (title, None)
-    when no main content is found (e.g. a redirect stub or an empty page).
+_CONTACT_BAND_CLASS = "o-region--contact"
 
-    Both the title and the markdown are scrubbed of replacement-char garbage baked into the page's
-    own source (see `_scrub_replacement_chars`), and layout tables are flattened to prose (see
-    `_flatten_markdown_tables`) because the KB wants flat text.
+# Block-level tags whose text stands alone as one supplement line. Collected whole; descendants
+# are not revisited, so an <a> inside a collected <li> is never double-counted.
+_BLOCK_TAGS = {
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "td", "th", "dt", "dd",
+    "blockquote", "figcaption", "caption", "address", "summary", "pre",
+}
+# Never collected and never descended into: invisible machinery, form controls, and the
+# nav/header/footer chrome trafilatura is already right to drop.
+_SKIP_TAGS = {
+    "script", "style", "noscript", "template", "iframe", "svg", "form", "button",
+    "select", "option", "label", "nav", "header", "footer", "aside",
+}
+# ARIA equivalents of the chrome tags - the library's LibGuides template marks its navbar with
+# role="banner" on a plain <div>, so tag names alone do not exclude it.
+_SKIP_ROLES = {"banner", "navigation", "contentinfo", "search", "complementary"}
+
+# Below this many characters a block is a bare widget label ("Go", "FAQ" links), not content.
+_MIN_BLOCK_CHARS = 3
+
+_WS_RE = re.compile(r"\s+")
+_DEDUP_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _parse_tree(html: str):
+    """lxml tree for the supplement pass, or None. Best-effort by design: a page lxml cannot
+    parse still gets its trafilatura extraction, exactly as before the supplement pass existed.
+
+    <br> tails get a leading space because text_content() otherwise glues the surrounding lines
+    together - the contact band separates "Phone: 408-924-1601" from "Monday - Friday" with
+    nothing but <br>, and "408-924-1601Monday" in the KB is a corrupted fact, not a phone number.
     """
-    markdown = trafilatura.extract(
+    try:
+        tree = lxml_html.fromstring(html)
+    except Exception:
+        return None
+    for br in tree.iter("br"):
+        br.tail = " " + (br.tail or "")
+    return tree
+
+
+def _block_text(el) -> str:
+    """One element's visible text as a single scrubbed line."""
+    return _scrub_replacement_chars(_WS_RE.sub(" ", el.text_content()).strip())
+
+
+def _dedup_key(text: str) -> str:
+    """Letters and digits only, lowercased - the identity of a block for dedup purposes."""
+    return _DEDUP_RE.sub("", text.lower())
+
+
+def _is_leaf_container(el) -> bool:
+    """A div/section/article with no block-level or container descendants: one tile of a link
+    grid, whose heading-less label + description text would otherwise be skipped entirely."""
+    if el.tag not in ("div", "section", "article"):
+        return False
+    return not any(
+        isinstance(d.tag, str)
+        and (d.tag in _BLOCK_TAGS or d.tag in ("div", "section", "article", "ul", "ol", "table"))
+        for d in el.iterdescendants()
+    )
+
+
+def _collect_blocks(el, blocks: List[str]) -> None:
+    """Walk one subtree in document order, appending each block-level element's text once."""
+    tag = el.tag if isinstance(el.tag, str) else None
+    if tag is None or tag in _SKIP_TAGS:
+        return
+    if (el.get("role") or "").strip().lower() in _SKIP_ROLES:
+        return
+    if tag in _BLOCK_TAGS or _is_leaf_container(el):
+        text = _block_text(el)
+        if len(text) >= _MIN_BLOCK_CHARS:
+            blocks.append(text)
+        return  # collected whole - do not revisit descendants
+    for child in el:
+        _collect_blocks(child, blocks)
+
+
+def _content_region(tree):
+    """The page's content container across the corpus's templates: <main> on www.sjsu.edu and
+    careercenter (WordPress), role="main" on library.sjsu.edu (LibGuides), with the whole <body>
+    as the fallback - _collect_blocks skips chrome by tag and role, so the fallback stays sane."""
+    for xpath in ("//main", '//*[@role="main"]', '//*[@id="main-content"]'):
+        found = tree.xpath(xpath)
+        if found:
+            return found[0]
+    body = tree.find("body")
+    return body if body is not None else tree
+
+
+def _contact_band_blocks(tree) -> List[str]:
+    """Text blocks of the www.sjsu.edu contact band(s), outermost containers only. The band root
+    carries role="complementary", which _collect_blocks rightly skips everywhere else - so this
+    pass descends from the band's children instead of its root. Empty on other templates."""
+    nodes = tree.xpath(f'//*[contains(@class, "{_CONTACT_BAND_CLASS}")]')
+    node_set = set(nodes)
+    blocks: List[str] = []
+    for node in nodes:
+        if any(ancestor in node_set for ancestor in node.iterancestors()):
+            continue  # an inner __item/__detail element; its outermost band collects it
+        for child in node:
+            _collect_blocks(child, blocks)
+    return blocks
+
+
+def _merge_new_blocks(seen: str, blocks: List[str]) -> tuple[List[str], str]:
+    """The blocks whose normalized text is not already a substring of `seen` (the normalized
+    concatenation of everything kept so far). Returns (kept blocks, updated accumulator)."""
+    added: List[str] = []
+    for block in blocks:
+        key = _dedup_key(block)
+        if not key or key in seen:
+            continue
+        added.append(block)
+        seen += key
+    return added, seen
+
+
+def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """Extract (title, content markdown) from a page's HTML.
+
+    trafilatura extracts the prose body: nav/header/footer boilerplate stripped, tables kept
+    (office hours and eligibility criteria are often tabular) then flattened to prose because the
+    KB wants flat text. The supplement pass (see the comment block above) then appends what its
+    article model wrongly drops on this corpus - the www.sjsu.edu contact band and the link-tile
+    text of landing pages - deduplicated against the body so nothing appears twice.
+
+    Both passes scrub replacement-char garbage baked into the page's own source (see
+    `_scrub_replacement_chars`). Returns (title, None) only when BOTH passes find nothing
+    (a redirect stub or an empty page).
+    """
+    body = trafilatura.extract(
         html,
         url=url,
         output_format="markdown",
         include_tables=True,
         include_comments=False,
     )
-    markdown = _flatten_markdown_tables(_scrub_replacement_chars(markdown))
-    if markdown is not None:
-        markdown = markdown.strip() or None
+    body = (_flatten_markdown_tables(_scrub_replacement_chars(body)) or "").strip()
+
+    recovered: List[str] = []
+    band: List[str] = []
+    tree = _parse_tree(html)
+    if tree is not None:
+        region_blocks: List[str] = []
+        region = _content_region(tree)
+        if region is not None:
+            _collect_blocks(region, region_blocks)
+        seen = _dedup_key(body)
+        recovered, seen = _merge_new_blocks(seen, region_blocks)
+        band, seen = _merge_new_blocks(seen, _contact_band_blocks(tree))
+
+    if url and (recovered or band):
+        LOG.info(
+            "supplement pass recovered %d block(s)%s: %s",
+            len(recovered) + len(band),
+            " incl. contact band" if band else "",
+            url,
+        )
+
+    sections = [part for part in (body, "\n".join(recovered), "\n".join(band)) if part]
+    markdown = "\n\n".join(sections).strip() or None
     return _scrub_replacement_chars(_extract_title(html)), markdown
 
 

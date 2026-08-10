@@ -2,4 +2,7 @@
 # its manylinux layer bundling work unmodified). boto3 comes from the runtime.
 httpx>=0.27
 trafilatura>=1.12
+# Already in the deps layer as trafilatura's own dependency; named here because scraper.py now
+# imports it directly for the template-aware supplement pass.
+lxml>=4.9
 PyYAML>=6.0
