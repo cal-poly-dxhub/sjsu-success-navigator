@@ -69,21 +69,6 @@
 	white-space: nowrap;
 }
 
-.side-nav__close {
-	display: none;
-	align-items: center;
-	justify-content: center;
-	width: 2.25rem;
-	height: 2.25rem;
-	padding: 0;
-	border: 2px solid #dfe3e8;
-	border-bottom-width: 4px;
-	border-radius: 12px;
-	background: #fff;
-	color: var(--text-secondary);
-	cursor: pointer;
-}
-
 .side-nav__new-chat {
 	display: flex;
 	align-items: center;
@@ -121,7 +106,6 @@
 
 .side-nav__new-chat:focus-visible,
 .side-nav__chat:focus-visible,
-.side-nav__close:focus-visible,
 .chat-app__nav-toggle:focus-visible {
 	outline: 2px solid var(--accent-blue);
 	outline-offset: 2px;
@@ -272,10 +256,6 @@
 		box-shadow: 18px 0 42px rgba(28, 36, 48, 0.16);
 	}
 
-	.side-nav__close {
-		display: inline-flex;
-	}
-
 	.chat-app__nav-toggle {
 		position: fixed;
 		top: 1rem;
@@ -294,6 +274,19 @@
 		cursor: pointer;
 		backdrop-filter: blur(10px);
 		-webkit-backdrop-filter: blur(10px);
+	}
+}
+
+/*
+ * The drawer at phone widths: four fifths of the viewport, so the remaining fifth stays a
+ * visible sliver of chat under the scrim. Dismissal is the scrim tap or a left drag
+ * (SideNav.tsx) - there is no close button to make room for.
+ */
+@media (max-width: 860px) {
+	.side-nav--mobile {
+		width: 80vw;
+		/* The drag is horizontal; vertical scrolling inside the drawer must still work. */
+		touch-action: pan-y;
 	}
 }
 

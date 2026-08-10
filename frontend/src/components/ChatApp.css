@@ -12,6 +12,11 @@
 	overflow-x: clip;
 }
 
+/* Mobile only. Above the breakpoint the header does not exist and this is display:none. */
+.chat-app__header-veil {
+	display: none;
+}
+
 .chat-app__background {
 	position: fixed;
 	inset: 0;
@@ -117,7 +122,38 @@
 	}
 }
 
+/*
+ * MOBILE. Three states, per the captain's mock: landing (avatar centred, greeting under
+ * it), active chat (avatar gone, thread takes the space) and the menu drawer (SideNav.css).
+ * The two header controls are the same fixed elements the desktop uses - only their
+ * position changes - so nothing above this breakpoint is touched.
+ */
 @media (max-width: 860px) {
+	.chat-app {
+		/* Cleared by the fixed header controls: 1rem inset plus the taller of the two
+		   (the talk-to-a-person pill), plus air. */
+		--mobile-header-h: 4.75rem;
+		/* Cleared by the fixed composer: 1rem inset plus its own height, plus air. */
+		--mobile-dock-h: 5.25rem;
+	}
+
+	.chat-app__header-veil {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		z-index: 4;
+		display: block;
+		height: var(--mobile-header-h);
+		background: linear-gradient(
+			to bottom,
+			var(--bg-deep) 45%,
+			color-mix(in srgb, var(--bg-deep) 70%, transparent) 78%,
+			transparent 100%
+		);
+		pointer-events: none;
+	}
+
 	.chat-app__stage--split {
 		grid-template-columns: 1fr;
 	}
@@ -133,10 +169,47 @@
 	}
 
 	.chat-app__stage {
-		padding-bottom: 12rem;
+		padding-top: var(--mobile-header-h);
+		padding-bottom: 7rem;
 	}
 
 	.chat-app__dock {
-		bottom: calc(3.75rem + env(safe-area-inset-bottom));
+		bottom: calc(1rem + env(safe-area-inset-bottom));
+		padding: 0 0.85rem;
+	}
+
+	/* Landing: the avatar is the focal element, the greeting sits under it, and the whole
+	   group is centred in what is left between the header and the composer. */
+	.chat-app--landing .chat-app__stage {
+		min-height: calc(100dvh - var(--mobile-dock-h));
+		align-content: center;
+		row-gap: 0.85rem;
+		padding-bottom: 0;
+	}
+
+	.chat-app--landing .chat-app__stage--split .chat-app__sammy-col {
+		padding-top: 0;
+	}
+
+	.chat-app--landing .chat-app__stage--split .sammy-stage {
+		width: min(72%, 16.5rem);
+		margin-top: 0;
+	}
+
+	/* The viewport-filling active turn is scroll room for a thread; on the landing there
+	   is no thread yet and it would push the avatar off centre. */
+	.chat-app--landing .conversation-exchange--active {
+		min-height: 0;
+		padding-bottom: 0;
+	}
+
+	.chat-app--landing .conversational-bubble,
+	.chat-app--landing .conversation-turn__static-bubble {
+		margin: 0 auto;
+	}
+
+	/* Active chat: the avatar is gone and the thread has that space. */
+	.chat-app--active .chat-app__sammy-col {
+		display: none;
 	}
 }

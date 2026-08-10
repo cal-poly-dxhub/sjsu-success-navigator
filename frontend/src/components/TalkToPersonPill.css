@@ -65,9 +65,17 @@
 	outline-offset: 2px;
 }
 
+/*
+ * On mobile this is the right-hand half of the header, opposite the menu control, so it
+ * moves off the bottom-right corner it holds on desktop. The max-width is what keeps it
+ * off the menu button at a 320px viewport: 1rem + the 2.65rem button + a 0.5rem gap on
+ * the left, 0.85rem on the right.
+ */
 @media (max-width: 860px) {
 	.talk-pill {
+		top: 1rem;
 		right: 0.85rem;
-		bottom: calc(0.75rem + env(safe-area-inset-bottom));
+		bottom: auto;
+		max-width: calc(100vw - 5rem);
 	}
 }

@@ -89,6 +89,14 @@ export default function ChatApp() {
 	const response = responseFromTurns(turns);
 	const hasContent = turns.length > 0;
 
+	/**
+	 * Landing vs active chat, and the only thing the mobile layout switches on. A turn
+	 * carries a `query` only once the student has actually asked something, so this reads
+	 * the real conversation rather than a flag anyone has to remember to set - including
+	 * after "New chat", which returns to the welcome turn and therefore to the landing.
+	 */
+	const conversationStarted = Boolean(pendingPrompt) || turns.some((turn) => Boolean(turn.query));
+
 	const settleBackground = useCallback((landedId: number, toX: number) => {
 		setChatTransition((current) => {
 			if (!current || current.id !== landedId) return current;
@@ -303,7 +311,9 @@ export default function ChatApp() {
 		: { type: 'spring' as const, stiffness: 360, damping: 34 };
 
 	return (
-		<div className="chat-app">
+		<div
+			className={`chat-app${conversationStarted ? ' chat-app--active' : ' chat-app--landing'}`}
+		>
 			<motion.div
 				className="chat-app__background"
 				aria-hidden="true"
@@ -335,6 +345,11 @@ export default function ChatApp() {
 				onNewChat={handleNewChat}
 				onSelectChat={handleSelectChat}
 			/>
+
+			{/* Mobile only (display:none above the breakpoint): the two header controls are
+			    fixed over a scrolling thread, so the band behind them fades the paper out
+			    rather than letting prose run under a floating button. */}
+			<div className="chat-app__header-veil" aria-hidden="true" />
 
 			<button
 				type="button"
