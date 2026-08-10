@@ -43,3 +43,6 @@ Thumbs.db
 coverage/
 .pytest_cache/
 .nyc_output/
+
+# Claude
+.claude
