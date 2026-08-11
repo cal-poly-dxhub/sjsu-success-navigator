@@ -170,6 +170,14 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       card outright, and a result's silence is never asserted as "no rule exists" (the
       pantry-eligibility fail). Priming degrades honestly: past-deadline skips it,
       retrieval failure logs and falls back to the model searching itself.
+- [x] every page introduces itself (2026-08-10 eval rerun): the scraper leads each
+      document with the title as an H1 and assembles the contact band FIRST, body and
+      link tiles after. Appended, the band put every office's phone in the tail chunk
+      with often nothing naming the office - the AEC probe found its contact chunk
+      unrankable - and Bedrock embeds only chunk text, never the metadata sidecar.
+      Dedup precedence is unchanged, so a band block the body already carries stays in
+      the body. Every fingerprint changes; the next deploy re-uploads and re-ingests
+      the corpus, the same deliberate move as the extraction fix.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

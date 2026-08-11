@@ -395,6 +395,18 @@ def test_supplement_pass_adds_nothing_twice():
     assert markdown.count("408-924-1601") == 1
 
 
+def test_the_contact_band_leads_the_document():
+    """The band is assembled FIRST, not appended (2026-08-10): appended, every office's
+    phone landed in the document's tail chunk under FIXED_SIZE chunking, a chunk with
+    digits but often no office name - the shape the eval's contact-lookup failures all
+    shared. Leading, it sits in chunk 1 beside the title scrape_page prepends."""
+    _, markdown = scraper.extract_markdown(
+        FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php"
+    )
+    assert markdown.index("408-924-1601") < markdown.index("affordable high-quality education")
+    assert markdown.index("bursar@sjsu.edu") < markdown.index("Fees and Due Dates")
+
+
 def test_tiles_only_page_still_extracts():
     """A page with no paragraphs at all must still produce a document, not an ok=False result -
     ask-librarian is this shape."""
@@ -530,6 +542,39 @@ def test_scrape_page_scrubs_mojibake_end_to_end():
     assert "ï¿½" not in result.markdown
     assert "�" not in result.markdown
     assert "students mental health" in result.markdown
+
+
+def test_scrape_page_leads_with_the_title_as_a_heading():
+    """The page introduces itself: Bedrock embeds only chunk text, never the metadata
+    sidecar, so the title must live in the document or a chunk can carry an office's
+    facts with nothing naming the office."""
+
+    def handler(request):
+        return httpx.Response(200, html=FIXTURE_HTML)
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(), client)
+
+    assert result.ok
+    first_line = result.markdown.splitlines()[0]
+    assert first_line.startswith("# ")
+    assert "Academic Advising" in first_line
+
+
+def test_scrape_page_heading_uses_the_curated_title_fallback():
+    def handler(request):
+        return httpx.Response(
+            200,
+            html="<html><body><main><article><p>"
+            + ("Peer connections run drop-in groups every weekday afternoon. " * 6)
+            + "</p></article></main></body></html>",
+        )
+
+    with _client(handler) as client:
+        result = scraper.scrape_page(_page(title="Peer Connections"), client)
+
+    assert result.ok
+    assert result.markdown.startswith("# Peer Connections\n\n")
 
 
 def test_scrape_page_falls_back_to_the_curated_title():
