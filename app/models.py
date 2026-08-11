@@ -129,6 +129,55 @@ class ChatRequest(BaseModel):
     followup: bool = False
 
 
+class ConversationSummary(BaseModel):
+    """One row of GET /conversations: a stored header, as the sidebar lists it."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    title: str
+    created_at: str | None = Field(default=None, alias="createdAt")
+    last_activity_at: str | None = Field(default=None, alias="lastActivityAt")
+    message_count: int = Field(default=0, alias="messageCount")
+
+
+class ConversationListResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversations: list[ConversationSummary]
+
+
+class ConversationMessage(BaseModel):
+    """One stored message on its way to the browser: the DISPLAY projection.
+
+    `cards` are the stored ones - URLs already resolved - re-validated through the same
+    StatementCard the live turn returns, so a reopened conversation and a fresh one hand the
+    renderer the identical shape. This is the projection the model never sees
+    (docs/accounts-and-storage.md, Turn lifecycle): rendered cards are not fed back.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    role: Literal["user", "assistant"]
+    text: str
+    cards: list[StatementCard] = Field(default_factory=list)
+    created_at: str | None = Field(default=None, alias="createdAt")
+
+
+class ConversationResponse(BaseModel):
+    """GET /conversations/{conversationId}.
+
+    An id that is not the caller's own is not an error and not a 403 - it is an empty
+    `messages` list, because the partition it would have to read is not the one the JWT
+    names (docs/accounts-and-storage.md, Turn lifecycle).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    messages: list[ConversationMessage]
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     kb_id: str = Field(alias="kbId")

@@ -1,14 +1,19 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LayoutGroup, motion } from 'motion/react';
 import type { ChatResponse, ChatSession, ConversationTurn, RagPhase } from '../types/chat';
-import { ChatApiError, incomingBatchFromResponse, postChat } from '../lib/chatApi';
+import {
+	ChatApiError,
+	fetchConversation,
+	fetchConversations,
+	incomingBatchFromResponse,
+	postChat,
+} from '../lib/chatApi';
 import {
 	appendConversationTurn,
 	archiveActiveTurns,
 	createConversationTurn,
-	historyFromTurns,
-	responseFromTurns,
 	turnsFromResponse,
+	turnsFromStoredMessages,
 } from '../lib/conversationTurns';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
@@ -56,21 +61,32 @@ const WELCOME_RESPONSE: ChatResponse = {
 };
 
 /**
- * The sidebar starts with ONE real conversation. Camp shipped four canned ones
- * (MOCK_CHAT_SESSIONS) whose canned answers were indistinguishable from real ones - with
- * no persistence layer there is nothing true to put there, so selecting a "past chat"
- * loaded fabricated content.
+ * The unsent chat at the top of the sidebar. It holds the welcome turn and NO conversation
+ * id: the server mints one on the first reply (docs/accounts-and-storage.md, Turn
+ * lifecycle), and until then there is nothing stored to point at.
+ *
+ * Camp shipped four canned conversations (MOCK_CHAT_SESSIONS) whose fabricated answers were
+ * indistinguishable from real ones. The rest of this list now comes from the server, which
+ * is the only thing that ever knew what a student actually asked.
  */
-const INITIAL_CHATS: ChatSession[] = [
-	{ id: 'new-chat', title: 'New chat', response: WELCOME_RESPONSE },
-];
+function newChatSession(): ChatSession {
+	return {
+		id: `new-${Date.now()}`,
+		title: 'New chat',
+		turns: turnsFromResponse(WELCOME_RESPONSE),
+	};
+}
 
 export default function ChatApp() {
 	const reduceMotion = usePrefersReducedMotion();
-	const [turns, setTurns] = useState<ConversationTurn[]>(() => turnsFromResponse(WELCOME_RESPONSE));
+	const [initialChat] = useState(newChatSession);
+	const [turns, setTurns] = useState<ConversationTurn[]>(() => initialChat.turns ?? []);
 	const [isTalking, setIsTalking] = useState(false);
-	const [chats, setChats] = useState<ChatSession[]>(INITIAL_CHATS);
-	const [activeChatId, setActiveChatId] = useState(INITIAL_CHATS[0].id);
+	const [chats, setChats] = useState<ChatSession[]>([initialChat]);
+	const [activeChatId, setActiveChatId] = useState(initialChat.id);
+	const [historyLoading, setHistoryLoading] = useState(true);
+	const [historyError, setHistoryError] = useState<string | null>(null);
+	const [openingChatId, setOpeningChatId] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
 	const [contentVisible, setContentVisible] = useState(true);
 	const [isShocked, setIsShocked] = useState(false);
@@ -81,13 +97,57 @@ export default function ChatApp() {
 	const [isLoading, setIsLoading] = useState(false);
 	const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 	const [showSjsuCaresModal, setShowSjsuCaresModal] = useState(false);
+	// Straight off the last reply's `talkToPersonAvailable`, defaulting to shown. It used to
+	// be read back out of a ChatResponse this component rebuilt from its own turns, which
+	// could only ever return the default - the turns never carried the field.
+	const [talkToPersonAvailable, setTalkToPersonAvailable] = useState(true);
 	const [lastUserQuery, setLastUserQuery] = useState<string | null>(null);
 	const [userEmail] = useState(() => currentUsername());
 	const transitionId = useRef(0);
 
 	const isTransitioning = Boolean(chatTransition);
-	const response = responseFromTurns(turns);
 	const hasContent = turns.length > 0;
+	const activeChat = chats.find((chat) => chat.id === activeChatId);
+
+	/**
+	 * The conversation list, on load. This is the whole reason the sidebar is not a lie any
+	 * more: it is read from the server under the signed-in student's own JWT, so it lists
+	 * their conversations and cannot be asked for anyone else's.
+	 */
+	useEffect(() => {
+		let cancelled = false;
+
+		fetchConversations()
+			.then((conversations) => {
+				if (cancelled) return;
+				setChats((current) => [
+					// The unsent chats stay at the top - they are not stored yet, so a fetch
+					// cannot have returned them, and dropping them would take the welcome
+					// screen out from under the student mid-read.
+					...current.filter((chat) => !chat.conversationId),
+					...conversations.map((conversation) => ({
+						id: conversation.conversationId,
+						conversationId: conversation.conversationId,
+						title: conversation.title,
+					})),
+				]);
+			})
+			.catch((error: unknown) => {
+				if (cancelled) return;
+				setHistoryError(
+					error instanceof ChatApiError
+						? `Could not load your chats: ${error.message}`
+						: 'Could not load your chats.',
+				);
+			})
+			.finally(() => {
+				if (!cancelled) setHistoryLoading(false);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	/**
 	 * Landing vs active chat, and the only thing the mobile layout switches on. A turn
@@ -109,16 +169,18 @@ export default function ChatApp() {
 		window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
 	}, [reduceMotion]);
 
-	const updateChat = useCallback(
-		(id: string, nextTurns: ConversationTurn[]) => {
-			setChats((current) =>
-				current.map((chat) =>
-					chat.id === id ? { ...chat, response: responseFromTurns(nextTurns) } : chat,
-				),
-			);
-		},
-		[],
-	);
+	/**
+	 * Keep the sidebar's copy of a conversation in step with the feed.
+	 *
+	 * This is a CACHE of what is on screen, not a record: it exists so switching away and
+	 * back does not re-fetch, and every line of it is either something the server sent or
+	 * something the server was just told. A reload throws all of it away and asks again.
+	 */
+	const updateChat = useCallback((id: string, nextTurns: ConversationTurn[]) => {
+		setChats((current) =>
+			current.map((chat) => (chat.id === id ? { ...chat, turns: nextTurns } : chat)),
+		);
+	}, []);
 
 	const handlePhaseChange = useCallback(
 		(turnId: string, phase: RagPhase | 'done') => {
@@ -133,7 +195,7 @@ export default function ChatApp() {
 
 	const showChat = useCallback(
 		(chat: ChatSession) => {
-			const nextTurns = turnsFromResponse(chat.response);
+			const nextTurns = chat.turns ?? [];
 			setSpeechUsesIntro(true);
 			setActiveChatId(chat.id);
 			setTurns(nextTurns);
@@ -168,6 +230,23 @@ export default function ChatApp() {
 				query,
 			});
 
+			// THE ID THE SERVER MINTED, kept so the NEXT turn can say which conversation it
+			// belongs to. Without this the client posts no id, the server mints a fresh one
+			// every time, and the model is handed an empty history on every message - which
+			// is exactly the bug this replaces. It is recorded once and never overwritten:
+			// the server echoes the same id back for the life of the conversation, and it is
+			// absent on a guardrail block, where no turn was recorded to belong to.
+			if (next.conversationId) {
+				setChats((current) =>
+					current.map((chat) =>
+						chat.id === activeChatId && !chat.conversationId
+							? { ...chat, conversationId: next.conversationId }
+							: chat,
+					),
+				);
+			}
+
+			setTalkToPersonAvailable(next.talkToPersonAvailable ?? true);
 			setPendingPrompt(null);
 			setTurns((current) => {
 				const nextTurns = appendConversationTurn(current, turn);
@@ -222,22 +301,20 @@ export default function ChatApp() {
 		[activeChatId, bgOffsetX, isTransitioning, reduceMotion, settleBackground, showChat],
 	);
 
-	const handleSubmit = (query: string) => {
-		if (isLoading || isTransitioning) return;
+	/**
+	 * One turn. The request carries the query, the follow-up flag and THE CONVERSATION ID
+	 * THE SERVER GAVE US - and nothing else. No transcript: the server holds that
+	 * (docs/accounts-and-storage.md, Turn lifecycle), and a client-supplied one would be a
+	 * way to put words in a previous turn's mouth rather than a memory shortcut.
+	 */
+	const sendTurn = (query: string, options?: { followup?: boolean }) => {
+		if (isLoading || isTransitioning || openingChatId) return;
 
 		setLastUserQuery(query);
-		setChats((current) =>
-			current.map((chat) =>
-				chat.id === activeChatId && chat.title === 'New chat'
-					? { ...chat, title: query.length > 36 ? `${query.slice(0, 36).trim()}…` : query }
-					: chat,
-			),
-		);
-
-		const history = historyFromTurns(turns);
+		const conversationId = activeChat?.conversationId;
 		beginPendingExchange(query);
 		setIsLoading(true);
-		void postChat({ query, sessionId: activeChatId, history })
+		void postChat({ query, followup: options?.followup, conversationId })
 			.then((next) => applyChatResponse(next, query))
 			.catch((error: unknown) => {
 				const message =
@@ -255,38 +332,71 @@ export default function ChatApp() {
 			.finally(() => setIsLoading(false));
 	};
 
-	const handleFollowup = (prompt: string) => {
-		if (isLoading || isTransitioning) return;
+	const handleSubmit = (query: string) => {
+		if (isLoading || isTransitioning || openingChatId) return;
 
-		setLastUserQuery(prompt);
-		const history = historyFromTurns(turns);
-		beginPendingExchange(prompt);
-		setIsLoading(true);
-		void postChat({ query: prompt, followup: true, sessionId: activeChatId, history })
-			.then((next) => applyChatResponse(next, prompt))
-			.catch((error: unknown) => {
-				const message =
-					error instanceof ChatApiError
-						? error.message
-						: 'Something went wrong reaching Sammy. Is the chat API running?';
-				setPendingPrompt(null);
-				const turn = createConversationTurn(message, { query: prompt });
-				setTurns((current) => {
-					const nextTurns = appendConversationTurn(current, turn);
-					updateChat(activeChatId, nextTurns);
-					return nextTurns;
-				});
-			})
-			.finally(() => setIsLoading(false));
+		// The sidebar's own label for an unsent chat, so the row stops saying "New chat"
+		// while the first reply is in flight. The server titles the conversation from the
+		// same message (its own first-message title, 80 characters), so this is the same
+		// name arriving sooner rather than a second source of truth.
+		setChats((current) =>
+			current.map((chat) =>
+				chat.id === activeChatId && chat.title === 'New chat'
+					? { ...chat, title: query.length > 36 ? `${query.slice(0, 36).trim()}…` : query }
+					: chat,
+			),
+		);
+
+		sendTurn(query);
 	};
 
+	const handleFollowup = (prompt: string) => {
+		sendTurn(prompt, { followup: true });
+	};
+
+	/**
+	 * Open a conversation from the sidebar.
+	 *
+	 * Its messages are FETCHED THE FIRST TIME, from the server, and only then is the
+	 * transition started - the panel wipes onto real content instead of onto a blank one
+	 * that fills in later. A conversation already opened in this tab is in `turns` and is
+	 * shown straight away.
+	 */
 	const handleSelectChat = (id: string) => {
+		if (openingChatId || isLoading) return;
 		const chat = chats.find((item) => item.id === id);
 		if (!chat) return;
+
 		const currentIndex = chats.findIndex((item) => item.id === activeChatId);
 		const nextIndex = chats.findIndex((item) => item.id === id);
 		const direction: TransitionDirection = nextIndex > currentIndex ? 'left' : 'right';
-		void transitionToChat(chat, direction);
+
+		const conversationId = chat.conversationId;
+		if (chat.turns || !conversationId) {
+			void transitionToChat(chat, direction);
+			return;
+		}
+
+		setHistoryError(null);
+		setOpeningChatId(id);
+		void fetchConversation(conversationId)
+			.then((messages) => {
+				const loaded: ChatSession = {
+					...chat,
+					turns: turnsFromStoredMessages(messages, conversationId),
+				};
+				setChats((current) => current.map((item) => (item.id === id ? loaded : item)));
+				setOpeningChatId(null);
+				return transitionToChat(loaded, direction);
+			})
+			.catch((error: unknown) => {
+				setOpeningChatId(null);
+				setHistoryError(
+					error instanceof ChatApiError
+						? `Could not open that chat: ${error.message}`
+						: 'Could not open that chat.',
+				);
+			});
 	};
 
 	const handleSignOut = () => {
@@ -300,11 +410,8 @@ export default function ChatApp() {
 	};
 
 	const handleNewChat = () => {
-		const chat: ChatSession = {
-			id: `chat-${Date.now()}`,
-			title: 'New chat',
-			response: WELCOME_RESPONSE,
-		};
+		if (openingChatId) return;
+		const chat = newChatSession();
 		setChats((current) => [chat, ...current]);
 		void transitionToChat(chat, 'right');
 	};
@@ -342,6 +449,9 @@ export default function ChatApp() {
 				activeChatId={activeChatId}
 				open={navOpen}
 				busy={isTransitioning}
+				historyLoading={historyLoading}
+				openingChatId={openingChatId}
+				historyError={historyError}
 				userEmail={userEmail}
 				onLogout={handleSignOut}
 				onClose={() => setNavOpen(false)}
@@ -419,7 +529,7 @@ export default function ChatApp() {
 				</div>
 			</div>
 
-			{(response.talkToPersonAvailable ?? true) ? (
+			{talkToPersonAvailable ? (
 				<TalkToPersonPill onClick={() => setShowSjsuCaresModal(true)} />
 			) : null}
 

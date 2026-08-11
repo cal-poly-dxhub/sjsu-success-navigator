@@ -63,7 +63,7 @@ if "botocore" not in sys.modules:
 
 import pytest  # noqa: E402 - after the stubs, deliberately
 
-from history import StoredMessage  # noqa: E402
+from history import ConversationSummary, DisplayMessage, StoredMessage  # noqa: E402
 
 
 # The Cognito sub every test signs its requests with, unless it is testing what happens
@@ -71,17 +71,41 @@ from history import StoredMessage  # noqa: E402
 TEST_SUB = "11111111-2222-3333-4444-555555555555"
 
 
-def chat_event(body, sub=TEST_SUB, is_base64=False):
-    """An HTTP API payload-2.0 event carrying claims the JWT authorizer would have put
-    there. Tests build events THROUGH this so nothing accidentally asserts on a request
-    that the deployed stack could not produce: /chat is authorizer-gated, so a request
-    with no `sub` is a misconfiguration rather than an anonymous student."""
-    event = {"body": body if isinstance(body, str) else json.dumps(body)}
-    if is_base64:
-        event["isBase64Encoded"] = True
+def _authorized(event, sub):
+    """Attach the claims the JWT authorizer would have put on the event.
+
+    Tests build events THROUGH these helpers so nothing accidentally asserts on a request
+    the deployed stack could not produce: every route is authorizer-gated, so a request with
+    no `sub` is a misconfiguration rather than an anonymous student.
+    """
     if sub is not None:
         event["requestContext"] = {"authorizer": {"jwt": {"claims": {"sub": sub}}}}
     return event
+
+
+def chat_event(body, sub=TEST_SUB, is_base64=False, route="POST /chat"):
+    event = {"body": body if isinstance(body, str) else json.dumps(body)}
+    if route is not None:
+        event["routeKey"] = route
+    if is_base64:
+        event["isBase64Encoded"] = True
+    return _authorized(event, sub)
+
+
+def conversations_event(sub=TEST_SUB):
+    """GET /conversations. No body and no parameters - the only input is the claim."""
+    return _authorized({"routeKey": "GET /conversations"}, sub)
+
+
+def conversation_event(conversation_id, sub=TEST_SUB):
+    """GET /conversations/{conversationId}, with the path parameter API Gateway extracts."""
+    return _authorized(
+        {
+            "routeKey": "GET /conversations/{conversationId}",
+            "pathParameters": {"conversationId": conversation_id},
+        },
+        sub,
+    )
 
 
 class FakeConversationStore:
@@ -91,9 +115,11 @@ class FakeConversationStore:
     BEFORE the model is called, so a disclosure that then times out is still on record.
     """
 
-    def __init__(self, history=(), fail_on=()):
+    def __init__(self, history=(), fail_on=(), conversations=(), messages=()):
         self.history = list(history)
         self.fail_on = set(fail_on)
+        self.conversations = list(conversations)
+        self.messages = list(messages)
         self.calls = []
         self.appended = []
 
@@ -111,6 +137,18 @@ class FakeConversationStore:
             raise RuntimeError("DynamoDB is unavailable (read)")
         return list(self.history)
 
+    def list_conversations(self, **kwargs):
+        self.calls.append(("list", kwargs))
+        if "list" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (list)")
+        return list(self.conversations)
+
+    def conversation_messages(self, **kwargs):
+        self.calls.append(("display", kwargs))
+        if "display" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (display read)")
+        return list(self.messages)
+
     @property
     def call_names(self):
         return [name for name, _ in self.calls]
@@ -127,3 +165,19 @@ def store(monkeypatch):
 
 def stored(role, text):
     return StoredMessage(role=role, text=text, sort_key=f"MSG#C#{role}-{text[:4]}")
+
+
+def displayed(role, text, cards=None, created_at="2026-08-11T00:00:00Z"):
+    return DisplayMessage(
+        role=role, text=text, cards=list(cards or []), created_at=created_at
+    )
+
+
+def summary(conversation_id, title="Tutoring", last_activity_at="2026-08-11T00:00:00Z"):
+    return ConversationSummary(
+        conversation_id=conversation_id,
+        title=title,
+        created_at="2026-08-10T00:00:00Z",
+        last_activity_at=last_activity_at,
+        message_count=4,
+    )

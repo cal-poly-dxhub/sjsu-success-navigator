@@ -308,3 +308,155 @@ def test_an_unreadable_item_is_skipped_rather_than_failing_the_turn(table, caplo
 def test_a_zero_window_asks_dynamodb_nothing(table):
     assert table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=0) == []
     assert table.queries == []
+
+
+# --- the display reads -------------------------------------------------------------------
+#
+# The other half of the doc's two projections. Same items, same partition, a different
+# ProjectionExpression - and these are the ones that DO fetch cards, which is precisely why
+# they are a separate method from the context read rather than a flag on it.
+
+
+def _header(conversation_id, **attrs):
+    item = {
+        "sk": f"CONV#{conversation_id}",
+        "title": "Where is tutoring?",
+        "createdAt": "2026-08-10T18:00:00Z",
+        "lastActivityAt": "2026-08-10T18:04:00Z",
+        "messageCount": 4,
+    }
+    item.update(attrs)
+    return item
+
+
+def test_the_conversation_list_is_one_query_on_the_users_own_partition(table):
+    """The doc's first access pattern. There is no owner attribute to filter on and none to
+    forget: the partition key is built from the JWT claim, so 'list my conversations' and
+    'list only mine' are the same query."""
+    table.items = [_header("01J0000000000000000000000A")]
+
+    table.store.list_conversations(user_id=_SUB, limit=40)
+
+    query = table.queries[0]
+    assert query["ExpressionAttributeValues"][":pk"] == f"USER#{_SUB}"
+    assert query["ExpressionAttributeValues"][":prefix"] == "CONV#"
+    assert query["KeyConditionExpression"] == "pk = :pk AND begins_with(sk, :prefix)"
+    assert query["Limit"] == 40
+    # Newest FIRST, so the limit takes the newest conversations rather than the oldest.
+    assert query["ScanIndexForward"] is False
+    # A student who sends a turn and reloads must see it: an eventually consistent read can
+    # miss the header that turn just created.
+    assert query["ConsistentRead"] is True
+
+
+def test_a_listed_conversation_carries_what_a_sidebar_row_needs(table):
+    table.items = [_header("01J0000000000000000000000A")]
+
+    listed = table.store.list_conversations(user_id=_SUB, limit=40)[0]
+
+    assert listed.conversation_id == "01J0000000000000000000000A"
+    assert listed.title == "Where is tutoring?"
+    assert listed.last_activity_at == "2026-08-10T18:04:00Z"
+    assert listed.message_count == 4
+    assert isinstance(listed.message_count, int), "a Decimal here would fail json.dumps"
+
+
+def test_the_list_is_ordered_by_last_activity(table):
+    """Most recent means the last one the student typed in, not the last one they started."""
+    table.items = [
+        _header("01J0000000000000000000000C", lastActivityAt="2026-08-09T09:00:00Z"),
+        _header("01J0000000000000000000000B", lastActivityAt="2026-08-11T09:00:00Z"),
+        _header("01J0000000000000000000000A", lastActivityAt="2026-08-10T09:00:00Z"),
+    ]
+
+    listed = table.store.list_conversations(user_id=_SUB, limit=40)
+
+    assert [c.conversation_id[-1] for c in listed] == ["B", "A", "C"]
+
+
+def test_a_header_with_no_title_still_gets_a_row(table):
+    """The one way that happens is a turn whose user write failed and whose assistant write
+    created the header. That conversation is still the student's, and a blank row would be
+    less legible than a named one."""
+    table.items = [_header("01J0000000000000000000000A", title="")]
+
+    assert table.store.list_conversations(user_id=_SUB, limit=40)[0].title
+
+
+def test_a_zero_list_window_asks_dynamodb_nothing(table):
+    assert table.store.list_conversations(user_id=_SUB, limit=0) == []
+    assert table.queries == []
+
+
+def test_the_display_read_fetches_the_cards_the_context_read_refuses_to(table):
+    """The whole difference between the two projections, in one assertion."""
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "Peer Connections runs drop-in tutoring.",
+            "cards": [{"id": "c1", "sourceUrl": "https://sjsu.edu/peer"}],
+            "createdAt": "2026-08-10T18:04:00Z",
+        }
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+
+    query = table.queries[0]
+    assert "#cards" in query["ExpressionAttributeNames"]
+    assert "#cards" in query["ProjectionExpression"]
+    assert query["ExpressionAttributeValues"][":prefix"] == f"MSG#{_CONV}#"
+    assert messages[0].cards == [{"id": "c1", "sourceUrl": "https://sjsu.edu/peer"}]
+    assert messages[0].created_at == "2026-08-10T18:04:00Z"
+
+
+def test_the_display_read_comes_back_oldest_first(table):
+    """DynamoDB is asked for the newest `limit` (descending), because a conversation longer
+    than the cap should show its END - then the page is reversed, because that is the order
+    a transcript is read in."""
+    table.items = [
+        _item("assistant", "second", f"MSG#{_CONV}#02"),
+        _item("user", "first", f"MSG#{_CONV}#01"),
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+
+    assert table.queries[0]["ScanIndexForward"] is False
+    assert [m.text for m in messages] == ["first", "second"]
+
+
+def test_a_message_with_no_cards_reads_back_as_no_cards(table):
+    table.items = [_item("user", "where is tutoring?", f"MSG#{_CONV}#01")]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+
+    assert messages[0].cards == []
+
+
+def test_an_unreadable_item_is_skipped_by_the_display_read_too(table, caplog):
+    table.items = [
+        _item("assistant", "fine", f"MSG#{_CONV}#02"),
+        {"sk": f"MSG#{_CONV}#01", "role": "system", "text": "not ours"},
+    ]
+
+    with caplog.at_level("WARNING"):
+        messages = table.store.conversation_messages(
+            user_id=_SUB, conversation_id=_CONV, limit=60
+        )
+
+    assert [m.text for m in messages] == ["fine"]
+    assert "unreadable history item" in caplog.text
+
+
+def test_a_zero_display_window_asks_dynamodb_nothing(table):
+    assert (
+        table.store.conversation_messages(user_id=_SUB, conversation_id=_CONV, limit=0)
+        == []
+    )
+    assert table.queries == []

@@ -1,8 +1,8 @@
 """Conversation history in DynamoDB: the server's copy of the turn, and the only one.
 
-The second slice of per-user accounts and chat history (docs/accounts-and-storage.md,
-Storage and Turn lifecycle). The table and its grant landed first; this is the code that
-finally reads and writes them.
+The second and third slices of per-user accounts and chat history
+(docs/accounts-and-storage.md, Storage and Turn lifecycle). The table and its grant landed
+first, then the turn that writes it; this is the code that reads and writes them.
 
 WHY THE SERVER OWNS THIS. The client used to post its own transcript and the loop replayed
 it verbatim. That is a PROMPT INJECTION VECTOR, not a memory bug: a forged assistant turn
@@ -41,9 +41,13 @@ logger = logging.getLogger(__name__)
 # be confused with 1, 0 or V.
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-# How much of the first user message becomes the header's title. A label for a future
+# How much of the first user message becomes the header's title. A label for the
 # conversation list, not content: the message itself is stored whole, one item along.
 _TITLE_MAX_CHARS = 80
+
+# Shown for a header that carries no title. See list_conversations for the one way that
+# happens - it is not the ordinary case.
+_UNTITLED = "Untitled chat"
 
 # The last ULID this container minted, as an integer. See new_ulid.
 _last_ulid_int = 0
@@ -105,15 +109,42 @@ def _now_iso() -> str:
 class StoredMessage:
     """One message as the CONTEXT projection sees it: role and original text.
 
-    Deliberately not the whole item. Two projections of the same query (the doc): the model
-    is fed original message text, and the stored cards - resolved URLs, rendered titles -
-    are for a display read that does not exist yet. Rendered cards are never fed back to the
-    model, and the cheapest way to guarantee that is not to fetch them.
+    Deliberately not the whole item. TWO PROJECTIONS OF THE SAME STORED TURNS (the doc): the
+    model is fed original message text, and the stored cards - resolved URLs, rendered
+    titles - go to the browser through DisplayMessage below. Rendered cards are never fed
+    back to the model, and the cheapest way to guarantee that is not to fetch them.
     """
 
     role: str
     text: str
     sort_key: str
+
+
+@dataclass(frozen=True)
+class DisplayMessage:
+    """One message as the DISPLAY projection sees it: the same item, read for a browser.
+
+    The other half of the doc's two projections, and the reason this is a separate type
+    rather than a flag on StoredMessage. What the browser needs is exactly what the model
+    must not be given - the stored cards, URLs already resolved - so the two reads return
+    two shapes and a caller cannot pass one where the other belongs.
+    """
+
+    role: str
+    text: str
+    cards: list[dict[str, Any]]
+    created_at: str | None
+
+
+@dataclass(frozen=True)
+class ConversationSummary:
+    """One row of the conversation list: a header item, as the sidebar shows it."""
+
+    conversation_id: str
+    title: str
+    created_at: str | None
+    last_activity_at: str | None
+    message_count: int
 
 
 class ConversationStore:
@@ -244,7 +275,146 @@ class ConversationStore:
                 "Could not update the conversation header; the message itself is stored"
             )
 
-    # --- read -----------------------------------------------------------------
+    # --- reads ----------------------------------------------------------------
+
+    def list_conversations(self, *, user_id: str, limit: int) -> list[ConversationSummary]:
+        """A user's conversations, most recently active first. The doc's first access
+        pattern: one Query on `USER#<sub>` with `begins_with(sk, 'CONV#')`.
+
+        THE PARTITION IS THE WHOLE ACCESS CONTROL. There is no owner attribute to filter on
+        and none to forget, because `USER#<sub>` is built from the JWT claim - a request
+        cannot name a partition that is not its own, so "list my conversations" and "list
+        only mine" are the same query.
+
+        STRONGLY CONSISTENT, for the case this endpoint exists to serve: a student sends a
+        turn and reloads. An eventually consistent read can miss the header that turn just
+        created, and a conversation missing from the list the moment after it was created
+        reads as data loss whether or not it is.
+
+        DESCENDING, so the Limit takes the NEWEST conversations rather than the oldest - the
+        sort key is `CONV#<ulid>` and a ULID orders by mint time. The page is then re-sorted
+        by `lastActivityAt`, because "most recent" to a student means the last one they
+        typed in, not the last one they started. The limitation that buys: a long-dormant
+        conversation revived today does not climb back INTO the page if it fell out of the
+        newest `limit` by creation. Fixing that needs a secondary index keyed on activity,
+        which is the doc's "purely additive" GSI and not needed at pilot scale.
+        """
+        if limit <= 0:
+            return []
+
+        result = self._table_resource().query(
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeNames={
+                "#title": "title",
+                "#createdAt": "createdAt",
+                "#lastActivityAt": "lastActivityAt",
+                "#messageCount": "messageCount",
+            },
+            ExpressionAttributeValues={":pk": f"USER#{user_id}", ":prefix": "CONV#"},
+            ProjectionExpression=(
+                "sk, #title, #createdAt, #lastActivityAt, #messageCount"
+            ),
+            ScanIndexForward=False,
+            Limit=limit,
+            ConsistentRead=True,
+        )
+
+        summaries: list[ConversationSummary] = []
+        for item in result.get("Items") or []:
+            sort_key = item.get("sk") or ""
+            conversation_id = sort_key[len("CONV#") :]
+            if not conversation_id:
+                logger.warning("Skipping an unreadable conversation header: sk=%r", sort_key)
+                continue
+            summaries.append(
+                ConversationSummary(
+                    conversation_id=conversation_id,
+                    # A header with no title is not the ordinary case: the first user
+                    # message names the conversation. It is what a header created by the
+                    # assistant write alone looks like - the turn whose user write failed -
+                    # and that conversation still deserves a row rather than a blank one.
+                    title=(item.get("title") or "").strip() or _UNTITLED,
+                    created_at=item.get("createdAt"),
+                    last_activity_at=item.get("lastActivityAt"),
+                    # A DynamoDB number arrives as a Decimal, which json.dumps cannot
+                    # serialise. Converted at the boundary, once, rather than left for the
+                    # response encoder to trip over.
+                    message_count=int(item.get("messageCount") or 0),
+                )
+            )
+
+        summaries.sort(key=lambda s: s.last_activity_at or "", reverse=True)
+        return summaries
+
+    def conversation_messages(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int,
+    ) -> list[DisplayMessage]:
+        """One conversation's messages, oldest first, as the browser renders them.
+
+        The doc's second access pattern - Query `USER#<sub>`, `begins_with('MSG#<convId>#')`
+        - read through the DISPLAY projection: role, text, the stored cards with their URLs
+        already resolved, and the timestamp. This is not the context read and must never be
+        used as one; that one is `recent_messages` and it deliberately cannot see cards.
+
+        A FORGED OR FOREIGN CONVERSATION ID RETURNS EMPTY. Not a 403, and not a lookup that
+        would have to be got right: the partition comes from the JWT, so an id belonging to
+        another student addresses a prefix that does not exist inside the caller's own
+        partition. There is nothing here to authorize because there is nothing here to
+        reach.
+
+        Descending with a Limit and then reversed, exactly as the context read does it: a
+        conversation longer than `limit` shows its NEWEST messages, which is the end a
+        student is returning to. The alternative - ascending - would cap a long conversation
+        at its opening exchanges and hide everything since.
+        """
+        if limit <= 0:
+            return []
+
+        result = self._table_resource().query(
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeNames={
+                "#role": "role",
+                "#text": "text",
+                "#cards": "cards",
+                "#createdAt": "createdAt",
+            },
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_id}",
+                ":prefix": f"MSG#{conversation_id}#",
+            },
+            ProjectionExpression="sk, #role, #text, #cards, #createdAt",
+            ScanIndexForward=False,
+            Limit=limit,
+            # Same reason as the list above: a student who sends a turn and immediately
+            # reopens the conversation must see the turn they just sent.
+            ConsistentRead=True,
+        )
+
+        messages: list[DisplayMessage] = []
+        for item in result.get("Items") or []:
+            role = item.get("role")
+            text = (item.get("text") or "").strip()
+            if role not in ("user", "assistant") or not text:
+                logger.warning(
+                    "Skipping an unreadable history item: sk=%r", item.get("sk")
+                )
+                continue
+            cards = item.get("cards")
+            messages.append(
+                DisplayMessage(
+                    role=role,
+                    text=text,
+                    cards=list(cards) if isinstance(cards, list) else [],
+                    created_at=item.get("createdAt"),
+                )
+            )
+
+        messages.reverse()
+        return messages
 
     def recent_messages(
         self,

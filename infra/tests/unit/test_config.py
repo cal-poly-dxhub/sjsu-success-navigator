@@ -266,6 +266,27 @@ def test_chat_resolves_the_loop_caps(config):
     assert chat["max_history_messages"] == 12
 
 
+def test_chat_resolves_the_read_endpoint_caps(config):
+    """Separate numbers from max_history_messages above, and the difference is what they
+    cost: that one is the window the MODEL is shown, billed in tokens on every turn, while
+    these bound one DynamoDB query of already-stored items for the browser."""
+    chat = resolve_chat(config)
+    assert chat["max_conversations_listed"] == 40
+    assert chat["max_conversation_messages"] == 60
+
+
+@pytest.mark.parametrize(
+    "key", ["max_conversations_listed", "max_conversation_messages"]
+)
+@pytest.mark.parametrize("value", [0, -1, 2.5, "40"])
+def test_a_non_positive_read_cap_is_rejected(config, key, value):
+    """A zero here is a sidebar that lists nothing and a conversation that opens blank,
+    which looks like data loss rather than a typo in config.yaml."""
+    config["chat"][key] = value
+    with pytest.raises(ValueError, match=key):
+        resolve_chat(config)
+
+
 # --- Rejections: guardrail ---------------------------------------------------------------
 
 

@@ -15,6 +15,7 @@ import copy
 import functools
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -871,6 +872,15 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
         resolve_chat(config)["max_converse_iterations"]
     )
     assert env["MAX_HISTORY_MESSAGES"] == str(resolve_chat(config)["max_history_messages"])
+    # The read endpoints' caps. Deliberately separate numbers from the one above: that is
+    # the window the MODEL is shown and is billed in tokens on every turn, these bound one
+    # DynamoDB query of already-stored items.
+    assert env["MAX_CONVERSATIONS_LISTED"] == str(
+        resolve_chat(config)["max_conversations_listed"]
+    )
+    assert env["MAX_CONVERSATION_MESSAGES"] == str(
+        resolve_chat(config)["max_conversation_messages"]
+    )
     assert env["CONVERSE_DEADLINE_SECONDS"] == str(
         resolve_chat(config)["converse_deadline_seconds"]
     )
@@ -1090,12 +1100,48 @@ def _logical_id(template: Template, type_name: str) -> str:
     return next(iter(found))
 
 
-def test_only_the_billable_route_exists_and_it_is_jwt_gated():
-    """POST /chat is the one route that spends Bedrock tokens, so it is the one that is
-    gated. An ungated route here would be an open paid endpoint."""
-    props = _resource(_template(), "AWS::ApiGatewayV2::Route")["Properties"]
-    assert props["RouteKey"] == "POST /chat"
-    assert props["AuthorizationType"] == "JWT"
+def test_the_api_serves_exactly_the_three_routes_the_handler_implements():
+    """NARROWED, not relaxed. This used to read "only the billable route exists"; the two
+    history reads (docs/accounts-and-storage.md, Storage access patterns) are additions to
+    that list, so the assertion becomes the exact set - which still fails on a fourth route
+    nobody meant to add, and additionally fails if one of these is dropped or renamed. The
+    strings are the route keys app/handler.lambda_handler dispatches on, so a rename on
+    either side breaks here rather than at runtime as a 404."""
+    routes = _template().find_resources("AWS::ApiGatewayV2::Route")
+    assert {route["Properties"]["RouteKey"] for route in routes.values()} == {
+        "POST /chat",
+        "GET /conversations",
+        "GET /conversations/{conversationId}",
+    }
+
+
+def test_every_route_is_jwt_gated():
+    """POST /chat is the route that spends Bedrock tokens, so an ungated one there would be
+    an open paid endpoint. The reads spend none - and are gated just as hard for a different
+    reason: the `sub` claim IS the DynamoDB partition key, so an ungated read would have
+    nobody to attribute and the handler's only alternative would be trusting a user id off
+    the wire. Asserted over ALL routes rather than an allowlist, so a route added later is
+    covered by this test on the day it is added."""
+    routes = _template().find_resources("AWS::ApiGatewayV2::Route")
+    assert routes, "the API has no routes at all"
+    for logical_id, route in routes.items():
+        assert route["Properties"]["AuthorizationType"] == "JWT", logical_id
+        assert route["Properties"].get("AuthorizerId"), logical_id
+
+
+def test_the_history_reads_are_served_by_the_chat_function():
+    """One function, three routes. A second Lambda would need its own copy of the identity
+    rule that every partition key comes from the JWT claim, and two copies of that rule is
+    one too many."""
+    template = _template()
+    integrations = template.find_resources("AWS::ApiGatewayV2::Integration")
+    assert len(integrations) == 1, (
+        "every route should share the one chat integration; a second one means a route "
+        "was pointed somewhere else"
+    )
+    integration_id = next(iter(integrations))
+    for route in template.find_resources("AWS::ApiGatewayV2::Route").values():
+        assert integration_id in json.dumps(route["Properties"]["Target"])
 
 
 def test_the_authorizer_is_native_and_reads_the_authorization_header():
@@ -1502,6 +1548,27 @@ def test_config_json_carries_deploy_time_tokens_not_hardcoded_values():
     assert "ChatHttpApi" in rendered, "the API endpoint must be a deploy-time token"
     assert "ChatUserPool" in rendered, "the pool + client ids must be deploy-time tokens"
     assert "AWS::Region" in rendered
+
+
+def test_config_json_names_the_history_endpoint_the_frontend_reads():
+    """The sidebar's conversation list comes from this URL, and the frontend refuses to
+    start without it (lib/runtimeConfig.ts checks every key). Stamped beside chatApiUrl
+    rather than derived from it in the browser: stripping "/chat" and re-appending would put
+    this stack's route names in a file this stack does not build.
+
+    Read from the STAGED FILE, not the template: Source.json_data writes the keys into the
+    asset and leaves only substitution markers behind in CloudFormation, so the template
+    knows the values are deploy-time tokens but not what they are called. The file is not
+    valid JSON at this stage either - every value is a `<<marker:...>>` placeholder that the
+    deployment substitutes - so the KEYS are read out of the text."""
+    staged = (_staged_asset_dir("SiteConfigDeployment") / "config.json").read_text()
+    assert set(re.findall(r'"([A-Za-z]+)":', staged)) == {
+        "chatApiUrl",
+        "conversationsApiUrl",
+        "userPoolId",
+        "userPoolClientId",
+        "region",
+    }, "these are exactly the keys frontend/src/lib/runtimeConfig.ts requires"
 
 
 def test_the_cloudfront_origin_joins_the_api_cors_allowlist_as_a_token():

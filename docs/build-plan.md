@@ -245,6 +245,36 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       defines, and every conversation created before a list endpoint would need a backfill.
       No read endpoints, so the display projection - stored cards with URLs already
       resolved - is written and not yet read.
+- [x] a student can see their own previous conversations and open one
+      (docs/accounts-and-storage.md, Storage access patterns). Third of the account slices,
+      and the first one a student can see. It OPENS BY FIXING WHAT THE LAST ONE LEFT: the
+      server had started minting and returning a `conversationId` and the frontend was still
+      posting its own transcript and no id, so every browser turn opened a fresh conversation
+      and the model saw an empty history - the server was authoritative and the client was
+      not talking to it. The client now sends back the id it was given and nothing else; the
+      `history` array and the `sessionId` are gone from the request body, and with them
+      `historyFromTurns`. TWO ENDPOINTS, both GET, both on the same Lambda and the same JWT
+      authorizer as /chat: `/conversations` lists the caller's headers newest-active-first,
+      `/conversations/{conversationId}` returns one conversation in the DISPLAY projection -
+      role, text, and the stored cards with their URLs already resolved, which is exactly
+      what the context read refuses to fetch. Two projections of the same stored turns, and
+      they are separate METHODS on the store rather than one method with a flag, so a caller
+      cannot hand the model a rendered card by passing the wrong argument. The reads are
+      gated even though they spend no Bedrock tokens, because the `sub` claim IS the
+      partition key: an ungated read has nobody to attribute, and the only alternative would
+      be a user id off the wire. A forged or foreign id is a 200 with an empty list, not a
+      404 (which would confirm to a prober which ids exist somewhere) and not a 403 (which
+      would imply an owner check that could be got wrong) - the partition it addresses is
+      the caller's own, so there is nothing to authorize. A malformed one is a 400, the same
+      validation POST /chat already applies, because the id goes straight into a sort-key
+      prefix. Both reads are STRONGLY CONSISTENT for the case the feature exists to serve: a
+      student sends a turn and reloads. On the client, `ChatSession` stops holding a
+      ChatResponse rebuilt from the turns on screen - a client-side store standing in for
+      the record, and a LOSSY one, since a response carries the prose of its last turn only,
+      so every earlier turn came back with the student's own question in place of the
+      answer. It holds turns fetched from the server, `undefined` until they are. The
+      sidebar's "Chat history is mocked for this preview" note is gone because it is no
+      longer true.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

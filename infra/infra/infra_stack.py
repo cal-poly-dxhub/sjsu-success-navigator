@@ -1139,6 +1139,11 @@ class NavigatorStack(Stack):
                 # and logged when reached (see resolve_chat).
                 "MAX_CONVERSE_ITERATIONS": str(chat_cfg["max_converse_iterations"]),
                 "MAX_HISTORY_MESSAGES": str(chat_cfg["max_history_messages"]),
+                # The read endpoints' caps (GET /conversations and one conversation). Not
+                # the same number as MAX_HISTORY_MESSAGES on purpose: that one is billed in
+                # tokens on every turn, these bound one DynamoDB query of stored items.
+                "MAX_CONVERSATIONS_LISTED": str(chat_cfg["max_conversations_listed"]),
+                "MAX_CONVERSATION_MESSAGES": str(chat_cfg["max_conversation_messages"]),
                 # The loop's WALL-CLOCK budget. The iteration cap bounds how many model
                 # calls happen, not how long they take, so without this a slow run is
                 # killed mid-Converse - billed, with no response reaching the student.
@@ -1445,6 +1450,32 @@ class NavigatorStack(Stack):
             authorizer=jwt_authorizer,
         )
 
+        # THE TWO READ ROUTES: a student's own conversation list, and one conversation for
+        # display (docs/accounts-and-storage.md, Storage access patterns). Same function,
+        # same authorizer, and the authorizer is not optional here even though these spend
+        # no Bedrock tokens: the `sub` claim IS the partition key, so an ungated read would
+        # not be a cheap route, it would be a route with nobody to attribute - and the
+        # handler's only alternative would be trusting a user id off the wire.
+        #
+        # Every route on this API is gated, which is what makes
+        # test_every_route_is_jwt_gated a one-line assertion over all of them rather than
+        # an allowlist somebody has to remember to extend.
+        http_api.add_routes(
+            path="/conversations",
+            methods=[apigwv2.HttpMethod.GET],
+            integration=chat_integration,
+            authorizer=jwt_authorizer,
+        )
+        http_api.add_routes(
+            # The braces are API Gateway's path-parameter syntax, and the name inside them
+            # is what arrives at the Lambda as pathParameters.conversationId - so this
+            # string and app/handler.get_conversation have to agree letter for letter.
+            path="/conversations/{conversationId}",
+            methods=[apigwv2.HttpMethod.GET],
+            integration=chat_integration,
+            authorizer=jwt_authorizer,
+        )
+
         # Throttling via the stage's DEFAULT route settings, which apply to every route on
         # the stage - /chat today and anything added later, which is the safer default for
         # a paid endpoint than an allowlist of routes somebody has to remember to extend.
@@ -1474,12 +1505,26 @@ class NavigatorStack(Stack):
         self._http_api = http_api
         chat_url = f"{http_api.api_endpoint}/chat"
         self._chat_url = chat_url
+        # The conversation READ endpoints' base. Stamped into config.json beside the chat
+        # URL rather than derived in the browser by string-surgery on it: the frontend
+        # would have to strip "/chat" and re-append, which is a rule about this stack's
+        # route names living in a file this stack does not build.
+        conversations_url = f"{http_api.api_endpoint}/conversations"
 
         CfnOutput(
             self,
             "ChatApiUrl",
             value=chat_url,
             description="HTTP API POST /chat endpoint (requires a Cognito access token).",
+        )
+        CfnOutput(
+            self,
+            "ConversationsApiUrl",
+            value=conversations_url,
+            description=(
+                "HTTP API GET /conversations, and /conversations/{id} under it. Lists only "
+                "the caller's own (requires a Cognito access token)."
+            ),
         )
         CfnOutput(
             self,
@@ -1734,6 +1779,11 @@ function handler(event) {
                     "config.json",
                     {
                         "chatApiUrl": chat_url,
+                        # The history reads. One base URL, not two: the single-conversation
+                        # route is this plus "/<id>", which is the one bit of URL assembly
+                        # the frontend does and the only alternative to a second key that
+                        # could drift from this one.
+                        "conversationsApiUrl": conversations_url,
                         # The frontend redirects with these. The WEB client, never the
                         # eval one: this file is world-readable by design, and the eval
                         # client id in it would publish a password-auth endpoint.

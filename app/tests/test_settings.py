@@ -45,6 +45,8 @@ def test_behavioural_knobs_default_to_camps_values(monkeypatch):
         "MAX_QUERY_CHARS",
         "MAX_CONVERSE_ITERATIONS",
         "MAX_HISTORY_MESSAGES",
+        "MAX_CONVERSATIONS_LISTED",
+        "MAX_CONVERSATION_MESSAGES",
         "CONVERSE_DEADLINE_SECONDS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -57,6 +59,10 @@ def test_behavioural_knobs_default_to_camps_values(monkeypatch):
     assert settings.max_query_chars == 2000
     assert settings.max_converse_iterations == 6
     assert settings.max_history_messages == 12
+    # The read endpoints' caps, which are NOT the model's window: they bound a browser read
+    # of stored items, so they are larger and cost one query rather than tokens per turn.
+    assert settings.max_conversations_listed == 40
+    assert settings.max_conversation_messages == 60
     assert settings.converse_deadline_seconds == 22
 
 

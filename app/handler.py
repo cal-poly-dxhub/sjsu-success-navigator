@@ -3,7 +3,19 @@
 Camp's main.py and its routers are replaced by this file; the service modules alongside it
 (settings, models, prompts, tools, retrieve, cards, safety, orchestrator) move in as files.
 
-Request order:
+THREE ROUTES, one function (see lambda_handler):
+
+    POST /chat                              one turn
+    GET  /conversations                     the caller's own conversations
+    GET  /conversations/{conversationId}    one conversation, for display
+
+The two reads are the same identity story as the write and share it literally: `sub` comes
+out of the JWT the authorizer validated, the DynamoDB partition is built from it, and a
+conversation id belonging to somebody else addresses nothing inside the caller's partition.
+Each user browsing their OWN history is the whole feature; there is no staff view here, and
+no request field that could ask for one.
+
+Request order on POST /chat:
 
   1. validate    - parse the body, reject a missing or oversized query as a clean 400 before
                    anything is billed.
@@ -29,6 +41,7 @@ camelCase wire contract the frontend expects, produced by the pydantic aliases i
 import base64
 import json
 import logging
+import re
 import time
 
 import boto3
@@ -36,7 +49,16 @@ from botocore.config import Config
 
 from cards import join_prose
 from history import ConversationStore, new_conversation_id
-from models import ChatRequest, ChatResponse
+from models import (
+    CONVERSATION_ID_PATTERN,
+    ChatRequest,
+    ChatResponse,
+    ConversationListResponse,
+    ConversationMessage,
+    ConversationResponse,
+    ConversationSummary,
+    StatementCard,
+)
 from orchestrator import run_chat
 from settings import load_settings
 
@@ -270,7 +292,7 @@ def run_turn(request, user_id, deadline):
     return response
 
 
-def lambda_handler(event, context):
+def post_chat(event, context):
     """POST /chat, in the order the module docstring fixes: validate, identity, guardrail,
     turn. Safety handoffs come out of the loop - the model triages and emits keys, the
     server resolves them into the fixed panel (app/safety.py)."""
@@ -335,3 +357,144 @@ def lambda_handler(event, context):
         response.safety_handoff is not None,
     )
     return _chat_response(response)
+
+
+def _display_cards(stored):
+    """Stored cards, re-validated through the live card contract.
+
+    A card that no longer matches is DROPPED rather than failing the read, and the reason is
+    the same as history.py's unreadable-item skip: the only way one gets here is a shape a
+    previous version of this code wrote, and refusing to open a conversation because one old
+    card lost a field would be a worse outcome than opening it without that card. The
+    WARNING is the alarm.
+    """
+    cards = []
+    for raw in stored or []:
+        try:
+            cards.append(StatementCard.model_validate(raw))
+        except Exception:
+            logger.warning("Skipping a stored card that no longer fits the card contract")
+    return cards
+
+
+def get_conversations(event):
+    """GET /conversations - the caller's own conversations, most recently active first.
+
+    NO REQUEST BODY AND NO PARAMETERS, deliberately: there is nothing to ask for. The only
+    input is the JWT `sub`, so this route cannot be pointed at another student even by a
+    caller who wants to.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A /conversations request carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    try:
+        summaries = STORE.list_conversations(
+            user_id=user_id, limit=SETTINGS.max_conversations_listed
+        )
+    except Exception:
+        # A read failure IS the whole response here - unlike a turn, where the answer
+        # matters more than the record - so it is a 502 rather than a silent empty list. An
+        # empty list would say "you have no conversations", which is a different and worse
+        # lie than "this did not load".
+        logger.exception("Could not list conversations")
+        return _response(502, {"error": "Could not load your conversations."})
+
+    payload = ConversationListResponse(
+        conversations=[
+            ConversationSummary(
+                conversationId=summary.conversation_id,
+                title=summary.title,
+                createdAt=summary.created_at,
+                lastActivityAt=summary.last_activity_at,
+                messageCount=summary.message_count,
+            )
+            for summary in summaries
+        ]
+    )
+    return _response(200, payload.model_dump(by_alias=True))
+
+
+def get_conversation(event):
+    """GET /conversations/{conversationId} - one conversation, in the DISPLAY projection.
+
+    The id is validated against the same pattern POST /chat validates, for the same reason:
+    it goes into a sort-key prefix, so an id carrying a `#` would compose a key prefix the
+    server did not intend. That is a 400 rather than a security boundary - the boundary is
+    the partition key, which comes from the JWT.
+
+    A WELL-FORMED ID THAT IS NOT THE CALLER'S RETURNS 200 WITH AN EMPTY LIST. Not a 404,
+    which would confirm to a prober which ids exist somewhere, and not a 403, which would
+    imply this server checked an owner and could have got that check wrong. It reads empty
+    because the only partition it can address is the caller's own.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A /conversations request carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
+    if not isinstance(conversation_id, str) or not re.match(
+        CONVERSATION_ID_PATTERN, conversation_id
+    ):
+        return _response(400, {"error": "Malformed conversation id."})
+
+    try:
+        messages = STORE.conversation_messages(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=SETTINGS.max_conversation_messages,
+        )
+    except Exception:
+        logger.exception("Could not read a conversation")
+        return _response(502, {"error": "Could not load that conversation."})
+
+    payload = ConversationResponse(
+        conversationId=conversation_id,
+        messages=[
+            ConversationMessage(
+                role=message.role,
+                text=message.text,
+                cards=_display_cards(message.cards),
+                createdAt=message.created_at,
+            )
+            for message in messages
+        ],
+    )
+    return _response(200, payload.model_dump(by_alias=True))
+
+
+# The routes this function serves, spelled as HTTP API payload-2.0 route keys. The stack
+# creates exactly these three (infra/infra_stack.py, section 5) and points all of them at
+# this function.
+_CHAT_ROUTE = "POST /chat"
+_CONVERSATIONS_ROUTE = "GET /conversations"
+_CONVERSATION_ROUTE = "GET /conversations/{conversationId}"
+
+
+def lambda_handler(event, context):
+    """Dispatch on the route key API Gateway puts in the event.
+
+    An UNKNOWN route key is a 404 rather than falling through to the chat turn. The stack
+    only creates the three routes above, so an unknown one means somebody added a fourth and
+    pointed it here - and having that quietly run a billable Bedrock turn on, say, a GET is
+    the kind of default that is discovered from an invoice.
+
+    A MISSING route key runs the chat turn: that is a direct invoke (the console, a test
+    harness), which is what this function did before it had more than one route.
+    """
+    route = (event or {}).get("routeKey")
+    if not isinstance(route, str) or not route.strip():
+        return post_chat(event, context)
+
+    route = route.strip()
+    if route == _CHAT_ROUTE:
+        return post_chat(event, context)
+    if route == _CONVERSATIONS_ROUTE:
+        return get_conversations(event)
+    if route == _CONVERSATION_ROUTE:
+        return get_conversation(event)
+
+    logger.error("No handler for route %r", route)
+    return _response(404, {"error": "Not found."})

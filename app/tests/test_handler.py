@@ -13,7 +13,7 @@ import json
 import pytest
 
 import handler
-from conftest import TEST_SUB, chat_event
+from conftest import TEST_SUB, chat_event, conversation_event, conversations_event
 from models import ChatResponse
 
 
@@ -402,3 +402,184 @@ def test_a_storage_failure_does_not_deny_the_student_an_answer(
     assert response["statusCode"] == 200
     assert _body(response)["conversationalText"]
     assert "DynamoDB is unavailable" in caplog.text
+
+
+# --- the read endpoints ------------------------------------------------------------------
+#
+# Two projections of the same stored turns (docs/accounts-and-storage.md, Turn lifecycle):
+# the model gets original text, the browser gets the stored cards with their URLs already
+# resolved. Every assertion below is about the display half, and about the fact that neither
+# route has any way to name a user.
+
+
+def _card(card_id="c1", title="Peer Connections", url="https://sjsu.edu/peer"):
+    return {
+        "id": card_id,
+        "title": title,
+        "body": "Drop-in tutoring, no appointment.",
+        "sourceUrl": url,
+        "actions": [{"type": "source", "label": "Open page"}],
+    }
+
+
+def test_the_conversation_list_is_read_for_the_jwts_user_and_nobody_else(store):
+    """The one assertion that matters on this route: the user id handed to the store is the
+    claim, and there is no request field that could have supplied a different one."""
+    from conftest import summary
+
+    store.conversations = [summary("01J0000000000000000000000A", title="Tutoring")]
+
+    response = handler.lambda_handler(conversations_event(), None)
+
+    assert response["statusCode"] == 200
+    assert store.calls[0][0] == "list"
+    assert store.calls[0][1]["user_id"] == TEST_SUB
+    assert _body(response)["conversations"][0] == {
+        "conversationId": "01J0000000000000000000000A",
+        "title": "Tutoring",
+        "createdAt": "2026-08-10T00:00:00Z",
+        "lastActivityAt": "2026-08-11T00:00:00Z",
+        "messageCount": 4,
+    }
+
+
+def test_the_conversation_list_is_capped_by_settings(store):
+    handler.lambda_handler(conversations_event(), None)
+    assert store.calls[0][1]["limit"] == handler.SETTINGS.max_conversations_listed
+
+
+def test_listing_without_a_jwt_sub_is_refused(store):
+    """Failing closed rather than listing anonymously: the partition key IS the claim, so
+    without one there is no list to return and nobody to return it to."""
+    response = handler.lambda_handler(conversations_event(sub=None), None)
+    assert response["statusCode"] == 401
+    assert store.calls == []
+
+
+def test_a_failed_list_says_so_rather_than_returning_no_conversations(store, caplog):
+    """An empty list would tell the student they have no history, which is a worse and
+    less recoverable lie than 'this did not load'."""
+    store.fail_on = {"list"}
+
+    with caplog.at_level("ERROR"):
+        response = handler.lambda_handler(conversations_event(), None)
+
+    assert response["statusCode"] == 502
+    assert "DynamoDB is unavailable" in caplog.text
+
+
+def test_a_conversation_reads_back_its_messages_with_resolved_cards(store):
+    """The DISPLAY projection, whole: role, text, and the stored cards - which is exactly
+    what the context read must never return."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed("user", "where is tutoring?"),
+        displayed("assistant", "Peer Connections runs drop-in tutoring.", cards=[_card()]),
+    ]
+
+    response = handler.lambda_handler(
+        conversation_event("01J0000000000000000000000A"), None
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["conversationId"] == "01J0000000000000000000000A"
+    assert [message["role"] for message in body["messages"]] == ["user", "assistant"]
+    assert body["messages"][1]["cards"][0]["sourceUrl"] == "https://sjsu.edu/peer"
+    assert body["messages"][0]["cards"] == []
+
+
+def test_the_display_read_asks_for_the_jwts_partition_and_the_requested_conversation(store):
+    handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None)
+
+    assert store.calls[0][0] == "display"
+    assert store.calls[0][1]["user_id"] == TEST_SUB
+    assert store.calls[0][1]["conversation_id"] == "01J0000000000000000000000A"
+    assert store.calls[0][1]["limit"] == handler.SETTINGS.max_conversation_messages
+
+
+def test_a_forged_conversation_id_reads_empty_rather_than_erroring(store):
+    """The doc's stated behaviour, and it costs no check to get right: the partition comes
+    from the JWT, so a well-formed id belonging to somebody else addresses a prefix that
+    does not exist inside the caller's own partition."""
+    store.messages = []
+
+    response = handler.lambda_handler(
+        conversation_event("01J0000000000000000000000B"), None
+    )
+
+    assert response["statusCode"] == 200
+    assert _body(response)["messages"] == []
+
+
+def test_a_malformed_conversation_id_is_a_400_and_never_reaches_the_table(store):
+    """Same validation as POST /chat, for the same reason: the id goes straight into a sort
+    key, so one carrying a `#` would compose a key prefix the server did not intend."""
+    for bad in ["MSG#01J0000000000000000000000A", "short", "../../etc", ""]:
+        response = handler.lambda_handler(conversation_event(bad), None)
+        assert response["statusCode"] == 400, bad
+    assert store.calls == []
+
+
+def test_reading_a_conversation_without_a_jwt_sub_is_refused(store):
+    response = handler.lambda_handler(
+        conversation_event("01J0000000000000000000000A", sub=None), None
+    )
+    assert response["statusCode"] == 401
+    assert store.calls == []
+
+
+def test_a_stored_card_that_no_longer_fits_the_contract_is_dropped_not_fatal(store, caplog):
+    """A conversation opens without one stale card rather than not opening at all - the
+    same posture as history.py's unreadable-item skip, and the WARNING is the alarm."""
+    from conftest import displayed
+
+    broken = {"id": "c2", "title": "No url or actions here"}
+    store.messages = [displayed("assistant", "Here you go.", cards=[broken, _card()])]
+
+    with caplog.at_level("WARNING"):
+        response = handler.lambda_handler(
+            conversation_event("01J0000000000000000000000A"), None
+        )
+
+    assert response["statusCode"] == 200
+    assert [card["id"] for card in _body(response)["messages"][0]["cards"]] == ["c1"]
+    assert "card contract" in caplog.text
+
+
+def test_a_failed_conversation_read_is_a_502(store, caplog):
+    store.fail_on = {"display"}
+
+    with caplog.at_level("ERROR"):
+        response = handler.lambda_handler(
+            conversation_event("01J0000000000000000000000A"), None
+        )
+
+    assert response["statusCode"] == 502
+
+
+# --- routing -----------------------------------------------------------------------------
+
+
+def test_an_unknown_route_is_a_404_and_never_runs_a_billable_turn(bedrock, store):
+    """A fourth route pointed at this function without a handler must not quietly fall
+    through to the chat turn - that default is the kind discovered from an invoice."""
+    event = chat_event({"query": "hello"}, route="POST /something-new")
+
+    response = handler.lambda_handler(event, None)
+
+    assert response["statusCode"] == 404
+    assert bedrock.calls == []
+    assert store.calls == []
+
+
+def test_an_event_with_no_route_key_still_runs_the_chat_turn(bedrock, store, loop):
+    """A direct invoke - the console, a harness - which is what this function did before it
+    had more than one route."""
+    event = chat_event({"query": "hello"}, route=None)
+
+    response = handler.lambda_handler(event, None)
+
+    assert response["statusCode"] == 200
+    assert store.call_names[0] == "append"

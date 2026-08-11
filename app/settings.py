@@ -82,6 +82,13 @@ class Settings:
     # exchanges. It used to trim a client-supplied transcript; the transcript is the
     # server's now, so this bounds a read rather than distrusting a payload.
     max_history_messages: int = 12
+    # The two READ endpoints' caps, and deliberately not max_history_messages: that one is
+    # the window the MODEL is shown and every message in it is paid for in tokens on every
+    # turn, so it is small on purpose. These bound a browser read of stored items, where the
+    # cost is one query and the wrong number is a student's own history truncated in front
+    # of them.
+    max_conversations_listed: int = 40
+    max_conversation_messages: int = 60
     # Wall-clock budget for the whole Converse loop. Defaults to 22 to match config.yaml;
     # the handler narrows it further using Lambda's own remaining time.
     converse_deadline_seconds: int = 22
@@ -117,6 +124,8 @@ def load_settings() -> Settings:
         max_query_chars=_int("MAX_QUERY_CHARS", 2000),
         max_converse_iterations=_int("MAX_CONVERSE_ITERATIONS", 6),
         max_history_messages=_int("MAX_HISTORY_MESSAGES", 12),
+        max_conversations_listed=_int("MAX_CONVERSATIONS_LISTED", 40),
+        max_conversation_messages=_int("MAX_CONVERSATION_MESSAGES", 60),
         converse_deadline_seconds=_int("CONVERSE_DEADLINE_SECONDS", 22),
         card_max_cards=_int("CARD_MAX_CARDS", 4),
         card_max_retrieval_results=_int("CARD_MAX_RETRIEVAL_RESULTS", 6),

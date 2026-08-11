@@ -8,6 +8,12 @@ type SideNavProps = {
 	activeChatId: string;
 	open: boolean;
 	busy?: boolean;
+	/** True while the conversation list itself is being fetched (page load). */
+	historyLoading?: boolean;
+	/** The chat whose stored messages are being fetched, if any. */
+	openingChatId?: string | null;
+	/** A failed list or open, said plainly rather than as an empty sidebar. */
+	historyError?: string | null;
 	userEmail?: string;
 	onLogout?: () => void;
 	onClose: () => void;
@@ -19,11 +25,19 @@ function NavContent({
 	chats,
 	activeChatId,
 	busy = false,
+	historyLoading = false,
+	openingChatId = null,
+	historyError = null,
 	userEmail,
 	onLogout,
 	onNewChat,
 	onSelectChat,
-}: Omit<SideNavProps, 'open' | 'onClose'>) {	return (
+}: Omit<SideNavProps, 'open' | 'onClose'>) {
+	// A chat with no conversation id is one started in this tab that has not been sent yet,
+	// so it is not "history" - it is the only thing in the list on a first visit, and saying
+	// "no past chats" beneath it would be wrong the moment the student presses send.
+	const stored = chats.filter((chat) => chat.conversationId);
+	return (
 		<>
 			<div className="side-nav__header">
 				<div className="side-nav__brand" aria-label="Student Success Navigator">
@@ -50,21 +64,42 @@ function NavContent({
 				<ul className="side-nav__list">
 					{chats.map((chat) => {
 						const active = chat.id === activeChatId;
+						const opening = chat.id === openingChatId;
 						return (
 							<li key={chat.id}>
 								<button
 									type="button"
 									className={`side-nav__chat${active ? ' side-nav__chat--active' : ''}`}
 									onClick={() => onSelectChat(chat.id)}
-									disabled={busy}
+									disabled={busy || openingChatId !== null}
 									aria-current={active ? 'page' : undefined}
+									aria-busy={opening ? 'true' : undefined}
 								>
 									<span>{chat.title}</span>
+									{opening ? (
+										<span className="side-nav__chat-status">Opening…</span>
+									) : null}
 								</button>
 							</li>
 						);
 					})}
 				</ul>
+
+				{historyLoading ? (
+					<p className="side-nav__history-note">Loading your chats…</p>
+				) : null}
+
+				{!historyLoading && !historyError && stored.length === 0 ? (
+					<p className="side-nav__history-note">
+						Chats you send are saved here, and stay on your account.
+					</p>
+				) : null}
+
+				{historyError ? (
+					<p className="side-nav__history-note side-nav__history-note--error" role="status">
+						{historyError}
+					</p>
+				) : null}
 			</nav>
 
 			{userEmail ? (
@@ -86,7 +121,7 @@ function NavContent({
 				</div>
 			) : null}
 
-			<p className="side-nav__mock-note">Chat history is mocked for this preview.</p>		</>
+		</>
 	);
 }
 
