@@ -178,6 +178,23 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       Dedup precedence is unchanged, so a band block the body already carries stays in
       the body. Every fingerprint changes; the next deploy re-uploads and re-ingests
       the corpus, the same deliberate move as the extraction fix.
+- [x] the chat history table exists before anything writes to it (docs/accounts-and-storage.md,
+      Storage). First of five slices building per-user accounts and chat history, and
+      INFRASTRUCTURE ONLY on purpose: one DynamoDB table (pk `USER#<sub>`, sk `CONV#`/`MSG#`
+      prefixed), on-demand, PITR on, no secondary index, plus the chat Lambda's grant and the
+      table name in its environment. No application code reads or writes it yet, so the slice
+      that does is a pure app diff with no CDK tangled into it. TTL is enabled on `expiresAt`
+      and NOTHING WRITES THAT ATTRIBUTE: the retention window for identifiable transcripts is
+      an open question with the university (below), items without the attribute never expire,
+      so enabling it now costs nothing and avoids a table-level change later. The grant is
+      hand-rolled rather than `grant_read_write_data` for one action - that helper's read set
+      includes `dynamodb:Scan`, the only operation that takes no partition key, which is the
+      hole in the isolation the single-table design was chosen for. RETAIN on destroy, the one
+      place this stack breaks its own one-click-uninstall rule: the table is the only copy of
+      what students said, and the cost is a fixed global name that collides loudly on a
+      reinstall. Two standing test assertions were NARROWED, not dropped - "no DynamoDB table
+      at all" became "exactly one, and it is this one", and the chat role's blanket "no
+      dynamodb:" ban became a scoped-to-this-ARN, no-Scan, no-table-management assertion.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a
@@ -202,6 +219,13 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       cannot rise). If the agent loop does not fit in 29s the fix is
       architectural - streaming, or an async job with a poll - not a bigger
       number. Unmeasured without an account.
+- [ ] retention window and read access for identifiable transcripts containing crisis
+      disclosures (docs/accounts-and-storage.md, Open). A policy question for SJSU, not a
+      technical choice. The table now exists WITHOUT an answer, which the doc said should
+      not happen - the deliberate reading is that TTL enabled on an attribute nothing writes
+      keeps every option open at zero cost, so the table's existence does not pre-empt the
+      policy. What it does pre-empt is nothing: no retention behaviour is configured, and
+      turning one on later is writing `expiresAt`, not a migration.
 - [ ] content-hash stability is unmeasured on sjsu.edu: gav's corpus scraped
       byte-identical twice, ours has never been scraped at all (needs account).
       A per-render nonce or a rotating banner inside an extracted body would

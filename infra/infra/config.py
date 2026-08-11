@@ -121,6 +121,18 @@ _CARD_TITLE_MIN_CHARS = 20
 _CARD_DESC_MIN_CHARS = 100
 _CARD_FOLLOWUP_MIN_CHARS = 20
 
+# DynamoDB table names: 3-255 characters of letters, digits, '_', '-' and '.' (verified
+# against the CreateTable API reference, 2026-08-11). Wider than the S3 Vectors charset -
+# uppercase and underscores are both legal here - which is exactly why it gets its own
+# pattern rather than borrowing one of the two above.
+#
+# A bad name is a deploy failure, not a synth failure, and the table it fails on is the one
+# holding conversation history: CloudFormation REPLACES a table to change its name, so a
+# rename discovered after the first deploy takes the history with it.
+_DYNAMODB_TABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+_DYNAMODB_TABLE_NAME_MIN = 3
+_DYNAMODB_TABLE_NAME_MAX = 255
+
 # Geographic prefixes that mark a model id as a CROSS-REGION INFERENCE PROFILE rather than a
 # bare on-demand foundation model. The two need different IAM shapes (see the chat Lambda's
 # role in infra_stack.py), so the distinction is resolved here, once.
@@ -656,6 +668,41 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def resolve_chat_history(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The `chat_history` block: the name of the one conversation-history table.
+
+    ONE table for everything - conversation headers and messages both, partitioned on the
+    Cognito `sub` and separated by a `CONV#`/`MSG#` sort-key prefix (docs/accounts-and-storage.md,
+    Storage). Partitioning on the user is a SECURITY property rather than a modelling
+    convenience: the Lambda derives the partition key from the JWT, so there is no filter
+    that can be forgotten.
+
+    The name is the only value that comes from config. The key schema, the billing mode and
+    the TTL attribute are properties the application code must agree with byte for byte, and
+    none of them can be changed on a live table without either a replacement (key schema) or
+    a disable/enable cycle (TTL) - so they are stated once in the stack, where the comment
+    explaining each of them can sit beside it, rather than being knobs that read as tunable.
+
+    Validated here rather than left to the deploy for the usual reason: this is an L1-shaped
+    property that CloudFormation checks on CreateTable, and a rejected CreateTable is a
+    failed deploy partway through a stack update.
+    """
+    history_cfg = _require_mapping(config, "chat_history")
+    table_name = _non_empty_str(history_cfg, "chat_history", "table_name")
+    if not (_DYNAMODB_TABLE_NAME_MIN <= len(table_name) <= _DYNAMODB_TABLE_NAME_MAX):
+        raise ValueError(
+            f"chat_history.table_name must be {_DYNAMODB_TABLE_NAME_MIN}-"
+            f"{_DYNAMODB_TABLE_NAME_MAX} characters (got {len(table_name)}: {table_name!r})."
+        )
+    if not _DYNAMODB_TABLE_NAME_RE.match(table_name):
+        raise ValueError(
+            f"chat_history.table_name is not a valid DynamoDB table name: {table_name!r}. "
+            "Allowed: letters, digits, '_', '-' and '.'. DynamoDB rejects anything else at "
+            "CreateTable, which fails the deploy rather than the synth."
+        )
+    return {"table_name": table_name}
+
+
 def resolve_cards(config: Dict[str, Any]) -> Dict[str, Any]:
     """The `cards` block: the model-emitted card contract's length and count caps.
 
@@ -762,6 +809,7 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_retrieval(config)
     resolve_request(config)
     resolve_chat(config)
+    resolve_chat_history(config)
     resolve_cards(config)
 
 

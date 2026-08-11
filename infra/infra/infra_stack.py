@@ -14,6 +14,12 @@ a copy + rename, not a re-architecture):
   6. Site bucket + CloudFront (OAC) + Astro deploy
      + config.json stamping                           ("pull gav frontend s3 + cloudfront")
 
+One section is NOT in that list and is deliberately unnumbered: the chat history table,
+which sits just before section 4 because the chat Lambda's role and environment reference
+it. It is not a gav pull - it is the first slice of per-user accounts and chat history
+(docs/accounts-and-storage.md) - so numbering it would put it in a sequence that means
+"gav's section order", which it has no place in.
+
 All changeable knobs come from the repo-root config.yaml (see infra/config.py), which
 also validates the file at synth - the L1 Cfn* constructs used below do not check any
 property constraints themselves.
@@ -43,6 +49,7 @@ from aws_cdk import (
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_cognito as cognito,
+    aws_dynamodb as dynamodb,
     aws_events as events,
     aws_events_targets as events_targets,
     aws_iam as iam,
@@ -59,6 +66,7 @@ from infra.config import (
     CHAT_LAMBDA_TIMEOUT_SECONDS,
     resolve_cards,
     resolve_chat,
+    resolve_chat_history,
     resolve_chunking,
     resolve_data_source_name,
     resolve_generation,
@@ -285,6 +293,7 @@ class NavigatorStack(Stack):
         retrieval_cfg = resolve_retrieval(config)
         request_cfg = resolve_request(config)
         chat_cfg = resolve_chat(config)
+        chat_history_cfg = resolve_chat_history(config)
         cards_cfg = resolve_cards(config)
         cors_allow_origins = resolve_cors_allow_origins(config)
 
@@ -779,6 +788,81 @@ class NavigatorStack(Stack):
             description=f"input config-{_config_hash(guardrail_def)}",
         )
 
+        # --- Chat history: ONE DynamoDB table, partitioned on the user -----------
+        #
+        # The first slice of per-user accounts and chat history (docs/accounts-and-storage.md,
+        # Storage). INFRASTRUCTURE ONLY: nothing reads or writes this table yet. It lands
+        # first precisely so the slice that does is pure application code, with no CDK diff
+        # tangled into it - and so the shape below is argued once, here, rather than being
+        # decided in passing by whoever writes the first PutItem.
+        #
+        # ONE TABLE for both item kinds, distinguished by a sort-key prefix:
+        #   conversation header   pk=USER#<sub>   sk=CONV#<convId>
+        #   message               pk=USER#<sub>   sk=MSG#<convId>#<ulid>
+        # so listing a user's conversations is begins_with('CONV#') and loading one in order
+        # is begins_with('MSG#<convId>#'). Both are a single Query on one partition.
+        #
+        # PARTITIONING ON THE USER IS A SECURITY PROPERTY, not a modelling convenience. The
+        # partition key is derived from the JWT `sub` in the Lambda, so a request cannot
+        # address another student's data even with a forged convId - there is no tenant
+        # filter that can be forgotten, because there is no filter.
+        #
+        # The attribute names `pk`/`sk` are generic ON PURPOSE. Both item kinds share them
+        # and neither is "a user id" or "a conversation id" - the sort key is a compound
+        # prefix in both cases - so naming them after either would be wrong for the other.
+        # They are IMMUTABLE: changing a key attribute replaces the table, taking the
+        # history with it, which is why they are spelled here beside this comment rather
+        # than exposed in config.yaml as if they were tunable.
+        #
+        # NO SECONDARY INDEX. Every access pattern in the doc is served by the primary key;
+        # a GSI for cross-user time queries is purely additive and nobody has asked for one.
+        # Adding one later costs a backfill, not a migration.
+        chat_history_table = dynamodb.Table(
+            self,
+            "ChatHistoryTable",
+            table_name=chat_history_cfg["table_name"],
+            partition_key=dynamodb.Attribute(
+                name="pk", type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            # ON-DEMAND. Pilot traffic is unknown and bursty - a demo to the sponsors is a
+            # spike against an otherwise idle table - and provisioned capacity would mean
+            # either paying for a peak that mostly does not happen or throttling the one
+            # session anybody is watching. Billing mode is one of the few properties here
+            # that CAN be changed on a live table, so this is a starting point rather than
+            # a commitment.
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            # PITR: 35 days of second-granularity restore. Cheap insurance on the only copy
+            # of a student's transcript, and the failure it covers is not hardware - it is a
+            # bad deploy of the application slice that comes next writing or deleting the
+            # wrong items under the right keys, which no backup-on-a-schedule catches in
+            # time.
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            # TTL ENABLED NOW, ON AN ATTRIBUTE NOTHING WRITES. The retention window for
+            # identifiable transcripts - some of which will carry crisis disclosures - is an
+            # open policy question with the university (docs/accounts-and-storage.md, Open),
+            # and this stack does not get to answer it. Items with no `expiresAt` NEVER
+            # expire, so enabling it costs exactly nothing today; enabling it later is a
+            # table-level change with a disable/enable cycle behind it. `expiresAt` is epoch
+            # SECONDS when it is eventually written, because that is the only format TTL
+            # reads - every other timestamp in these items is an ISO 8601 UTC string, so the
+            # one that is not is the one worth naming here.
+            time_to_live_attribute="expiresAt",
+            # RETAIN, and the one place this stack breaks its own "one-click install implies
+            # one-click uninstall" rule. Everything else here is reproducible from source: a
+            # destroyed bucket re-fills from the next scrape, a destroyed KB re-ingests. This
+            # table is the ONLY copy of what students actually said, so a `cdk destroy` that
+            # silently took it would be unrecoverable in a way nothing else in the stack is.
+            #
+            # THE COST, stated rather than discovered: the table name is a fixed global name,
+            # so destroy-then-redeploy fails on CreateTable until the leftover is renamed in
+            # config.yaml, imported, or deleted by hand. A loud collision is the better half
+            # of this trade.
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
         # --- 4. Chat Lambda: bare handler + role + deps layer --------------------
         #
         # The query path: one Lambda running the deterministic safety intercept, the guardrail
@@ -863,6 +947,53 @@ class NavigatorStack(Stack):
             iam.PolicyStatement(
                 actions=["bedrock:ApplyGuardrail"],
                 resources=[input_guardrail.attr_guardrail_arn],
+            )
+        )
+        # Read and write the conversation history. NOTHING USES THIS YET - the table and its
+        # grant land ahead of the application slice on purpose (see the section above).
+        #
+        # Read AND write, because an ordinary turn is both: the server writes the student's
+        # message before the model call, queries the last N messages back for context, then
+        # writes the assistant's reply. The counter on the header is an atomic ADD, which is
+        # an UpdateItem, so read-only plus PutItem would not cover it either.
+        #
+        # SPELLED OUT RATHER THAN grant_read_write_data, for ONE action: that helper's read
+        # set includes dynamodb:Scan, and Scan is the single operation that does not take a
+        # partition key. The entire isolation story for this table is that the Lambda derives
+        # the partition key from the JWT `sub`, so a request cannot name another student's
+        # data - and a Scan grant is precisely the hole in that, reading every partition at
+        # once. Nothing in the access patterns (docs/accounts-and-storage.md) needs it, so a
+        # handler bug that reaches for it should fail with AccessDenied rather than return
+        # somebody else's transcript. The helper's stream actions (GetRecords,
+        # GetShardIterator) go for a duller reason: this table has no stream.
+        #
+        # The list below IS the doc's access-pattern table, plus DescribeTable (metadata
+        # only, no item data - boto3's resource API fetches it lazily). Adding one later is a
+        # one-line change here, which is the cost of not granting a category by default.
+        #
+        # Scoped to THIS table's ARN. No `/index/*` companion because there is no secondary
+        # index in v1; adding a GSI means adding its ARN here, and that being a visible edit
+        # is the point.
+        chat_lambda_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    # List a user's conversations; load one conversation in order.
+                    "dynamodb:Query",
+                    # Read one conversation header.
+                    "dynamodb:GetItem",
+                    # Append a turn; mint a conversation header.
+                    "dynamodb:PutItem",
+                    # The atomic ADD on the header's messageCount.
+                    "dynamodb:UpdateItem",
+                    # Delete everything for one user, item by item and in batches.
+                    "dynamodb:DeleteItem",
+                    "dynamodb:BatchWriteItem",
+                    # Mint-if-absent, so two concurrent first turns cannot both create the
+                    # same header.
+                    "dynamodb:ConditionCheckItem",
+                    "dynamodb:DescribeTable",
+                ],
+                resources=[chat_history_table.table_arn],
             )
         )
 
@@ -1016,10 +1147,19 @@ class NavigatorStack(Stack):
                 # Converse, so there is no trace to configure.
                 "INPUT_GUARDRAIL_ID": input_guardrail.attr_guardrail_id,
                 "INPUT_GUARDRAIL_VERSION": input_guardrail_version.attr_version,
+                # The conversation history table. Read by no code yet - it arrives with the
+                # table so the application slice is pure application code. By REFERENCE, not
+                # as the literal from config.yaml: a copy here would be a second place the
+                # name is spelled, and the two would drift the moment either changed.
+                "CHAT_HISTORY_TABLE_NAME": chat_history_table.table_name,
             },
         )
         # The function retrieves from the KB at runtime, so it must not exist before the KB.
         chat_lambda.node.add_dependency(knowledge_base)
+        # Same for the history table it reads and writes. The env var above is already a Ref,
+        # so CloudFormation would order these anyway; stated explicitly to match the KB edge
+        # rather than relying on a reference that a later refactor could turn into a literal.
+        chat_lambda.node.add_dependency(chat_history_table)
         # Held for bullet 5, which routes the HTTP API at it.
         self._chat_lambda = chat_lambda
 
