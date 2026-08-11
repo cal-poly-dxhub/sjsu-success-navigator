@@ -123,8 +123,11 @@ chat:
   # through to its non-agentic fallback silently, so a request that spent six model calls
   # looked identical to one that answered on the first.
   max_converse_iterations: 6
-  # Conversation turns kept from a request, trimmed SERVER-SIDE (camp's value). The client
-  # is never trusted to cap its own history - that is a paid-token control.
+  # How many previous MESSAGES a turn reads back out of the history table - the Limit on
+  # the one descending query, and the window the model is shown (camp's value). Messages,
+  # not turns: 12 is six exchanges. It used to trim a transcript the CLIENT posted; the
+  # transcript is the server's now (docs/accounts-and-storage.md, Turn lifecycle), so this
+  # bounds a read rather than distrusting a payload. Still a paid-token control either way.
   max_history_messages: 12
   # WALL-CLOCK budget for the whole Converse loop, in seconds. The iteration cap alone
   # does not bound time: six iterations of a slow model, or one retrieval that stalls,

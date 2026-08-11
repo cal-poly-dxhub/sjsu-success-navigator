@@ -65,6 +65,10 @@ class Settings:
     bedrock_region: str
     input_guardrail_id: str
     input_guardrail_version: str
+    # The conversation-history table. Identity, so no default: a chat Lambda that cannot
+    # name its table would otherwise write a student's transcript into whatever a typo
+    # pointed at, or nowhere at all.
+    chat_history_table_name: str
 
     # Behaviour: camp's values as defaults.
     number_of_results: int = 8
@@ -73,6 +77,10 @@ class Settings:
     generation_temperature: float = 0.2
     max_query_chars: int = 2000
     max_converse_iterations: int = 6
+    # How many previous messages a turn reads back out of DynamoDB - the Limit on the one
+    # descending query, and the window the model is shown. Messages, not turns: 12 is six
+    # exchanges. It used to trim a client-supplied transcript; the transcript is the
+    # server's now, so this bounds a read rather than distrusting a payload.
     max_history_messages: int = 12
     # Wall-clock budget for the whole Converse loop. Defaults to 22 to match config.yaml;
     # the handler narrows it further using Lambda's own remaining time.
@@ -101,6 +109,7 @@ def load_settings() -> Settings:
         bedrock_region=_required("BEDROCK_REGION"),
         input_guardrail_id=_required("INPUT_GUARDRAIL_ID"),
         input_guardrail_version=_required("INPUT_GUARDRAIL_VERSION"),
+        chat_history_table_name=_required("CHAT_HISTORY_TABLE_NAME"),
         number_of_results=_int("NUMBER_OF_RESULTS", 8),
         retrieve_min_score=_float("RETRIEVE_MIN_SCORE", 0.35),
         generation_max_tokens=_int("GENERATION_MAX_TOKENS", 1200),

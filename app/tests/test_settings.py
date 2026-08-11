@@ -10,6 +10,9 @@ _IDENTITY = {
     "BEDROCK_REGION": "us-west-2",
     "INPUT_GUARDRAIL_ID": "gr-1",
     "INPUT_GUARDRAIL_VERSION": "3",
+    # The history table. Identity, not tuning: a function that cannot name its table would
+    # otherwise write a student's transcript into whatever a typo pointed at.
+    "CHAT_HISTORY_TABLE_NAME": "chat-history-test",
 }
 
 

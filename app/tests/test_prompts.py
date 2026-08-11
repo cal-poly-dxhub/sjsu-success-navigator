@@ -24,6 +24,7 @@ _SETTINGS = Settings(
     bedrock_region="us-west-2",
     input_guardrail_id="gr-1",
     input_guardrail_version="3",
+    chat_history_table_name="chat-history-test",
 )
 
 _FIELD_RE = {

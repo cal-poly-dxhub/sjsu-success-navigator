@@ -802,10 +802,10 @@ class NavigatorStack(Stack):
         # --- Chat history: ONE DynamoDB table, partitioned on the user -----------
         #
         # The first slice of per-user accounts and chat history (docs/accounts-and-storage.md,
-        # Storage). INFRASTRUCTURE ONLY: nothing reads or writes this table yet. It lands
-        # first precisely so the slice that does is pure application code, with no CDK diff
-        # tangled into it - and so the shape below is argued once, here, rather than being
-        # decided in passing by whoever writes the first PutItem.
+        # Storage). It landed BEFORE any code read or wrote it, precisely so the slice that
+        # does - app/history.py, now shipped - was pure application code with no CDK diff
+        # tangled into it, and so the shape below was argued once, here, rather than being
+        # decided in passing by whoever wrote the first PutItem.
         #
         # ONE TABLE for both item kinds, distinguished by a sort-key prefix:
         #   conversation header   pk=USER#<sub>   sk=CONV#<convId>
@@ -960,8 +960,7 @@ class NavigatorStack(Stack):
                 resources=[input_guardrail.attr_guardrail_arn],
             )
         )
-        # Read and write the conversation history. NOTHING USES THIS YET - the table and its
-        # grant land ahead of the application slice on purpose (see the section above).
+        # Read and write the conversation history (app/history.py).
         #
         # Read AND write, because an ordinary turn is both: the server writes the student's
         # message before the model call, queries the last N messages back for context, then
@@ -1094,6 +1093,7 @@ class NavigatorStack(Stack):
                     "!cards.py",
                     "!safety.py",
                     "!orchestrator.py",
+                    "!history.py",
                 ],
             ),
             layers=[chat_deps_layer],
@@ -1158,10 +1158,10 @@ class NavigatorStack(Stack):
                 # Converse, so there is no trace to configure.
                 "INPUT_GUARDRAIL_ID": input_guardrail.attr_guardrail_id,
                 "INPUT_GUARDRAIL_VERSION": input_guardrail_version.attr_version,
-                # The conversation history table. Read by no code yet - it arrives with the
-                # table so the application slice is pure application code. By REFERENCE, not
-                # as the literal from config.yaml: a copy here would be a second place the
-                # name is spelled, and the two would drift the moment either changed.
+                # The conversation history table, read and written on every turn. By
+                # REFERENCE, not as the literal from config.yaml: a copy here would be a
+                # second place the name is spelled, and the two would drift the moment
+                # either changed.
                 "CHAT_HISTORY_TABLE_NAME": chat_history_table.table_name,
             },
         )

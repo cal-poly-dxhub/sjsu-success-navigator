@@ -656,11 +656,12 @@ def test_guardrail_version_description_changes_when_the_config_does():
 
 # --- Chat history table (docs/accounts-and-storage.md, Storage) --------------------------
 #
-# Infrastructure only: no application code reads or writes this table yet. That makes these
-# assertions the ONLY thing standing between a wrong table shape and a slice that discovers
-# it at runtime - and three of the four properties below cannot be corrected in place once
-# there is data (the key schema replaces the table, TTL needs a disable/enable cycle, PITR
-# only covers what it was on for). Every literal is spelled here rather than imported from
+# app/history.py now reads and writes this table, and the key shapes it builds are spelled
+# in Python where nothing checks them against CloudFormation. That makes these assertions
+# the ONLY thing standing between a wrong table shape and a slice that discovers it at
+# runtime - and three of the four properties below cannot be corrected in place once there
+# is data (the key schema replaces the table, TTL needs a disable/enable cycle, PITR only
+# covers what it was on for). Every literal is spelled here rather than imported from
 # infra.config: a test that reads the same constant the stack does pins nothing.
 
 
@@ -858,8 +859,9 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
         "Fn::GetAtt": ["InputGuardrailVersion", "Version"]
     }
     # The history table's name, by REF rather than as the literal from config.yaml - the
-    # same no-hardcoded-names rule the KB and guardrail ids follow. No application code
-    # reads it yet; it ships with the table so the slice that does is pure application code.
+    # same no-hardcoded-names rule the KB and guardrail ids follow. app/settings.py treats
+    # it as IDENTITY and raises on a missing one, so a function that lost this variable
+    # fails at import rather than writing a student's transcript nowhere.
     assert env["CHAT_HISTORY_TABLE_NAME"] == {"Ref": table_id}
     assert env["GENERATION_MODEL_ID"] == resolve_generation(config)["model_id"]
     assert env["BEDROCK_REGION"] == {"Ref": "AWS::Region"}
@@ -1005,6 +1007,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
     assert listing == [
         "cards.py",
         "handler.py",
+        "history.py",
         "models.py",
         "orchestrator.py",
         "prompts.py",

@@ -215,6 +215,36 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       token; the frontend derives redirect_uri from window.location.origin so one config.json
       is correct on localhost and on CloudFront. Storage and the server-authoritative turn
       lifecycle in that doc are NOT in this commit.
+- [x] the chat turn is server-authoritative (docs/accounts-and-storage.md, Turn lifecycle).
+      Second of the account slices, and pure application code against the table the last one
+      built. THIS IS A PROMPT INJECTION FIX, not a memory feature: client-supplied history
+      lets an attacker forge an assistant turn and so establish a rule the model then treats
+      as its own prior commitment, which is a different order of problem in an app receiving
+      crisis disclosures. `history` is off ChatRequest entirely rather than validated, so a
+      posted transcript is an unknown key pydantic drops - ignored, not sanitised, the doc's
+      word - and no field is left for a later latency optimisation to fill in. The user id is
+      off the wire for the same reason turned up a level: `sub` comes from the JWT claims the
+      authorizer already validated, a body field would be the same value with nothing behind
+      it, and a request carrying no claim is a 401 rather than an unattributable billable
+      Bedrock call. Per turn: write the student's message (BEFORE the model call, so a
+      disclosure that then times out is still on record), read the previous
+      MAX_HISTORY_MESSAGES back in ONE descending, strongly consistent query that excludes
+      the write it just made, call the model, write the reply. The server mints the
+      conversation id and returns it; a forged one reads as empty because the partition
+      comes from the JWT. Both of the doc's reefs are handled: the strongly consistent read
+      is what stops two quick turns from silently losing one, and this turn's message is
+      appended BEFORE the consecutive-role merge, so a failed turn's dangling user message
+      folds into the next one instead of making Converse reject every turn after it in that
+      conversation. Nothing is written on a guardrail block - storing it would smuggle the
+      attack text past the screen into the next turn's context - and a DynamoDB failure logs
+      at ERROR without denying the student an answer, the same posture as a guardrail
+      outage. The header is updated alongside each message write (an atomic ADD on
+      `messageCount`, the Storage section's "append a turn"), which is the one thing here
+      the Turn lifecycle section's "no other table access" line does not literally cover:
+      without it a conversation is invisible to the list access pattern the same doc
+      defines, and every conversation created before a list endpoint would need a backfill.
+      No read endpoints, so the display projection - stored cards with URLs already
+      resolved - is written and not yet read.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a
