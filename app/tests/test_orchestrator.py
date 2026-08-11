@@ -14,6 +14,7 @@ from conftest import stored
 from models import ChatRequest
 from retrieve import RetrievedChunk
 from settings import Settings
+from usage import TurnUsage
 
 _SETTINGS = Settings(
     knowledge_base_id="KB123",
@@ -623,3 +624,98 @@ def test_the_response_serialises_to_camps_camelcase_wire_contract(monkeypatch, n
     assert "statementBatches" in body
     assert "safetyHandoff" in body
     assert "talkToPersonAvailable" in body
+
+
+# --- the turn's billable tally (app/usage.py) ---------------------------------------------
+#
+# The loop is the only place that knows what a message really cost: one student message is
+# one Converse call in the common case and two when the model searches again, and each call
+# resends everything before it. The cost panel prices THIS conversation from these numbers,
+# so what they count - and what they refuse to count - is contract.
+
+
+def _billed(turn, input_tokens, output_tokens):
+    """A Converse response carrying the `usage` block Bedrock reports on every call."""
+    return {**turn, "usage": {"inputTokens": input_tokens, "outputTokens": output_tokens}}
+
+
+def test_the_tally_counts_every_model_call_and_sums_its_tokens(monkeypatch, no_retrieval):
+    """Two calls, because the model searched again - which is exactly the case an average
+    over sample questions cannot express for a particular conversation."""
+    usage = TurnUsage()
+    fake = _FakeBedrock(
+        [
+            _billed(_retrieval_turn("tutoring hours"), 6000, 40),
+            _billed(_text_turn("Peer Connections has drop-in hours."), 6800, 210),
+        ]
+    )
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    orchestrator.run_chat(
+        ChatRequest(query="where do I get tutoring?"), _SETTINGS, usage=usage
+    )
+
+    assert usage.model_calls == 2
+    assert usage.input_tokens == 12800
+    assert usage.output_tokens == 250
+    # The primed search plus the one the model ran itself.
+    assert usage.retrievals == 2
+
+
+def test_a_call_with_no_usage_block_is_still_a_billed_call(monkeypatch, no_retrieval):
+    """Defensive on purpose: the invocation happened, so a response that reports nothing
+    must not read as a turn that cost nothing."""
+    usage = TurnUsage()
+    fake = _FakeBedrock([_text_turn("hi")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    orchestrator.run_chat(ChatRequest(query="hi"), _SETTINGS, usage=usage)
+
+    assert usage.model_calls == 1
+    assert usage.input_tokens == 0
+
+
+def test_the_deadline_exit_still_reports_what_it_billed(monkeypatch, no_retrieval):
+    """The reason the tally is an argument and not a return value. A turn that runs out of
+    time exits early, and the calls it already made were charged."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(orchestrator.time, "monotonic", lambda: clock["now"])
+
+    def burn_time():
+        clock["now"] += 10.0
+
+    usage = TurnUsage()
+    fake = _FakeBedrock([_billed(_retrieval_turn(), 5000, 30)], on_call=burn_time)
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    orchestrator.run_chat(
+        ChatRequest(query="tutoring?"), _SETTINGS, deadline=1015.0, usage=usage
+    )
+
+    assert fake.calls == 2
+    assert usage.model_calls == 2
+    assert usage.input_tokens == 10000
+
+
+def test_a_retrieval_that_failed_is_not_counted(monkeypatch):
+    """A call that raised may or may not have been billed. A meter that guesses in its own
+    favour is not a meter, and the model searching itself afterwards is counted when it
+    returns."""
+
+    def _broken(query, settings):
+        raise RuntimeError("bedrock unavailable")
+
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", _broken)
+    usage = TurnUsage()
+    fake = _FakeBedrock([_text_turn("hi")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    orchestrator.run_chat(ChatRequest(query="hi"), _SETTINGS, usage=usage)
+
+    assert usage.retrievals == 0
+    assert usage.model_calls == 1
+
+
+def test_the_loop_runs_unchanged_without_a_tally(monkeypatch, no_retrieval):
+    """`usage` is optional, and nothing in the loop reads it back: the turn a test drives
+    without one is the turn production runs with one."""
+    fake = _FakeBedrock([_text_turn("Here you go.")])
+    response = _run(monkeypatch, fake)
+    assert response.conversational_text == "Here you go."
+    assert response.usage is None, "the loop never attaches one; the handler does"

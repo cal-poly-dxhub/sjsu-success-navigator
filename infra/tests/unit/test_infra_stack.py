@@ -1026,6 +1026,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "settings.py",
         "titles.py",
         "tools.py",
+        "usage.py",
     ]
     assert "requirements.txt" not in listing
 

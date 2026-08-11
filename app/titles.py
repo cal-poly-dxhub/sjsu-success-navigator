@@ -39,6 +39,7 @@ from botocore.config import Config
 
 from cards import normalise_dashes
 from settings import Settings
+from usage import TurnUsage
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ def generate_title(
     answer: str,
     settings: Settings,
     deadline: float,
+    usage: TurnUsage | None = None,
 ) -> str | None:
     """A title for one exchange, or None. NEVER RAISES.
 
@@ -167,6 +169,12 @@ def generate_title(
     the configured budget and Lambda's real remaining time. Checked BEFORE the call for the
     same reason the Converse loop checks its own: the point of a deadline is that no network
     call starts which cannot finish inside it.
+
+    `usage` is the turn's billable tally (app/usage.py). This call is small - 32 output
+    tokens against an exchange - but it is a real Converse invocation on a real model, so
+    leaving it out would make the first message of every conversation read cheaper than it
+    was. It is counted whether or not the title turns out to be usable: a rejected title
+    was billed exactly like an accepted one.
 
     The exchange is sent as one user message rather than as a two-turn transcript. The model
     is not continuing this conversation, it is looking at a finished one, and a transcript
@@ -201,6 +209,9 @@ def generate_title(
             exc_info=True,
         )
         return None
+
+    if usage is not None:
+        usage.record_model_call(response)
 
     parts = [
         block["text"]

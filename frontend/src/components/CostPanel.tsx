@@ -1,20 +1,23 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+	NO_CONVERSATION_USAGE,
+	conversationCost,
 	count,
 	fixedMonthly,
 	money,
 	perMessage,
-	perPriorTurn,
-	smallMoney,
 } from '../lib/costModel';
 import type { CostModel } from '../lib/runtimeConfig';
+import type { ConversationUsage } from '../types/chat';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import './CostPanel.css';
 
 type CostPanelProps = {
 	open: boolean;
 	model: CostModel;
+	/** What the conversation on screen has billed so far. Undefined until a reply arrives. */
+	usage?: ConversationUsage;
 	onClose: () => void;
 };
 
@@ -25,21 +28,21 @@ const MESSAGES_STEP = 1_000;
 const MESSAGES_DEFAULT = 20_000;
 
 /**
- * The cost panel: what this system costs to run, for showing a sponsor.
+ * The cost panel: what this conversation cost, and what a month of them would.
  *
- * ONE SLIDER, not three. The only quantity nobody can measure for you is how many messages
- * students will send; everything else on this panel is measured, so exposing it as a knob
- * would invite a reader to tune numbers that were observed rather than assumed. The two
- * effects a second and third slider would have controlled are stated as lines instead - the
- * per-prior-turn adder under the itemization, and the fixed floor as its own figure.
+ * THE LEFT HALF IS MEASURED, NOT MODELLED. It prices the tokens the server counted on the
+ * turns this student actually sent (app/usage.py, reported on every reply), so it answers
+ * "what did that cost" about the conversation in front of the reader. It used to show the
+ * 24-question sample average under the heading "one student message", which was a figure
+ * about a sample presented where a reader would read it as a figure about their chat.
  *
- * EVERY LINE IS LABELLED measured OR priced, because they are not equally trustworthy. The
- * Bedrock, guardrail and retrieval lines come from real token counts observed against this
- * deployment (eval/measure_usage.py). The plumbing line does not: it is real billed
- * durations times configured memory, plus per-request rates. Blurring the two would make
- * the whole panel exactly as credible as its weakest line, so it says which is which.
+ * THE RIGHT HALF IS A PROJECTION, and it is one slider and three numbers: the total a
+ * month at that volume costs, the floor it never drops below, and what one message adds.
+ * The itemizations and the rate table came off deliberately - they were an audit of the
+ * arithmetic sitting in the middle of a demo, and the arithmetic is in costModel.ts where
+ * it can be read properly.
  */
-export function CostPanel({ open, model, onClose }: CostPanelProps) {
+export function CostPanel({ open, model, usage, onClose }: CostPanelProps) {
 	const [messages, setMessages] = useState(MESSAGES_DEFAULT);
 	const panelRef = useRef<HTMLDivElement | null>(null);
 	const previousActiveRef = useRef<HTMLElement | null>(null);
@@ -49,9 +52,11 @@ export function CostPanel({ open, model, onClose }: CostPanelProps) {
 	// per-message price are computed once rather than on every slider frame.
 	const per = useMemo(() => perMessage(model.rates, model.measured), [model]);
 	const fixed = useMemo(() => fixedMonthly(model.rates, model.baseline), [model]);
-	const depthAdder = useMemo(() => perPriorTurn(model.rates, model.measured), [model]);
 
 	const variable = messages * per.total;
+
+	const conversation = usage ?? NO_CONVERSATION_USAGE;
+	const conversationTotal = conversationCost(model.rates, model.measured, conversation);
 
 	useEffect(() => {
 		if (!open) return;
@@ -94,24 +99,6 @@ export function CostPanel({ open, model, onClose }: CostPanelProps) {
 			previousActiveRef.current?.focus();
 		};
 	}, [open, onClose]);
-
-	const rateRows: Array<[string, string]> = [
-		['Claude Sonnet 4.6 input', `${money(model.rates.generation_input_per_1m, 2)} / 1M tokens`],
-		['Claude Sonnet 4.6 output', `${money(model.rates.generation_output_per_1m, 2)} / 1M tokens`],
-		['Titan Text Embeddings V2', `${money(model.rates.embedding_per_1m, 2)} / 1M tokens`],
-		[
-			'Guardrails, content filters',
-			`${money(model.rates.guardrail_content_per_1k_units, 2)} / 1k units`,
-		],
-		['S3 Vectors queries', `${money(model.rates.vector_query_per_1m, 2)} / 1M`],
-		['S3 Vectors storage', `${money(model.rates.vector_storage_per_gb_month, 2)} / GB-month`],
-		['S3 Standard storage', `${money(model.rates.s3_storage_per_gb_month, 3)} / GB-month`],
-		['Lambda compute', `$${model.rates.lambda_per_gb_second} / GB-second`],
-		['HTTP API requests', `${money(model.rates.api_requests_per_1m, 2)} / 1M`],
-		['CloudFront requests', `${money(model.rates.cloudfront_per_1m_requests, 2)} / 1M`],
-		['DynamoDB writes', `${money(model.rates.dynamodb_write_per_1m, 3)} / 1M`],
-		['CloudWatch Logs', `${money(model.rates.logs_ingest_per_gb, 2)} / GB`],
-	];
 
 	return (
 		<AnimatePresence>
@@ -162,67 +149,45 @@ export function CostPanel({ open, model, onClose }: CostPanelProps) {
 
 						<div className="cost-panel__body">
 							<section className="cost-card">
-								<h3>One student message</h3>
-								<p className="cost-card__big">{money(per.total, 4)}</p>
+								<h3>This conversation</h3>
+								<p className="cost-card__big">{money(conversationTotal, 4)}</p>
 								<p className="cost-card__sub">
-									Measured over {count(model.measured.sample_questions)} real questions on{' '}
-									{model.measuredAt}, at {model.measured.model_calls_avg} model calls and{' '}
-									{count(per.inputTokens)} input tokens each.
+									{conversation.messages > 0
+										? `${count(conversation.messages)} ${
+												conversation.messages === 1 ? 'message' : 'messages'
+											} so far, priced from the tokens they actually used.`
+										: 'Nothing metered in this chat yet. It counts from the first message you send here.'}
 								</p>
 
 								<ul className="cost-rows">
 									<li>
-										<span className="cost-rows__k">
-											Model, input <em>measured</em>
-										</span>
+										<span className="cost-rows__k">Messages sent</span>
+										<span className="cost-rows__v">{count(conversation.messages)}</span>
+									</li>
+									<li>
+										{/* Not the same number as the one above, and that is the point: the
+										    loop calls the model again after a search, and each call resends
+										    everything before it. */}
+										<span className="cost-rows__k">Model calls</span>
+										<span className="cost-rows__v">{count(conversation.modelCalls)}</span>
+									</li>
+									<li>
+										<span className="cost-rows__k">Input tokens</span>
+										<span className="cost-rows__v">{count(conversation.inputTokens)}</span>
+									</li>
+									<li>
+										<span className="cost-rows__k">Output tokens</span>
+										<span className="cost-rows__v">{count(conversation.outputTokens)}</span>
+									</li>
+									<li>
+										<span className="cost-rows__k">Cost per message</span>
 										<span className="cost-rows__v">
-											{smallMoney(
-												(per.inputTokens / 1e6) * model.rates.generation_input_per_1m,
-											)}
+											{conversation.messages > 0
+												? money(conversationTotal / conversation.messages, 4)
+												: '-'}
 										</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">
-											Model, output <em>measured</em>
-										</span>
-										<span className="cost-rows__v">
-											{smallMoney(
-												(per.outputTokens / 1e6) * model.rates.generation_output_per_1m,
-											)}
-										</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">
-											Guardrail screen <em>measured</em>
-										</span>
-										<span className="cost-rows__v">{smallMoney(per.guardrail)}</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">
-											Retrieval <em>measured</em>
-										</span>
-										<span className="cost-rows__v">{smallMoney(per.retrieval)}</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">
-											Gateway, Lambda, storage <em className="cost-rows__priced">priced</em>
-										</span>
-										<span className="cost-rows__v">{smallMoney(per.plumbing)}</span>
 									</li>
 								</ul>
-
-								<p className="cost-note">
-									<strong>Retrieved pages are the cost.</strong> Input tokens are{' '}
-									{Math.round(
-										(((per.inputTokens / 1e6) * model.rates.generation_input_per_1m) /
-											per.total) *
-											100,
-									)}
-									% of a message, because every answer carries the campus pages it was
-									grounded in. Each earlier turn a student has already sent adds only{' '}
-									{money(depthAdder, 5)} more, since the server replays previous messages as
-									text and never re-sends the pages behind them.
-								</p>
 							</section>
 
 							<section className="cost-card">
@@ -245,89 +210,31 @@ export function CostPanel({ open, model, onClose }: CostPanelProps) {
 									onChange={(event) => setMessages(Number(event.target.value))}
 								/>
 
+								<p className="cost-card__big">{money(fixed.total + variable, 2)}</p>
+								<p className="cost-card__sub">A month at that volume</p>
+
 								<div className="cost-figures">
 									<div>
-										<p className="cost-figures__label">Runs at zero use</p>
+										<p className="cost-figures__label">Runs at no use</p>
 										<p className="cost-card__big cost-card__big--sm">
 											{money(fixed.total, 2)}
 										</p>
 										<p className="cost-card__sub">Every month, nobody asking</p>
 									</div>
 									<div>
-										<p className="cost-figures__label">Messages</p>
-										<p className="cost-card__big cost-card__big--sm">{money(variable, 2)}</p>
-										<p className="cost-card__sub">
-											{count(messages)} &times; {money(per.total, 4)}
+										<p className="cost-figures__label">Cost per message</p>
+										<p className="cost-card__big cost-card__big--sm">
+											{money(per.total, 4)}
 										</p>
+										<p className="cost-card__sub">What one message adds</p>
 									</div>
 								</div>
-
-								<p className="cost-total">
-									<span>Monthly total</span>
-									<strong>{money(fixed.total + variable, 2)}</strong>
-								</p>
-
-								<ul className="cost-rows">
-									<li>
-										<span className="cost-rows__k">Stored data (S3 + vector index)</span>
-										<span className="cost-rows__v">{smallMoney(fixed.storage)}</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">Re-scrape compute</span>
-										<span className="cost-rows__v">{smallMoney(fixed.scraper)}</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">Re-indexing changed pages</span>
-										<span className="cost-rows__v">{smallMoney(fixed.reindex)}</span>
-									</li>
-									<li>
-										<span className="cost-rows__k">CloudWatch logs</span>
-										<span className="cost-rows__v">{smallMoney(fixed.logs)}</span>
-									</li>
-								</ul>
-
-								<p className="cost-note">
-									The floor is what runs whether or not anyone asks anything: stored bytes,
-									and <strong>{fixed.runs.toFixed(1)} scraper runs a month</strong> (daily,
-									plus {model.baseline.deploys_per_month} assumed deploys). Re-scraping is
-									nearly free because a run whose pages have not changed re-indexes nothing
-									&mdash; only about <strong>{fixed.ingests.toFixed(1)} re-indexes a month</strong>{' '}
-									are assumed to actually happen. CloudFront, API Gateway and Lambda bill per
-									use, so they contribute nothing at zero traffic.
-								</p>
-
-								<details className="cost-rates">
-									<summary>
-										Rates used &mdash; AWS list prices, {model.region}, as of {model.asOf}
-									</summary>
-									<table>
-										<thead>
-											<tr>
-												<th>Item</th>
-												<th>Rate</th>
-											</tr>
-										</thead>
-										<tbody>
-											{rateRows.map(([item, rate]) => (
-												<tr key={item}>
-													<td>{item}</td>
-													<td>{rate}</td>
-												</tr>
-											))}
-										</tbody>
-									</table>
-								</details>
 							</section>
 						</div>
 
 						<p className="cost-panel__foot">
-							<strong>These are estimates, not a bill.</strong> They are published AWS list
-							prices multiplied by token usage measured against this deployment. No billing or
-							account-spend data is read, which is also why these figures describe only this
-							system and not anything else running in the same AWS account. Lines marked{' '}
-							<em>priced</em> come from configured memory and real invocation durations rather
-							than from measured tokens. Nothing here accounts for taxes, credits, free-tier
-							allowances, or support plans.
+							<strong>These are estimates, not a bill.</strong> Published AWS list prices,
+							multiplied by measured token use.
 						</p>
 					</motion.div>
 					</div>

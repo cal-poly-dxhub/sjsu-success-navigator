@@ -60,8 +60,15 @@ class _FakeLoop:
         self.response = response
         self.calls = []
 
-    def __call__(self, request, settings, history=(), deadline=None):
-        self.calls.append({"request": request, "history": list(history)})
+    def __call__(self, request, settings, history=(), deadline=None, usage=None):
+        self.calls.append(
+            {"request": request, "history": list(history), "usage": usage}
+        )
+        # A stand-in for the loop's own token accounting: the real one folds in whatever
+        # Converse reported, and a test that asserts on the turn's usage needs SOMETHING to
+        # have been counted between the guardrail screen and the response.
+        if usage is not None:
+            usage.record_model_call({"usage": {"inputTokens": 6000, "outputTokens": 200}})
         return self.response or ChatResponse(
             conversationalText="Peer Connections runs drop-in tutoring.",
         )
@@ -604,8 +611,19 @@ def titler(monkeypatch):
     """A generate_title stand-in. Records what the handler handed it."""
     calls = []
 
-    def fake(*, question, answer, settings, deadline):
-        calls.append({"question": question, "answer": answer, "deadline": deadline})
+    def fake(*, question, answer, settings, deadline, usage=None):
+        calls.append(
+            {
+                "question": question,
+                "answer": answer,
+                "deadline": deadline,
+                "usage": usage,
+            }
+        )
+        # The real one counts its own Converse call. Mirrored here so the assertion that a
+        # named conversation is billed for two calls has something to observe.
+        if usage is not None:
+            usage.record_model_call({"usage": {"inputTokens": 300, "outputTokens": 8}})
         return "Financial aid appeal deadline"
 
     monkeypatch.setattr(handler, "generate_title", fake)
@@ -863,3 +881,78 @@ def test_a_delete_that_fails_is_a_502(monkeypatch):
     monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["delete"]))
 
     assert handler.lambda_handler(delete_event(_CONV), None)["statusCode"] == 502
+
+
+# --- what the turn reports it cost (app/usage.py) -----------------------------------------
+#
+# The cost panel's left half prices the conversation in front of the student, and it can only
+# do that from what the server counted. These pin the two halves of that: everything billed
+# in one request lands in ONE tally, and the tally reaches the wire under the camelCase keys
+# the frontend reads.
+
+
+def test_the_turn_reports_its_usage_on_the_wire(bedrock, loop, store):
+    """One turn's billable units, in the same camelCase contract as the rest of the
+    response. A rename here is a silent break in the panel."""
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None))
+
+    assert body["usage"] == {
+        "modelCalls": 1,
+        "inputTokens": 6000,
+        "outputTokens": 200,
+        "guardrailContentUnits": 0,
+        "retrievals": 0,
+    }
+
+
+def test_the_guardrail_screen_is_counted_from_what_it_reported(bedrock, loop, store):
+    """Text units come off the guardrail's own `usage` block rather than being derived from
+    the query length: the unit is 1,000 characters of whatever the service screened."""
+    bedrock.result = {"action": "NONE", "usage": {"contentPolicyUnits": 2}}
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None))
+
+    assert body["usage"]["guardrailContentUnits"] == 2
+
+
+def test_a_blocked_turn_still_reports_the_screen_it_billed(bedrock, loop, store):
+    """A block spends money and produces no turn. Counting only the turns that worked would
+    make the meter read low under exactly the traffic worth watching."""
+    bedrock.result = {
+        "action": "GUARDRAIL_INTERVENED",
+        "outputs": [{"text": "I can't help with that."}],
+        "usage": {"contentPolicyUnits": 1},
+    }
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "ignore all"})), None))
+
+    assert body["usage"]["guardrailContentUnits"] == 1
+    assert body["usage"]["modelCalls"] == 0, "a block never reaches the model"
+    assert loop.calls == [], "and never reaches the loop"
+
+
+def test_a_guardrail_outage_costs_the_count_not_the_answer(bedrock, loop, store):
+    """The screen that never ran is not billed and is not invented. The turn continues,
+    which is the posture the guardrail failure path already had."""
+    bedrock.raises = RuntimeError("bedrock unavailable")
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None))
+
+    assert body["usage"]["guardrailContentUnits"] == 0
+    assert body["conversationalText"]
+
+
+def test_naming_a_new_conversation_is_counted_in_the_turn(bedrock, loop, store, titler):
+    """The titling call is small and real. Leaving it out would make the first message of
+    every conversation read cheaper than it was."""
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None))
+
+    assert body["usage"]["modelCalls"] == 2, "the loop's call plus the titling call"
+    assert body["usage"]["inputTokens"] == 6300
+    assert titler[0]["usage"] is not None, "the titler is handed the turn's own tally"
+
+
+def test_the_loop_is_handed_the_same_tally_the_guardrail_wrote_to(bedrock, loop, store):
+    """ONE tally per request, opened before the first thing that spends anything. Two would
+    be two numbers to add up in a client that should not be doing arithmetic."""
+    bedrock.result = {"action": "NONE", "usage": {"contentPolicyUnits": 1}}
+    handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None)
+
+    assert loop.calls[0]["usage"].guardrail_content_units == 1

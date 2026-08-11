@@ -24,13 +24,16 @@ Lambda's ENVIRONMENT (`aws lambda get-function-configuration`), never from confi
 never hardcoded here. So the model calls, the retrievals and the guardrail screens are real,
 billed, and shaped exactly as production shapes them.
 
-What it does NOT do is go through API Gateway and Lambda, because the deployed /chat
-response carries no usage field and adding one would mean editing the chat handler. The
-consequence is precise and small: the Bedrock, guardrail and retrieval lines below are
-MEASURED, and the Lambda line is not - `query_lambda_gb_seconds` is filled from the chat
-function's real billed durations in CloudWatch (its REPORT lines, over actual invocations)
-multiplied by its configured memory. That line is well under a tenth of a cent against a
-~4-cent question, and the panel says which lines are which rather than blurring them.
+What it does NOT do is go through API Gateway and Lambda. /chat now REPORTS its usage on
+the wire (app/usage.py), so that is no longer the reason - the reasons now are that a run
+through the API would store 24 conversations of eval traffic under the runner's account,
+and that the depth experiment needs to control the history in front of each question
+exactly, which is a thing the server owns and a client cannot ask for. The consequence is
+precise and small: the Bedrock, guardrail and retrieval lines below are MEASURED, and the
+Lambda line is not - `chat_lambda_gb_seconds` is filled from the chat function's real
+billed durations in CloudWatch (its REPORT lines, over actual invocations) multiplied by
+its configured memory. That line is well under a tenth of a cent against a ~4-cent
+question, and the panel says which lines are which rather than blurring them.
 
 COSTS REAL MONEY. Every question is a real Bedrock call plus a real guardrail screen. This
 is an on-demand tool, never part of CI. It creates nothing and writes nothing: no DynamoDB

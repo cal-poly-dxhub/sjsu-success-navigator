@@ -275,6 +275,23 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       answer. It holds turns fetched from the server, `undefined` until they are. The
       sidebar's "Chat history is mocked for this preview" note is gone because it is no
       longer true.
+- [x] the cost panel prices the conversation on screen, from tokens the server counted
+      (app/usage.py). /chat now reports what one turn billed - Converse calls with their input
+      and output tokens, the guardrail's own reported text units, retrievals - and the panel's
+      left half meters the live conversation off it. It used to show the 24-question sample
+      average under the heading "one student message": a figure about a sample, sitting where a
+      reader takes it as a figure about their chat. ONE TALLY PER REQUEST, opened before the
+      guardrail screen and mutated in place all the way down, which is what makes the awkward
+      paths count - a turn that exits on the wall-clock deadline still reports the calls it was
+      billed for, a blocked turn still reports the screen that blocked it, and the small titling
+      call on a new conversation is in there too. The meter is PER CONVERSATION and IS NOT
+      STORED: it accrues in the tab from each reply, so a chat reopened from history reads
+      "nothing metered in this chat yet" rather than presenting a zero as a measurement (storing
+      it would put a cost attribute on the message items, which docs/accounts-and-storage.md
+      fixes at three). The right half is now the slider, the monthly total it produces, and the
+      two numbers that total is made of - the zero-use floor and the per-message price. The
+      itemized rows, the depth note and the rates table came off: an audit of the arithmetic in
+      the middle of a demo, and the arithmetic is in costModel.ts where it can be read properly.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

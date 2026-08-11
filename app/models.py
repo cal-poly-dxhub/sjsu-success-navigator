@@ -2,6 +2,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from usage import TurnUsage
+
 
 class SourceAction(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -88,6 +90,12 @@ class ChatResponse(BaseModel):
         default=True,
         alias="talkToPersonAvailable",
     )
+    # What this turn actually cost in billable units (app/usage.py). Additive, and the only
+    # field here the student's answer does not depend on: it is what lets the cost panel
+    # price THIS conversation from real token counts instead of a sample average. Present on
+    # every turn the handler runs, including a guardrail block, which billed a screen. None
+    # on a response built anywhere else, and an older client ignoring it loses nothing.
+    usage: TurnUsage | None = None
 
 
 # A conversation id is a ULID minted by history.new_ulid(): 26 characters of Crockford
