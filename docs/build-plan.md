@@ -147,6 +147,15 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       its cards, because a closing question in every example teaches a habit where the rule
       offers an option. Everything else is unchanged, prose-is-never-empty included, and the caps
       are still interpolated from Settings rather than typed.
+- [x] the model sees whole retrieved chunks (2026-08-10 eval rerun, 60/14/8 of 82).
+      cards.py sliced every retrieval result to 500 chars while real chunks run 800-3200
+      and the recovered contact band sits at the document tail, so the model cited the
+      right page while honestly reporting it could not see the number retrieval had
+      already fetched: Bursar's line was in six of the eight retrieved chunks, every
+      occurrence past the cut; CAPS's at char 612 of the top hit. Nine of the run's
+      fourteen fails were this shape. The chunk is bounded upstream by the chunking
+      config, so a second blind cap in the tool-result layer had no job to do; the
+      slice and its constant are gone, not resized.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a
