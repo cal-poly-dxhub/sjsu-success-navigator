@@ -26,18 +26,6 @@
 	color: var(--text-muted, #555);
 }
 
-.sign-in__label {
-	font-size: 0.875rem;
-	font-weight: 600;
-}
-
-.sign-in__input {
-	padding: 0.6rem 0.75rem;
-	border: 1px solid var(--border, #ccc);
-	border-radius: 0.5rem;
-	font: inherit;
-}
-
 .sign-in__error {
 	margin: 0.25rem 0 0;
 	color: #b3261e;

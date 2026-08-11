@@ -9,7 +9,8 @@ a copy + rename, not a re-architecture):
      + on-deploy install trigger                      ("pull gav scraper shell")   DONE
   3. Bedrock Guardrail (PROMPT_ATTACK input screen)   (docs/synthesis.md decision)
   4. Chat Lambda + role + deps layer                  ("pull gav lambda section")
-  5. Cognito pool + client + JWT authorizer
+  5. Cognito pool + managed login domain + two app
+     clients + JWT authorizer
      + HTTP API + routes + throttling                 ("pull gav api gateway")
   6. Site bucket + CloudFront (OAC) + Astro deploy
      + config.json stamping                           ("pull gav frontend s3 + cloudfront")
@@ -39,6 +40,7 @@ from aws_cdk import (
     CfnOutput,
     DockerImage,
     Duration,
+    Fn,
     ILocalBundling,
     RemovalPolicy,
     Stack,
@@ -109,11 +111,20 @@ _LAMBDA_ARCH = _lambda.Architecture.X86_64
 _MANYLINUX_TAG = "manylinux2014_x86_64"
 _LAMBDA_PY_TAG = "3.13"
 
-# The ONE shared pilot login's username, spelled into the two setup commands the stack
+# The eval harness's MACHINE account username, spelled into the setup commands the stack
 # prints so they are copy-paste runnable. It is a NAME, not a credential - the password is
-# chosen by the deployer at step 2 and never appears here or anywhere in the repo. The pool
-# signs in by plain username, so this needs no @ and carries no email attribute.
-_PILOT_USERNAME = "sjsupilot" 
+# chosen by the deployer and never appears here or anywhere in the repo.
+#
+# This is not the retired shared login wearing a new name. That one was the single
+# credential every human used; humans now each get their own account and reach it through
+# the managed-login redirect, which cannot issue a token to this client at all. This
+# account exists because eval/run_eval.py runs headless with no browser to redirect, so it
+# needs the one identity that the password-auth client will serve. Keep it to the harness.
+_EVAL_USERNAME = "eval-runner"
+
+# Placeholder standing in for a real person's account in the printed admin-create-user
+# command. Deliberately not a valid username shape anyone would leave in place.
+_HUMAN_USERNAME_PLACEHOLDER = "USERNAME-HERE"
 
 
 def _astro_bundling() -> BundlingOptions:
@@ -1183,33 +1194,55 @@ class NavigatorStack(Stack):
 
         http_api_cfg = resolve_http_api(config)
 
-        # A Cognito user pool holding ONE shared pilot login, created by hand after deploy.
-        # This is gav's pattern carried over deliberately: campus-affiliated accounts are a
-        # v2 item (docs/synthesis.md), and a shared login is the cheapest thing that keeps
-        # a public URL from spending Bedrock tokens for anyone who finds it.
+        # Where Cognito is allowed to send the browser back to, derived from the SAME
+        # config list the CORS allowlist uses rather than typed a second time - both
+        # answer "which origins is this app served from", and two literals would drift.
+        #
+        # THE TRAILING SLASH IS LOAD-BEARING. Cognito matches a redirect_uri against these
+        # by exact string, and the frontend sends `window.location.origin + "/"`, so an
+        # entry without it fails with redirect_mismatch - an error rendered by Cognito's
+        # own page, before the app is ever reached.
+        local_redirect_urls = [f"{origin.rstrip('/')}/" for origin in cors_allow_origins]
+
+        # A Cognito user pool holding ONE ACCOUNT PER PERSON, each created administratively
+        # after deploy. The single shared pilot credential this replaces is gone: it could
+        # not tell two students apart, so nothing downstream could ever be per-user, and
+        # every rotation was a message to everybody who had it.
+        #
+        # THIS POOL IS ALSO WHERE SJSU'S OWN IDP LANDS. Federating Okta in later is a
+        # config-only change - an identity provider on this pool and its name in the web
+        # client's supported list - and that is the reason sign-in below is the hosted
+        # redirect today rather than a form. A federated user CANNOT authenticate through
+        # InitiateAuth or any SDK call; only the managed-login endpoints can complete that
+        # exchange. A custom form built now would be thrown away on the day Okta arrives.
+        #
+        # Local accounts are therefore SCAFFOLDING, expected to be replaced by federated
+        # ones rather than to accumulate.
         #
         # No credential appears here, in CDK, or in the template - a password in a template
         # is a password in the console, the change set and the stack events. The stack
-        # prints the two CLI commands instead and a human runs them once.
+        # prints the CLI commands instead and a human runs them per account.
         auth_pool = cognito.UserPool(
             self,
             "ChatUserPool",
-            # SELF-SIGNUP OFF. The pool exists to keep strangers OUT of a paid endpoint;
-            # letting them enrol themselves would defeat the entire gate.
+            # SELF-SIGNUP OFF, and now for two reasons rather than one. It still keeps
+            # strangers out of a paid endpoint, and it is also what "accounts are issued,
+            # not claimed" means mechanically: with Okta arriving, a self-enrolled local
+            # account would be a second identity for a person who already has one.
             self_sign_up_enabled=False,
             # PLAIN USERNAME, not email. `username=True` alone emits neither
-            # UsernameAttributes nor AliasAttributes, which is what lets a plain name like
-            # "sjsupilot" be created: an email-only pool rejects a name that is not an
-            # address. This is a shared pilot login handed over in a sentence, not a
-            # person's account, so a fake address would be one more thing to explain.
+            # UsernameAttributes nor AliasAttributes, which is what lets an administrator
+            # create whatever name the campus uses - an email-only pool rejects a name that
+            # is not an address, and an alias pool rejects one that looks like one.
             #
             # SIGN-IN OPTIONS ARE IMMUTABLE AFTER CREATION. Changing this later REPLACES
-            # the pool, which changes the pool id the frontend is built with - so it is
-            # settled here, before the first deploy, or not cheaply at all.
+            # the pool, so it is left exactly as it was: this change swaps who holds
+            # accounts, not how the pool is keyed, and a replacement would throw away every
+            # account for no gain. Federated users are keyed by the provider anyway.
             sign_in_aliases=cognito.SignInAliases(username=True),
-            # No self-service recovery: there is no verified email or phone on this account
-            # to send a code to, and nobody but the deployer should be able to move its
-            # password. NONE synthesizes admin_only.
+            # No self-service recovery: local accounts carry no verified email or phone to
+            # send a code to, and while they are scaffolding an administrator moving a
+            # password is the whole recovery story. NONE synthesizes admin_only.
             account_recovery=cognito.AccountRecovery.NONE,
             password_policy=cognito.PasswordPolicy(
                 min_length=12,
@@ -1218,24 +1251,77 @@ class NavigatorStack(Stack):
                 require_digits=True,
                 require_symbols=True,
             ),
+            # NO CUSTOM ATTRIBUTES, deliberately, and this is a decision rather than an
+            # omission. A federated profile is rebuilt from the provider's claims on every
+            # sign-in, so anything this application writes into a Cognito attribute is
+            # liable to be silently overwritten by Okta later. Application data belongs in
+            # DynamoDB keyed by `sub`; the pool holds identity only.
+            #
             # One-click install implies one-click uninstall.
             removal_policy=RemovalPolicy.DESTROY,
         )
 
-        # PUBLIC client, no secret: the frontend is JavaScript in a browser, so a client
-        # secret would be readable by anyone who views source - theatre, and Cognito
-        # rejects the unsigned browser call unless the client is public anyway.
+        # THE MANAGED LOGIN DOMAIN - the hosted endpoints the browser is redirected to.
+        # This is the piece that makes the whole flow federation-ready: /oauth2/authorize
+        # is the only place an Okta round trip can happen, so having it now means adding
+        # SJSU's IdP later touches no application code.
         #
-        # USER_PASSWORD_AUTH rather than SRP: the frontend does ONE unsigned fetch to
-        # cognito-idp with no SDK and no build step. SRP needs big-integer crypto no
-        # dependency-free client is going to carry. The tradeoff is that the password
-        # crosses the wire inside TLS instead of never leaving the browser; for a shared
-        # pilot login behind a link that is the right trade, and it is NOT a pattern for
-        # real student accounts (which is the v2 item).
-        auth_client = auth_pool.add_client(
-            "ChatUserPoolClient",
+        # The prefix must be globally unique across all AWS accounts, and nothing in this
+        # repo may hardcode a global name - so it is derived from the stack's own id. The
+        # last group of the CloudFormation stack GUID is lowercase hex, which is exactly
+        # the character set a domain prefix allows, and a fresh install in another account
+        # gets its own without anyone choosing one.
+        stack_unique_suffix = Fn.select(
+            4, Fn.split("-", Fn.select(2, Fn.split("/", self.stack_id)))
+        )
+        login_domain = auth_pool.add_domain(
+            "ChatLoginDomain",
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=f"sjsu-navigator-{stack_unique_suffix}"
+            ),
+        )
+
+        # TWO APP CLIENTS ON ONE POOL, because the two callers cannot share one.
+        #
+        # THE WEB CLIENT: authorization code flow with PKCE, through the hosted endpoints
+        # above. Public, no secret - the frontend is JavaScript in a browser, so a secret
+        # would be readable by anyone who views source. PKCE is what makes that safe and it
+        # is NOT configured here because it cannot be: Cognito requires a code_challenge
+        # from any client that has no secret, so the protection is a property of the client
+        # being public plus the frontend actually sending one (frontend/src/lib/auth.ts).
+        # There is no CloudFormation property to turn it on or off.
+        #
+        # No password flow on this client AT ALL. That is the load-bearing half of the
+        # split: leaving one enabled would let a form quietly reappear that federated users
+        # could never sign in through, which is the exact dead end this change exists to
+        # avoid.
+        web_client = auth_pool.add_client(
+            "ChatWebClient",
             generate_secret=False,
-            auth_flows=cognito.AuthFlow(user_password=True),
+            # Pinned to refresh-only through the L1 below rather than set here - see the
+            # note after this construct.
+            auth_flows=cognito.AuthFlow(),
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,
+                    # IMPLICIT OFF. It returns tokens in the URL fragment, where they land
+                    # in history and in any Referer - the reason the code flow exists.
+                    implicit_code_grant=False,
+                    client_credentials=False,
+                ),
+                # openid is what makes this an OIDC exchange at all. email and profile are
+                # here so the sidebar can show who is signed in; NEITHER is an identity -
+                # the server reads `sub` (see the authorizer note below).
+                scopes=[
+                    cognito.OAuthScope.OPENID,
+                    cognito.OAuthScope.EMAIL,
+                    cognito.OAuthScope.PROFILE,
+                ],
+                # Local dev only at this point. The deployed CloudFront origin is appended
+                # in section 6, as a deploy-time token - see the note there.
+                callback_urls=list(local_redirect_urls),
+                logout_urls=list(local_redirect_urls),
+            ),
             # One day, matching "one sign-in covers the session", and Cognito's maximum for
             # an access token. The frontend holds the token in memory only, so a reload
             # signs in again regardless.
@@ -1243,6 +1329,37 @@ class NavigatorStack(Stack):
             # The frontend never uses the refresh token it is handed; pinning its validity
             # to the access token's means the copy it discards cannot outlive the session
             # by the 30-day default.
+            refresh_token_validity=Duration.days(1),
+            id_token_validity=Duration.days(1),
+            prevent_user_existence_errors=True,
+        )
+
+        # EXPLICIT AUTH FLOWS, SPELLED OUT, and this is a finding rather than tidiness.
+        # An empty AuthFlow() makes CDK omit ExplicitAuthFlows entirely, and an ABSENT
+        # ExplicitAuthFlows does not mean "no direct sign-in" - Cognito falls back to its
+        # legacy defaults, which include SRP. The web client would then quietly accept a
+        # local-password sign-in after all, which is the dead end this split exists to
+        # close: SRP is a path no federated user can ever use.
+        #
+        # ALLOW_REFRESH_TOKEN_AUTH is the only entry, and it is not a sign-in path - it is
+        # what lets the token endpoint honour a refresh grant for a session that already
+        # authenticated through the redirect.
+        web_client.node.default_child.explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
+
+        # THE EVAL CLIENT: password auth, no OAuth, no callback URLs. eval/run_eval.py runs
+        # headless - there is no browser to redirect and no human to click - so the one
+        # thing the web client deliberately cannot do is the only thing this one does.
+        #
+        # Separate rather than one permissive client because a client is the unit Cognito
+        # applies flows to: a single client serving both would carry an enabled password
+        # flow that any browser could call with the client id from config.json. Splitting
+        # them means the harness's path is not reachable from the web app's credentials.
+        eval_client = auth_pool.add_client(
+            "ChatEvalClient",
+            generate_secret=False,
+            # No secret, so the harness's one unsigned InitiateAuth needs no SECRET_HASH.
+            auth_flows=cognito.AuthFlow(user_password=True),
+            access_token_validity=Duration.days(1),
             refresh_token_validity=Duration.days(1),
             id_token_validity=Duration.days(1),
             prevent_user_existence_errors=True,
@@ -1299,10 +1416,23 @@ class NavigatorStack(Stack):
         # Gateway validates client_id only when aud is absent. The frontend deliberately
         # sends the access token, not the ID token (which carries account attributes for no
         # benefit here). Do not "fix" this to an ID token.
+        #
+        # BOTH CLIENTS ARE LISTED, and omitting either breaks a caller completely: the
+        # audience is an allowlist of client_id values, so an eval token presented against
+        # a web-client-only audience is rejected at the gateway with a 401 that carries no
+        # CORS headers and no explanation. Splitting the clients above is only safe because
+        # this list was widened in the same change.
+        #
+        # Widening the audience does NOT widen who gets in. Every token here is still
+        # signed by this pool for a user in it; what the second entry admits is the eval
+        # account, which is a user in the pool by construction.
         jwt_authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
             "ChatJwtAuthorizer",
             f"https://cognito-idp.{self.region}.amazonaws.com/{auth_pool.user_pool_id}",
-            jwt_audience=[auth_client.user_pool_client_id],
+            jwt_audience=[
+                web_client.user_pool_client_id,
+                eval_client.user_pool_client_id,
+            ],
             identity_source=["$request.header.Authorization"],
         )
 
@@ -1359,13 +1489,34 @@ class NavigatorStack(Stack):
         )
         CfnOutput(
             self,
-            "ChatUserPoolClientId",
-            value=auth_client.user_pool_client_id,
-            description="Cognito app client id the frontend signs in with (public, no secret).",
+            "ChatWebClientId",
+            value=web_client.user_pool_client_id,
+            description=(
+                "Cognito app client id the browser redirects with (public, no secret, "
+                "authorization code + PKCE). The frontend reads this from config.json."
+            ),
         )
-        # The pilot account is created by CLI, with the deployer's own credentials, because
-        # CDK cannot do it without putting a password in the template. Printed spelled out
-        # so the commands run as-is.
+        CfnOutput(
+            self,
+            "ChatEvalClientId",
+            value=eval_client.user_pool_client_id,
+            description=(
+                "Cognito app client id for eval/run_eval.py (password auth, no OAuth). "
+                "NOT the browser's client - see ChatWebClientId."
+            ),
+        )
+        CfnOutput(
+            self,
+            "ChatLoginDomain",
+            value=login_domain.base_url(),
+            description="Cognito managed login domain the frontend redirects to.",
+        )
+        # Accounts are created by CLI, with the deployer's own credentials, because CDK
+        # cannot do it without putting a password in the template. Printed spelled out so
+        # the commands run as-is.
+        #
+        # Two commands, for two different kinds of account. The human one is a template to
+        # run per person; the eval one is run once for the harness.
         CfnOutput(
             self,
             "ChatCreateUserCommand",
@@ -1373,10 +1524,14 @@ class NavigatorStack(Stack):
                 "aws cognito-idp admin-create-user"
                 f" --region {self.region}"
                 f" --user-pool-id {auth_pool.user_pool_id}"
-                f" --username {_PILOT_USERNAME}"
+                f" --username {_HUMAN_USERNAME_PLACEHOLDER}"
                 " --message-action SUPPRESS"
             ),
-            description="Step 1 of 2, run once after deploy with your own AWS credentials.",
+            description=(
+                "Run once PER PERSON - self-signup is off, so every account is issued. "
+                "Then set a password with ChatSetPasswordCommand. Replaced wholesale when "
+                "SJSU's IdP is federated into this pool."
+            ),
         )
         CfnOutput(
             self,
@@ -1385,12 +1540,33 @@ class NavigatorStack(Stack):
                 "aws cognito-idp admin-set-user-password"
                 f" --region {self.region}"
                 f" --user-pool-id {auth_pool.user_pool_id}"
-                f" --username {_PILOT_USERNAME}"
+                f" --username {_HUMAN_USERNAME_PLACEHOLDER}"
                 " --password 'CHOOSE-A-PASSWORD' --permanent"
             ),
             description=(
-                "Step 2 of 2. --permanent is REQUIRED: without it the account stays in "
-                "FORCE_CHANGE_PASSWORD and sign-in returns a challenge instead of a token."
+                "--permanent is REQUIRED: without it the account stays in "
+                "FORCE_CHANGE_PASSWORD, and managed login answers the redirect with a "
+                "forced password change instead of returning a code."
+            ),
+        )
+        CfnOutput(
+            self,
+            "ChatCreateEvalUserCommand",
+            value=(
+                "aws cognito-idp admin-create-user"
+                f" --region {self.region}"
+                f" --user-pool-id {auth_pool.user_pool_id}"
+                f" --username {_EVAL_USERNAME}"
+                " --message-action SUPPRESS"
+                " && aws cognito-idp admin-set-user-password"
+                f" --region {self.region}"
+                f" --user-pool-id {auth_pool.user_pool_id}"
+                f" --username {_EVAL_USERNAME}"
+                " --password 'CHOOSE-A-PASSWORD' --permanent"
+            ),
+            description=(
+                "Run ONCE for the eval harness. Its password goes in EVAL_PASSWORD (or "
+                "--password-file), never in this repo."
             ),
         )
 
@@ -1558,9 +1734,17 @@ function handler(event) {
                     "config.json",
                     {
                         "chatApiUrl": chat_url,
-                        # The frontend signs in with these (bullet 11's InitiateAuth).
+                        # The frontend redirects with these. The WEB client, never the
+                        # eval one: this file is world-readable by design, and the eval
+                        # client id in it would publish a password-auth endpoint.
                         "userPoolId": auth_pool.user_pool_id,
-                        "userPoolClientId": auth_client.user_pool_client_id,
+                        "userPoolClientId": web_client.user_pool_client_id,
+                        # Where the browser is sent for /oauth2/authorize and /logout.
+                        # There is no redirect URI here on purpose - the frontend derives
+                        # it from window.location.origin, so the same config.json is
+                        # correct on localhost and on the distribution, and the two can
+                        # never disagree about the exact string Cognito matches.
+                        "loginDomain": login_domain.base_url(),
                         "region": self.region,
                     },
                 )
@@ -1590,6 +1774,26 @@ function handler(event) {
             allow_methods=self._cors_allow_methods,
             allow_headers=self._cors_allow_headers,
         )
+
+        # THE AUTH SECTION REOPENS HERE TOO, for the same reason and by the same mechanism.
+        # Cognito will only send the browser back to a REGISTERED callback URL, and the
+        # deployed one is the CloudFront domain, which does not exist until section 6
+        # creates the distribution. So the web client is built above with the local dev
+        # entries and the deployed origin is appended here as a deploy-time token - never a
+        # hardcoded domain, so a fresh install redirects to its own site.
+        #
+        # This is an ORDERING constraint, not a dependency cycle: the distribution does not
+        # reference the client, so appending here adds no edge CloudFormation has to
+        # resolve backwards.
+        #
+        # Sign-out is in the same list because it is the same kind of redirect. Leave the
+        # logout URL out and Cognito refuses the /logout call, which strands the browser on
+        # an error page with its pool session still live - so the next sign-in returns a
+        # code without ever asking who the student is, and "sign out" was a lie.
+        cfn_web_client = web_client.node.default_child
+        deployed_redirect_urls = [*local_redirect_urls, f"{site_url}/"]
+        cfn_web_client.callback_ur_ls = deployed_redirect_urls
+        cfn_web_client.logout_ur_ls = deployed_redirect_urls
 
         CfnOutput(
             self,

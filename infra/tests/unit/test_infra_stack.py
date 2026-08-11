@@ -15,6 +15,7 @@ import copy
 import functools
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -1102,13 +1103,33 @@ def test_the_authorizer_is_native_and_reads_the_authorization_header():
     assert authorizer["IdentitySource"] == ["$request.header.Authorization"]
 
 
-def test_the_authorizer_audience_is_the_app_client_id():
+def _client_logical_id(template: Template, construct_id: str) -> str:
+    """The logical id of one app client, by its construct id.
+
+    There are two clients on the pool now, so `_logical_id` cannot be used: it asserts
+    there is exactly one resource of a type.
+    """
+    found = [
+        lid
+        for lid in template.find_resources("AWS::Cognito::UserPoolClient")
+        if construct_id in lid
+    ]
+    assert len(found) == 1, f"expected one {construct_id} client, found {found}"
+    return found[0]
+
+
+def test_the_authorizer_audience_carries_both_app_clients():
     """A Cognito ACCESS token carries no `aud` claim, only `client_id`, and API Gateway
-    validates client_id only when aud is absent. Do not 'fix' this to an ID token."""
+    validates client_id only when aud is absent. Do not 'fix' this to an ID token.
+
+    BOTH clients, in this order. The audience is an allowlist of client_id values, so
+    dropping the eval client here breaks the harness at the gateway with a CORS-less 401,
+    and dropping the web client breaks every student."""
     template = _template()
     authorizer = _resource(template, "AWS::ApiGatewayV2::Authorizer")["Properties"]
     assert authorizer["JwtConfiguration"]["Audience"] == [
-        {"Ref": _logical_id(template, "AWS::Cognito::UserPoolClient")}
+        {"Ref": _client_logical_id(template, "ChatWebClient")},
+        {"Ref": _client_logical_id(template, "ChatEvalClient")},
     ]
 
 
@@ -1173,24 +1194,142 @@ def test_the_user_pool_refuses_self_signup():
 
 
 def test_the_pool_signs_in_by_plain_username_not_email():
-    """UsernameAttributes: ['email'] would require the pilot login to be an address, and
+    """UsernameAttributes: ['email'] would require every account to be an address, and
     AliasAttributes would reject one that looks like an address. Sign-in options are
-    IMMUTABLE after creation - changing this later replaces the pool, and the pool id the
-    frontend is built with."""
+    IMMUTABLE after creation - changing this later replaces the pool, and with it every
+    account in it, which is why the per-user change deliberately left this alone."""
     pool = _resource(_template(), "AWS::Cognito::UserPool")["Properties"]
     assert "UsernameAttributes" not in pool
     assert "AliasAttributes" not in pool
 
 
-def test_the_app_client_is_public_and_password_auth_only():
-    """A client secret would be readable by anyone who views source, and Cognito rejects
-    the unsigned browser call unless the client is public."""
-    client = _resource(_template(), "AWS::Cognito::UserPoolClient")["Properties"]
+def test_the_pool_adds_no_custom_attributes():
+    """A federated profile is rebuilt from the provider's claims on every sign-in, so an
+    application-written Cognito attribute is liable to be silently overwritten once Okta
+    lands. Application data belongs in DynamoDB keyed by `sub`."""
+    pool = _resource(_template(), "AWS::Cognito::UserPool")["Properties"]
+    schema = pool.get("Schema") or []
+    custom = [entry for entry in schema if entry.get("Name", "").startswith("custom:")]
+    assert custom == [], f"custom attributes on the pool: {custom}"
+
+
+def test_there_are_exactly_two_app_clients():
+    """One pool, two callers, and they cannot share a client: a client is the unit Cognito
+    applies auth flows to, so a single permissive client would carry a password flow any
+    browser could call with the client id published in config.json."""
+    clients = _template().find_resources("AWS::Cognito::UserPoolClient")
+    assert len(clients) == 2, sorted(clients)
+
+
+def test_the_web_client_is_public_code_flow_with_no_sign_in_flow_of_its_own():
+    """THE assertion this file exists for on the auth side, and the trap it pins is an
+    ABSENT ExplicitAuthFlows rather than a wrong one.
+
+    An empty AuthFlow() makes CDK omit the property, and an absent ExplicitAuthFlows does
+    NOT mean "no direct sign-in" - Cognito falls back to legacy defaults that include SRP.
+    The web client would then quietly accept a local-password sign-in, which is the exact
+    dead end this change exists to close: no federated user can ever use SRP, so a form in
+    front of it would have to be deleted the day SJSU's IdP arrives.
+
+    ALLOW_REFRESH_TOKEN_AUTH is not a sign-in path - it is what lets the token endpoint
+    honour a refresh grant for a session that already came through the redirect."""
+    client = _resource_named(
+        _template(), "AWS::Cognito::UserPoolClient", "ChatUserPoolChatWebClient"
+    )["Properties"]
+    assert client.get("GenerateSecret") in (None, False), "a browser cannot hold a secret"
+    assert client["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]
+    assert client["AllowedOAuthFlows"] == ["code"], (
+        "implicit returns tokens in the URL fragment, where they land in history and any "
+        "Referer - the reason the code flow exists"
+    )
+    assert client["AllowedOAuthFlowsUserPoolClient"] is True
+    assert "openid" in client["AllowedOAuthScopes"]
+
+
+def test_the_web_client_redirects_to_both_local_dev_and_the_deployed_site():
+    """Cognito matches redirect_uri against this list by EXACT STRING, and the frontend
+    sends `window.location.origin + "/"`. Both origins are needed - local dev from
+    config.yaml, the distribution as a deploy-time token so a fresh install redirects to
+    its own site - and the trailing slash is load-bearing on every entry, because a
+    mismatch is rendered by Cognito's own error page before the app is ever reached.
+
+    Logout carries the same list: without it /logout is refused and the pool session cookie
+    survives, so the next sign-in returns a code without asking who is there."""
+    from infra.config import resolve_cors_allow_origins
+
+    client = _resource_named(
+        _template(), "AWS::Cognito::UserPoolClient", "ChatUserPoolChatWebClient"
+    )["Properties"]
+    for key in ("CallbackURLs", "LogoutURLs"):
+        urls = client[key]
+        literals = [u for u in urls if isinstance(u, str)]
+        assert literals == [
+            f"{o.rstrip('/')}/" for o in resolve_cors_allow_origins(load_config())
+        ], f"{key} local entries drifted from cors.allow_origins: {literals}"
+        assert "SiteDistribution" in json.dumps(urls), (
+            f"{key} must carry the CloudFront origin as a deploy-time token"
+        )
+        assert all(not isinstance(u, str) or u.endswith("/") for u in urls), urls
+
+
+def test_the_eval_client_is_password_auth_with_no_oauth():
+    """eval/run_eval.py is headless - no browser to redirect, no human to click - so the
+    one thing the web client deliberately cannot do is the only thing this one does. No
+    secret, so its single unsigned InitiateAuth needs no SECRET_HASH."""
+    client = _resource_named(
+        _template(), "AWS::Cognito::UserPoolClient", "ChatUserPoolChatEvalClient"
+    )["Properties"]
     assert client.get("GenerateSecret") in (None, False)
     assert set(client["ExplicitAuthFlows"]) == {
         "ALLOW_USER_PASSWORD_AUTH",
         "ALLOW_REFRESH_TOKEN_AUTH",
     }
+    assert client["AllowedOAuthFlowsUserPoolClient"] is False
+    assert "CallbackURLs" not in client
+
+
+def test_the_managed_login_domain_exists_and_names_no_account():
+    """The hosted endpoints are what make the flow federation-ready: /oauth2/authorize is
+    the only place an Okta round trip can happen. The prefix must be globally unique, and
+    nothing in this repo may hardcode a global name - so it is derived from the stack id,
+    and a fresh install in another account gets its own."""
+    template = _template()
+    domain = _resource(template, "AWS::Cognito::UserPoolDomain")["Properties"]
+    rendered = json.dumps(domain["Domain"])
+    assert "AWS::StackId" in rendered, f"the domain prefix must be derived: {rendered}"
+    assert "ChatLoginDomain" in template.to_json()["Outputs"], (
+        "the frontend cannot redirect without the domain in config.json"
+    )
+
+
+def test_the_config_json_publishes_the_web_client_never_the_eval_one():
+    """config.json is world-readable by design. The eval client id in it would publish a
+    password-auth endpoint to every visitor."""
+    markers = _deployment_named(_template(), "SiteConfigDeployment")["Properties"][
+        "SourceMarkers"
+    ]
+    rendered = json.dumps(markers)
+    assert "ChatWebClient" in rendered
+    assert "ChatEvalClient" not in rendered, (
+        "the eval client id must never reach the published config.json"
+    )
+    assert "ChatLoginDomain" in rendered
+
+
+def test_the_stack_outputs_give_the_eval_runner_the_machine_client():
+    """eval/run_eval.py reads ChatEvalClientId. If that output ever resolved to the web
+    client the harness would fail at sign-in with NotAuthorizedException, because the web
+    client has no password flow."""
+    template = _template()
+    outputs = template.to_json()["Outputs"]
+    assert "ChatUserPoolClientId" not in outputs, (
+        "the single-client output is retired - an ambiguous name is how the harness ends "
+        "up pointed at the browser's client"
+    )
+    eval_ref = json.dumps(outputs["ChatEvalClientId"]["Value"])
+    assert _client_logical_id(template, "ChatEvalClient") in eval_ref, eval_ref
+    web_ref = json.dumps(outputs["ChatWebClientId"]["Value"])
+    assert _client_logical_id(template, "ChatWebClient") in web_ref, web_ref
 
 
 def test_no_password_is_baked_into_the_template():
@@ -1198,6 +1337,35 @@ def test_no_password_is_baked_into_the_template():
     events. The stack prints CLI commands with a placeholder instead."""
     rendered = json.dumps(_template().to_json())
     assert "CHOOSE-A-PASSWORD" in rendered, "the setup command should carry a placeholder"
+
+
+def test_the_shared_pilot_credential_is_gone_everywhere():
+    """The single shared login is retired in the SAME change that adds per-user accounts,
+    not a later one - leaving it would mean a live credential nobody owns, still able to
+    reach the paid endpoint, for however long the follow-up took.
+
+    Asserted against the template AND the source, because the account was only ever half
+    in the template: the username lived in the printed setup commands, and the password
+    was always outside the repo. A leftover here is a leftover way in."""
+    # Assembled rather than written out so this assertion is not its own only match - a
+    # repo-wide search for a literal spelled in the searching file always finds itself,
+    # and excluding this file by path would blind the search to the test tree.
+    needle = "sjsu" + "pilot"
+
+    assert needle not in json.dumps(_template().to_json()), (
+        "the shared pilot username is still synthesized"
+    )
+
+    repo_root = Path(__file__).resolve().parents[3]
+    tracked = subprocess.run(
+        ["git", "-C", str(repo_root), "grep", "-lI", needle],
+        capture_output=True,
+        text=True,
+    )
+    # git grep exits 1 with no output when nothing matches, which is the passing case.
+    assert not tracked.stdout.strip(), (
+        f"the shared pilot login still appears in: {tracked.stdout.strip()}"
+    )
 
 
 # --- Section 6: site bucket + CloudFront -------------------------------------------------

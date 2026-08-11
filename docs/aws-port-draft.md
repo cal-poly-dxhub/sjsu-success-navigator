@@ -36,5 +36,7 @@
 - recursive crawl (v1 ships a curated URL list)
 - response streaming (HTTP API cannot stream; needs REST API or Function URL)
 - billing alarm (v1 relies on stage throttling + the Cognito gate as cost caps)
-- campus-affiliated Cognito accounts (v1 ships gav's single shared
-  username/password pilot login)
+- ~~campus-affiliated Cognito accounts (v1 ships gav's single shared
+  username/password pilot login)~~ DONE for the account half: per-user accounts
+  behind managed login. Federating SJSU's IdP into the pool is the part still
+  outstanding, and it is now config-only.

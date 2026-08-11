@@ -2,8 +2,8 @@
 """Collect the deployed system's answers to the ground-truth questions. NO SCORING.
 
 This runner is deliberately judgment-free: it sends each ground-truth question to the real
-deployed endpoint - genuine HTTP through API Gateway with a Cognito access token from
-InitiateAuth, exactly the frontend's path - and records what came back. Accuracy is decided
+deployed endpoint - genuine HTTP through API Gateway with a real Cognito access token, over
+the same gated route the browser uses - and records what came back. Accuracy is decided
 by humans (and by Claude reading the transcript), never by this script. The only derived
 field is `behavior_fired`, a mechanical classification of the response shape (safety card
 present / cards present / prose only / error), so the rendered page can badge each answer.
@@ -12,13 +12,22 @@ Artifacts, per run, under --out-dir:
     eval-<UTC stamp>.json   the transcript: run metadata + every wire response verbatim
     eval-<UTC stamp>.html   the side-by-side page (golden vs actual), via render_results.py
 
-Auth mirrors frontend/src/lib/auth.ts: one unsigned USER_PASSWORD_AUTH InitiateAuth call,
-and the ACCESS token (not the id token) as the Bearer. The shared pilot password comes from
-the EVAL_PASSWORD env var or --password-file - never argv, never this repo.
+Auth NO LONGER mirrors the frontend, and cannot: the browser signs in by redirecting to
+Cognito managed login (authorization code + PKCE), which needs a browser and a human. This
+runner is headless, so it uses the pool's SECOND app client - the machine one - with a
+single unsigned USER_PASSWORD_AUTH InitiateAuth call, and the ACCESS token (not the id
+token) as the Bearer. Both clients are in the API's JWT audience, so the token this gets is
+accepted on exactly the same route the browser's is.
 
-Endpoint discovery reads the CloudFormation stack outputs (ChatApiUrl,
-ChatUserPoolClientId) so nothing is hardcoded; --api-url and --client-id override for
-testing against a different deployment.
+The eval account's password comes from the EVAL_PASSWORD env var or --password-file - never
+argv, never this repo. It is a machine account (see ChatCreateEvalUserCommand in the stack
+outputs), not the retired shared login: humans each have their own account now and reach it
+through the redirect, which this client cannot serve at all.
+
+Endpoint discovery reads the CloudFormation stack outputs (ChatApiUrl, ChatEvalClientId) so
+nothing is hardcoded; --api-url and --client-id override for testing against a different
+deployment. ChatEvalClientId, NOT ChatWebClientId: the web client has no password flow
+enabled, so its id here fails with NotAuthorizedException.
 
 Dependencies (this repo pins nothing for eval/): boto3, httpx, PyYAML.
     python3 -m pip install boto3 httpx PyYAML
@@ -45,25 +54,29 @@ import yaml
 DEFAULT_STACK = "SjsuNavigatorStack"
 DEFAULT_PROFILE = "gavilan"
 DEFAULT_REGION = "us-west-2"
-DEFAULT_USERNAME = "sjsupilot"
+DEFAULT_USERNAME = "eval-runner"
 # Per-request ceiling: the HTTP API integration cap is 30s, so anything past ~32s is the
 # gateway timing out, not the answer still coming.
 REQUEST_TIMEOUT_S = 35.0
 
 
 def discover_endpoint(profile: str, region: str, stack_name: str) -> dict:
-    """ChatApiUrl and ChatUserPoolClientId from the stack outputs."""
+    """ChatApiUrl and ChatEvalClientId from the stack outputs.
+
+    ChatEvalClientId is the MACHINE client. ChatWebClientId next to it in the outputs is
+    the browser's, and it has no password flow - reaching for it here fails at sign-in.
+    """
     session = boto3.Session(profile_name=profile, region_name=region)
     stacks = session.client("cloudformation").describe_stacks(StackName=stack_name)
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stacks["Stacks"][0]["Outputs"]}
-    missing = [k for k in ("ChatApiUrl", "ChatUserPoolClientId") if k not in outputs]
+    missing = [k for k in ("ChatApiUrl", "ChatEvalClientId") if k not in outputs]
     if missing:
         raise SystemExit(f"stack {stack_name} is missing output(s): {', '.join(missing)}")
-    return {"api_url": outputs["ChatApiUrl"], "client_id": outputs["ChatUserPoolClientId"]}
+    return {"api_url": outputs["ChatApiUrl"], "client_id": outputs["ChatEvalClientId"]}
 
 
 def sign_in(client_id: str, region: str, username: str, password: str) -> str:
-    """The frontend's exact sign-in: one unsigned InitiateAuth, access token back."""
+    """The machine client's sign-in: one unsigned InitiateAuth, access token back."""
     resp = httpx.post(
         f"https://cognito-idp.{region}.amazonaws.com/",
         headers={
@@ -161,10 +174,11 @@ def main() -> None:
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
     parser.add_argument("--region", default=DEFAULT_REGION)
     parser.add_argument("--api-url", default=None, help="skip discovery, use this POST /chat URL")
-    parser.add_argument("--client-id", default=None, help="skip discovery, use this app client id")
+    parser.add_argument("--client-id", default=None,
+                        help="skip discovery, use this app client id (the MACHINE client)")
     parser.add_argument("--username", default=os.environ.get("EVAL_USERNAME", DEFAULT_USERNAME))
     parser.add_argument("--password-file", default=None,
-                        help="file holding the pilot password (keep it OUTSIDE the repo); "
+                        help="file holding the eval account password (keep it OUTSIDE the repo); "
                              "default is the EVAL_PASSWORD env var")
     parser.add_argument("--out-dir", default=str(here / "results"))
     parser.add_argument("--no-render", action="store_true")

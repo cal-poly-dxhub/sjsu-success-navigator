@@ -1,81 +1,88 @@
-import { useState, type FormEvent } from 'react';
-import { AuthError, isSignedIn, signIn } from '../lib/auth';
+import { useEffect, useState } from 'react';
+import {
+	AuthError,
+	beginSignIn,
+	completeSignInFromRedirect,
+	hasPendingRedirect,
+	isSignedIn,
+} from '../lib/auth';
 import ChatApp from './ChatApp';
 import { PressableButton } from './PressableButton';
 import './SignInGate.css';
 
 /**
- * The sign-in gate, replacing camp's ProtectedChatApp.
+ * The sign-in gate: a button that leaves for Cognito managed login, and the other half of
+ * the round trip when the browser comes back with a code.
  *
- * Camp's version read sessionStorage and redirected to /login if it was empty - a
- * cosmetic check, trivially bypassed, in front of a backend that had no auth at all.
- * This one is not the security boundary either, and does not pretend to be: API Gateway's
- * JWT authorizer rejects an unauthenticated POST /chat regardless of what the browser
- * renders. What this does is get a real token before the first request, so the student
- * sees a sign-in form rather than an unexplained failure.
+ * There is no username or password field here, and that is the point rather than a
+ * simplification. SJSU's identity provider is federated into this pool later as a
+ * config-only change, and a federated user cannot authenticate through InitiateAuth at
+ * all - only the hosted endpoints can. A form built now would be thrown away then, and
+ * every student's sign-in would move under them. What they see today is what they will
+ * see after Okta lands; only the buttons on Cognito's own page change.
  *
- * One page, no redirect. The Hosted UI flow camp used needed /login and /auth/callback to
- * bounce through Google; a single InitiateAuth call needs neither.
+ * This is NOT the security boundary and does not pretend to be: API Gateway's JWT
+ * authorizer rejects an unauthenticated POST /chat regardless of what the browser renders.
+ * What it does is get a real token before the first request, so a student sees a sign-in
+ * page rather than an unexplained failure.
+ *
+ * ONE PAGE STILL. The callback is the root route - `?code=` is handled here on mount - so
+ * the redirect flow adds no /login or /auth/callback page and no CloudFront routing case.
  */
 export default function SignInGate() {
 	const [signedIn, setSignedIn] = useState(() => isSignedIn());
-	const [username, setUsername] = useState('');
-	const [password, setPassword] = useState('');
 	const [error, setError] = useState<string | null>(null);
-	const [busy, setBusy] = useState(false);
+	// Starts true on a return trip so the sign-in button never flashes over a sign-in that
+	// is already half-finished.
+	const [busy, setBusy] = useState(() => hasPendingRedirect());
+
+	useEffect(() => {
+		if (!hasPendingRedirect()) return;
+		let cancelled = false;
+		completeSignInFromRedirect()
+			.then((completed) => {
+				if (!cancelled && completed) setSignedIn(true);
+			})
+			.catch((err: unknown) => {
+				if (cancelled) return;
+				setError(
+					err instanceof AuthError || err instanceof Error
+						? err.message
+						: 'Sign-in could not be completed.',
+				);
+			})
+			.finally(() => {
+				if (!cancelled) setBusy(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	if (signedIn) {
 		return <ChatApp />;
 	}
 
-	const handleSubmit = async (event: FormEvent) => {
-		event.preventDefault();
+	const handleSignIn = () => {
 		setBusy(true);
 		setError(null);
-		try {
-			await signIn(username.trim(), password);
-			setSignedIn(true);
-		} catch (err: unknown) {
+		// Navigates away on success, so `busy` is only ever cleared by a failure to get
+		// that far - a config.json that will not load, say.
+		beginSignIn().catch((err: unknown) => {
 			setError(
 				err instanceof AuthError || err instanceof Error
 					? err.message
-					: 'Sign-in failed.',
+					: 'Sign-in could not be started.',
 			);
-		} finally {
 			setBusy(false);
-		}
+		});
 	};
 
 	return (
 		<main className="sign-in">
-			<form className="sign-in__card" onSubmit={handleSubmit}>
+			<div className="sign-in__card">
 				<h1 className="sign-in__title">Student Success Navigator</h1>
-				<p className="sign-in__subtitle">Sign in to continue.</p>
-
-				<label className="sign-in__label" htmlFor="sign-in-username">
-					Username
-				</label>
-				<input
-					id="sign-in-username"
-					className="sign-in__input"
-					value={username}
-					onChange={(event) => setUsername(event.target.value)}
-					autoComplete="username"
-					required
-				/>
-
-				<label className="sign-in__label" htmlFor="sign-in-password">
-					Password
-				</label>
-				<input
-					id="sign-in-password"
-					className="sign-in__input"
-					type="password"
-					value={password}
-					onChange={(event) => setPassword(event.target.value)}
-					autoComplete="current-password"
-					required
-				/>
+				<p className="sign-in__subtitle">Sign in with your SJSU account to continue.</p>
 
 				{error ? (
 					<p className="sign-in__error" role="alert">
@@ -83,10 +90,15 @@ export default function SignInGate() {
 					</p>
 				) : null}
 
-				<PressableButton className="sign-in__submit" type="submit" disabled={busy}>
+				<PressableButton
+					className="sign-in__submit"
+					type="button"
+					onClick={handleSignIn}
+					disabled={busy}
+				>
 					{busy ? 'Signing in…' : 'Sign in'}
 				</PressableButton>
-			</form>
+			</div>
 		</main>
 	);
 }
