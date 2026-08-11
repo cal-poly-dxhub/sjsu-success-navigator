@@ -1432,7 +1432,10 @@ class NavigatorStack(Stack):
         # hatch to append the CloudFront origin, and a second literal here would be a
         # silent way for the two to drift - dropping Authorization on the amended block
         # would break every /chat call at the preflight.
-        cors_allow_methods = ["POST", "GET", "OPTIONS"]
+        # PATCH joins the list for the rename route. It is a cross-origin call carrying
+        # Authorization, so it is preflighted: leave it out and the browser fails at the
+        # OPTIONS, which surfaces as a CORS error rather than as the missing method it is.
+        cors_allow_methods = ["POST", "GET", "PATCH", "OPTIONS"]
         cors_allow_headers = ["Content-Type", "Authorization"]
         self._cors_allow_origins = list(cors_allow_origins)
         self._cors_allow_methods = cors_allow_methods
@@ -1514,6 +1517,22 @@ class NavigatorStack(Stack):
             # string and app/handler.get_conversation have to agree letter for letter.
             path="/conversations/{conversationId}",
             methods=[apigwv2.HttpMethod.GET],
+            integration=chat_integration,
+            authorizer=jwt_authorizer,
+        )
+
+        # THE WRITE ROUTE on one conversation: rename it. Same function, same authorizer,
+        # same path, and the authorizer matters MORE here than on the reads it sits beside:
+        # this CHANGES stored data, and the only thing that decides whose data is the `sub`
+        # claim the partition key is built from. An ungated rename would be a rename with
+        # nobody to attribute.
+        #
+        # A separate add_routes call rather than another method on the GET above, because
+        # the GET is a read of a projection and this is a write; keeping them apart is what
+        # makes each route's comment true of every method under it.
+        http_api.add_routes(
+            path="/conversations/{conversationId}",
+            methods=[apigwv2.HttpMethod.PATCH],
             integration=chat_integration,
             authorizer=jwt_authorizer,
         )

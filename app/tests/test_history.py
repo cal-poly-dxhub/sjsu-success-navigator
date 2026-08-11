@@ -477,7 +477,7 @@ def test_a_zero_display_window_asks_dynamodb_nothing(table):
     assert table.queries == []
 
 
-# --- titling -------------------------------------------------------
+# --- titling and renaming -------------------------------------------------------
 
 
 def test_a_generated_title_replaces_the_first_message_one(table):
@@ -520,17 +520,32 @@ def test_a_failed_condition_is_a_false_not_an_exception(monkeypatch):
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
 
     assert store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="x") is False
+    assert store.rename_conversation(user_id=_SUB, conversation_id=_CONV, title="x") is False
 
 
 def test_any_other_dynamodb_failure_still_raises(monkeypatch):
-    """A throttled write must not be mistaken for the condition holding. Only the one named
-    condition is swallowed; everything else reaches the caller."""
+    """A throttled rename must not be reported to the student as "no such conversation".
+    Only the one named condition is swallowed; everything else reaches the handler's 502."""
     fake = _FakeTable(raises_on="update_item")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
 
     with pytest.raises(RuntimeError):
-        store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="x")
+        store.rename_conversation(user_id=_SUB, conversation_id=_CONV, title="x")
+
+
+def test_a_rename_marks_the_header_user_titled(table):
+    table.store.rename_conversation(
+        user_id=_SUB, conversation_id=_CONV, title="Aid appeal"
+    )
+
+    update = table.updates[0]
+    assert update["ExpressionAttributeValues"][":title"] == "Aid appeal"
+    assert update["ExpressionAttributeValues"][":true"] is True
+    assert update["ExpressionAttributeNames"]["#userTitled"] == "userTitled"
+    assert update["ConditionExpression"] == "attribute_exists(sk)", (
+        "a rename of a forged id must not create a header in the caller's own partition"
+    )
 
 
 def test_the_title_cap_travels_with_the_store(monkeypatch):

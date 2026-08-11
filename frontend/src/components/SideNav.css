@@ -166,6 +166,125 @@
 	transform: translateY(2px);
 }
 
+/* The row is the positioning context for the two controls that sit over the end of the
+   title. A reserved column would narrow every row for the sake of two buttons most rows
+   never show. */
+.side-nav__row {
+	position: relative;
+}
+
+.side-nav__row-actions {
+	position: absolute;
+	inset: 0 0.3rem 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 0.15rem;
+	padding-left: 1.4rem;
+	/* The fade is what keeps a truncated title from colliding with the icons: the text runs
+	   under a gradient rather than being cut at a hard edge. */
+	background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 1.4rem);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 120ms ease;
+}
+
+.side-nav__chat--active + .side-nav__row-actions {
+	background: linear-gradient(to right, rgba(238, 247, 255, 0), #eef7ff 1.4rem);
+}
+
+/* focus-within, not hover alone: the controls have to be reachable by keyboard. */
+.side-nav__row:hover .side-nav__row-actions,
+.side-nav__row:focus-within .side-nav__row-actions {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.side-nav__row-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.7rem;
+	height: 1.7rem;
+	padding: 0;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background 120ms ease, color 120ms ease;
+}
+
+.side-nav__row-icon:hover {
+	background: rgba(28, 36, 48, 0.07);
+	color: var(--text-primary);
+}
+
+.side-nav__row-icon:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.side-nav__rename {
+	display: flex;
+	gap: 0.35rem;
+	padding: 0.5rem 0.55rem;
+	border: 2px solid rgba(8, 90, 163, 0.28);
+	border-radius: 15px;
+	background: #fff;
+	align-items: center;
+}
+
+.side-nav__rename-input {
+	min-width: 0;
+	flex: 1;
+	padding: 0.3rem 0.4rem;
+	border: 1px solid #d8dbe0;
+	border-radius: 9px;
+	background: #fff;
+	color: var(--text-primary);
+	font: inherit;
+	font-size: 0.82rem;
+	font-weight: 600;
+}
+
+.side-nav__row-action {
+	flex-shrink: 0;
+	padding: 0.32rem 0.55rem;
+	border: 1px solid #d8dbe0;
+	border-radius: 9px;
+	background: #f6f7f9;
+	color: var(--text-secondary);
+	font: inherit;
+	font-size: 0.76rem;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.side-nav__row-action:hover {
+	background: #eef1f5;
+	color: var(--text-primary);
+}
+
+.side-nav__row-action:disabled {
+	opacity: 0.55;
+	cursor: wait;
+}
+
+.side-nav__row-icon:focus-visible,
+.side-nav__row-action:focus-visible,
+.side-nav__rename-input:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+/* Touch has no hover, so the controls are simply always there. */
+@media (hover: none) {
+	.side-nav__row-actions {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
 .side-nav__account {
 	display: flex;
 	flex-direction: column;
@@ -307,6 +426,8 @@
 @media (prefers-reduced-motion: reduce) {
 	.side-nav__new-chat,
 	.side-nav__chat,
+	.side-nav__row-actions,
+	.side-nav__row-icon,
 	.chat-app__nav-toggle {
 		transition: none;
 	}

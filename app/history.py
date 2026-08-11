@@ -348,6 +348,39 @@ class ConversationStore:
             raise
         return True
 
+    def rename_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        title: str,
+    ) -> bool:
+        """Give a conversation the name a student chose. Returns False if there is none.
+
+        MARKS THE HEADER `userTitled`, which is the whole point of the attribute: it is not
+        a display flag, it is the record that this name came from a person. set_generated_
+        title above refuses to write over it.
+
+        Conditional on the header existing, for the reason that condition exists everywhere
+        in this module: without it a rename of a forged or already-deleted conversation id
+        would CREATE a header - a titled, empty conversation appearing in the student's own
+        sidebar because they asked to rename something that was not there. A forged id must
+        touch nothing.
+        """
+        try:
+            self._table_resource().update_item(
+                Key={"pk": f"USER#{user_id}", "sk": f"CONV#{conversation_id}"},
+                UpdateExpression="SET #title = :title, #userTitled = :true",
+                ConditionExpression="attribute_exists(sk)",
+                ExpressionAttributeNames={"#title": "title", "#userTitled": "userTitled"},
+                ExpressionAttributeValues={":title": title, ":true": True},
+            )
+        except Exception as exc:
+            if _is_conditional_check_failure(exc):
+                return False
+            raise
+        return True
+
     # --- reads ----------------------------------------------------------------
 
     def list_conversations(self, *, user_id: str, limit: int) -> list[ConversationSummary]:

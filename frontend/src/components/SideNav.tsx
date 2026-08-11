@@ -1,8 +1,18 @@
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { ChatSession } from '../types/chat';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { PressableButton } from './PressableButton';
 import './SideNav.css';
+
+/**
+ * The longest name a student may give a conversation. The SERVER's cap
+ * (chat.title_max_chars) is the real one and rejects anything longer with a 400; this is the
+ * same number spelled where the input can stop them reaching it, so the ordinary way to hit
+ * the limit is a field that stops accepting characters rather than an error after the fact.
+ */
+const TITLE_MAX_CHARS = 80;
+
 type SideNavProps = {
 	chats: ChatSession[];
 	activeChatId: string;
@@ -24,6 +34,13 @@ type SideNavProps = {
 	onClose: () => void;
 	onNewChat: () => void;
 	onSelectChat: (id: string) => void;
+	/**
+	 * Rename, resolving only once the SERVER has agreed. It is async because the row stays
+	 * disabled until then: a title that appeared instantly and then reverted would be the
+	 * sidebar lying about what is stored, which is the one thing this component is not
+	 * allowed to do.
+	 */
+	onRenameChat: (id: string, title: string) => Promise<void>;
 };
 
 function NavContent({
@@ -38,11 +55,50 @@ function NavContent({
 	onOpenCost,
 	onNewChat,
 	onSelectChat,
+	onRenameChat,
 }: Omit<SideNavProps, 'open' | 'onClose'>) {
+	// Which row is mid-rename, mid-delete-confirm, or waiting on the server. Local to the
+	// sidebar because none of it is data: it is what this panel is currently showing, and it
+	// is thrown away the moment the server answers.
+	const [editingId, setEditingId] = useState<string | null>(null);
+	const [draft, setDraft] = useState('');
+	const [pendingId, setPendingId] = useState<string | null>(null);
+	const [rowError, setRowError] = useState<string | null>(null);
+
+	const closeRowUi = () => {
+		setEditingId(null);
+		setDraft('');
+	};
+
+	const startRename = (chat: ChatSession) => {
+		setRowError(null);
+		setEditingId(chat.id);
+		setDraft(chat.title);
+	};
+
+	const commitRename = (chat: ChatSession) => {
+		const title = draft.trim();
+		// An unchanged or emptied name is not a rename. Closing without a request is the
+		// honest outcome: nothing was asked for, so nothing is claimed.
+		if (!title || title === chat.title) {
+			closeRowUi();
+			return;
+		}
+		setPendingId(chat.id);
+		void onRenameChat(chat.id, title)
+			.then(closeRowUi)
+			.catch((error: unknown) => {
+				setRowError(error instanceof Error ? error.message : 'Could not rename that chat.');
+			})
+			.finally(() => setPendingId(null));
+	};
+
+
 	// A chat with no conversation id is one started in this tab that has not been sent yet,
 	// so it is not "history" - it is the only thing in the list on a first visit, and saying
 	// "no past chats" beneath it would be wrong the moment the student presses send.
 	const stored = chats.filter((chat) => chat.conversationId);
+
 	return (
 		<>
 			<div className="side-nav__header">
@@ -71,21 +127,88 @@ function NavContent({
 					{chats.map((chat) => {
 						const active = chat.id === activeChatId;
 						const opening = chat.id === openingChatId;
+						const pending = chat.id === pendingId;
+						// A chat with no conversation id has never been sent, so there is nothing
+						// on the server to rename or delete. That row is the welcome screen, and it
+						// stops being one the moment the student asks something.
+						const stored = Boolean(chat.conversationId);
+
+						if (chat.id === editingId) {
+							return (
+								<li key={chat.id} className="side-nav__row">
+									<form
+										className="side-nav__rename"
+										onSubmit={(event) => {
+											event.preventDefault();
+											commitRename(chat);
+										}}
+									>
+										<input
+											className="side-nav__rename-input"
+											value={draft}
+											maxLength={TITLE_MAX_CHARS}
+											autoFocus
+											aria-label={`Rename ${chat.title}`}
+											disabled={pending}
+											onChange={(event) => setDraft(event.target.value)}
+											onKeyDown={(event) => {
+												// Escape abandons the edit. Backing out of a rename is a
+												// small, reversible thing and should not cost a click.
+												if (event.key === 'Escape') closeRowUi();
+											}}
+										/>
+										<button type="submit" className="side-nav__row-action" disabled={pending}>
+											{pending ? 'Saving…' : 'Save'}
+										</button>
+										<button
+											type="button"
+											className="side-nav__row-action"
+											disabled={pending}
+											onClick={closeRowUi}
+										>
+											Cancel
+										</button>
+									</form>
+								</li>
+							);
+						}
+
 						return (
-							<li key={chat.id}>
+							<li key={chat.id} className="side-nav__row">
 								<button
 									type="button"
 									className={`side-nav__chat${active ? ' side-nav__chat--active' : ''}`}
 									onClick={() => onSelectChat(chat.id)}
-									disabled={busy || openingChatId !== null}
+									disabled={busy || openingChatId !== null || pendingId !== null}
 									aria-current={active ? 'page' : undefined}
 									aria-busy={opening ? 'true' : undefined}
 								>
 									<span>{chat.title}</span>
-									{opening ? (
-										<span className="side-nav__chat-status">Opening…</span>
-									) : null}
+									{opening ? <span className="side-nav__chat-status">Opening…</span> : null}
 								</button>
+
+								{stored && !opening ? (
+									// Revealed on hover and on FOCUS-WITHIN, so the control is reachable
+									// by keyboard rather than only by mouse. It sits over the end of the
+									// title rather than beside it: a column reserved for it would narrow
+									// every row for the sake of a button most rows never show.
+									<div className="side-nav__row-actions">
+										<button
+											type="button"
+											className="side-nav__row-icon"
+											aria-label={`Rename ${chat.title}`}
+											disabled={busy || pendingId !== null}
+											onClick={() => startRename(chat)}
+										>
+											<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+												<path
+													d="M4 20h4L18 10l-4-4L4 16v4zm13.7-13.3 1.6-1.6a1.4 1.4 0 0 0 0-2l-2-2a1.4 1.4 0 0 0-2 0l-1.6 1.6 4 4z"
+													fill="currentColor"
+												/>
+											</svg>
+										</button>
+									</div>
+								) : null}
 							</li>
 						);
 					})}
@@ -104,6 +227,15 @@ function NavContent({
 				{historyError ? (
 					<p className="side-nav__history-note side-nav__history-note--error" role="status">
 						{historyError}
+					</p>
+				) : null}
+
+				{/* A failed rename, said where it happened. The row is left as it was rather
+				    than optimistically changed and reverted, so this note is the only thing
+				    that changes: what is on screen still matches what is stored. */}
+				{rowError ? (
+					<p className="side-nav__history-note side-nav__history-note--error" role="status">
+						{rowError}
 					</p>
 				) : null}
 			</nav>

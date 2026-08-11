@@ -7,6 +7,7 @@ import {
 	fetchConversations,
 	incomingBatchFromResponse,
 	postChat,
+	renameConversation,
 } from '../lib/chatApi';
 import {
 	appendConversationTurn,
@@ -457,6 +458,22 @@ export default function ChatApp() {
 		void signOut();
 	};
 
+	/**
+	 * Rename one conversation. The sidebar's copy is updated only AFTER the server agrees,
+	 * and to the title the server stored rather than the one that was typed: the server
+	 * normalises it, so rendering the typed string would put a name on screen that a reload
+	 * disagrees with.
+	 */
+	const handleRenameChat = async (id: string, title: string) => {
+		const chat = chats.find((item) => item.id === id);
+		if (!chat?.conversationId) return;
+
+		const stored = await renameConversation(chat.conversationId, title);
+		setChats((current) =>
+			current.map((item) => (item.id === id ? { ...item, title: stored } : item)),
+		);
+	};
+
 	const handleNewChat = () => {
 		if (openingChatId) return;
 		const chat = newChatSession();
@@ -509,6 +526,7 @@ export default function ChatApp() {
 				onClose={() => setNavOpen(false)}
 				onNewChat={handleNewChat}
 				onSelectChat={handleSelectChat}
+				onRenameChat={handleRenameChat}
 			/>
 
 			{/* Mobile only (display:none above the breakpoint): the two header controls are

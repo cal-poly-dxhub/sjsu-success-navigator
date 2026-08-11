@@ -3,17 +3,20 @@
 Camp's main.py and its routers are replaced by this file; the service modules alongside it
 (settings, models, prompts, tools, retrieve, cards, safety, orchestrator) move in as files.
 
-THREE ROUTES, one function (see lambda_handler):
+FOUR ROUTES, one function (see lambda_handler):
 
-    POST /chat                              one turn
-    GET  /conversations                     the caller's own conversations
-    GET  /conversations/{conversationId}    one conversation, for display
+    POST  /chat                              one turn
+    GET   /conversations                     the caller's own conversations
+    GET   /conversations/{conversationId}    one conversation, for display
+    PATCH /conversations/{conversationId}    rename it
 
-The two reads are the same identity story as the write and share it literally: `sub` comes
+Every route is the same identity story as the write and shares it literally: `sub` comes
 out of the JWT the authorizer validated, the DynamoDB partition is built from it, and a
 conversation id belonging to somebody else addresses nothing inside the caller's partition.
-Each user browsing their OWN history is the whole feature; there is no staff view here, and
-no request field that could ask for one.
+That is what makes the WRITE route safe on the same terms as the reads: a forged
+conversation id renames nothing, because the only partition it can reach is the caller's
+own. Each user managing their OWN history is the whole feature; there is no staff view
+here, and no request field that could ask for one.
 
 Request order on POST /chat:
 
@@ -47,7 +50,7 @@ import time
 import boto3
 from botocore.config import Config
 
-from cards import join_prose
+from cards import join_prose, normalise_dashes
 from history import ConversationStore, new_conversation_id
 from models import (
     CONVERSATION_ID_PATTERN,
@@ -55,8 +58,10 @@ from models import (
     ChatResponse,
     ConversationListResponse,
     ConversationMessage,
+    ConversationRenameRequest,
     ConversationResponse,
     ConversationSummary,
+    ConversationTitleResponse,
     StatementCard,
 )
 from orchestrator import run_chat
@@ -522,10 +527,8 @@ def get_conversation(event):
         logger.error("A /conversations request carried no JWT sub claim; refusing it")
         return _response(401, {"error": "Unauthenticated."})
 
-    conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
-    if not isinstance(conversation_id, str) or not re.match(
-        CONVERSATION_ID_PATTERN, conversation_id
-    ):
+    conversation_id = _conversation_id_from(event)
+    if conversation_id is None:
         return _response(400, {"error": "Malformed conversation id."})
 
     try:
@@ -553,12 +556,85 @@ def get_conversation(event):
     return _response(200, payload.model_dump(by_alias=True))
 
 
+def _conversation_id_from(event):
+    """The validated `conversationId` path parameter, or None.
+
+    Shared by the three routes that take one, because the validation is the same on all of
+    them and the reason is the same: the value composes a DynamoDB sort-key prefix, so an id
+    carrying a `#` would address keys the server did not intend. A 400 rather than a
+    security boundary - the boundary is the partition key, which comes from the JWT.
+    """
+    conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
+    if not isinstance(conversation_id, str) or not re.match(
+        CONVERSATION_ID_PATTERN, conversation_id
+    ):
+        return None
+    return conversation_id
+
+
+def patch_conversation(event):
+    """PATCH /conversations/{conversationId} - the student renames their own chat.
+
+    THE RENAME IS THE ONE PLACE A TITLE IS NOT THE SERVER'S IDEA, and the store records that
+    with `userTitled`, which model titling is forbidden from writing over. A name a student
+    chose is theirs.
+
+    Dashes are normalised on the way in, through the same function the card path uses. Not
+    censorship of what a student may type: it is the one display invariant this app holds
+    everywhere (docs/cards-v2.md), and a sidebar row is display.
+
+    A 404 here is not an existence oracle. The only header this can address is one inside
+    the caller's own partition, so "no such conversation" means no such conversation OF
+    YOURS - which the caller already knew, since they were looking at their own list.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A conversation rename carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    conversation_id = _conversation_id_from(event)
+    if conversation_id is None:
+        return _response(400, {"error": "Malformed conversation id."})
+
+    data = _parse_body(event)
+    try:
+        rename = ConversationRenameRequest.model_validate(data or {})
+    except Exception:
+        return _response(400, {"error": "Missing 'title' in request body."})
+
+    title = " ".join(normalise_dashes(rename.title).split())
+    if not title:
+        return _response(400, {"error": "A conversation title cannot be blank."})
+    if len(title) > SETTINGS.title_max_chars:
+        # Rejected rather than truncated: these are the student's own words, and a name
+        # silently shortened is a name they did not choose.
+        return _response(
+            400,
+            {"error": f"A title must be {SETTINGS.title_max_chars} characters or fewer."},
+        )
+
+    try:
+        renamed = STORE.rename_conversation(
+            user_id=user_id, conversation_id=conversation_id, title=title
+        )
+    except Exception:
+        logger.exception("Could not rename a conversation")
+        return _response(502, {"error": "Could not rename that conversation."})
+
+    if not renamed:
+        return _response(404, {"error": "No such conversation."})
+
+    payload = ConversationTitleResponse(conversationId=conversation_id, title=title)
+    return _response(200, payload.model_dump(by_alias=True))
+
+
 # The routes this function serves, spelled as HTTP API payload-2.0 route keys. The stack
-# creates exactly these three (infra/infra_stack.py, section 5) and points all of them at
+# creates exactly these four (infra/infra_stack.py, section 5) and points all of them at
 # this function.
 _CHAT_ROUTE = "POST /chat"
 _CONVERSATIONS_ROUTE = "GET /conversations"
 _CONVERSATION_ROUTE = "GET /conversations/{conversationId}"
+_CONVERSATION_RENAME_ROUTE = "PATCH /conversations/{conversationId}"
 
 
 def lambda_handler(event, context):
@@ -583,6 +659,8 @@ def lambda_handler(event, context):
         return get_conversations(event)
     if route == _CONVERSATION_ROUTE:
         return get_conversation(event)
+    if route == _CONVERSATION_RENAME_ROUTE:
+        return patch_conversation(event)
 
     logger.error("No handler for route %r", route)
     return _response(404, {"error": "Not found."})

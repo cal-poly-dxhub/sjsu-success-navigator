@@ -184,6 +184,34 @@ class ConversationResponse(BaseModel):
     messages: list[ConversationMessage]
 
 
+class ConversationRenameRequest(BaseModel):
+    """PATCH /conversations/{conversationId} - the one field a rename may carry.
+
+    THERE IS NO CONVERSATION ID IN THE BODY, and no user id, for the reason every other
+    request model here says: the id comes from the validated path and the partition comes
+    from the JWT claim. A body that could name either would be a body that could name
+    somebody else's.
+
+    The cap is the same `title_max_chars` the model titling is held to, so the sidebar's
+    rows have one length limit rather than two. An over-cap name is a 400 rather than a
+    silent truncation: it is the student's own words, and shortening them without saying so
+    would show them a name they did not choose.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str = Field(min_length=1)
+
+
+class ConversationTitleResponse(BaseModel):
+    """The result of a rename: the id and the title as STORED, after normalisation."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    title: str
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     kb_id: str = Field(alias="kbId")

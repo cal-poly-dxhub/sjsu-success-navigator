@@ -109,6 +109,18 @@ def conversation_event(conversation_id, sub=TEST_SUB):
     )
 
 
+def rename_event(conversation_id, body, sub=TEST_SUB):
+    """PATCH /conversations/{conversationId}. The id is in the PATH, never the body."""
+    return _authorized(
+        {
+            "routeKey": "PATCH /conversations/{conversationId}",
+            "pathParameters": {"conversationId": conversation_id},
+            "body": body if isinstance(body, str) or body is None else json.dumps(body),
+        },
+        sub,
+    )
+
+
 class FakeConversationStore:
     """A ConversationStore stand-in that records the turn's table access in order.
 
@@ -122,14 +134,16 @@ class FakeConversationStore:
         fail_on=(),
         conversations=(),
         messages=(),
+        renamed=True,
         titled=True,
     ):
         self.history = list(history)
         self.fail_on = set(fail_on)
         self.conversations = list(conversations)
         self.messages = list(messages)
-        # What the CONDITIONAL title write reports back. False is not an error: it is the
+        # What the two CONDITIONAL writes report back. False is not an error: it is the
         # condition holding - no such header, or one the student named themselves.
+        self.renamed = renamed
         self.titled = titled
         self.calls = []
         self.appended = []
@@ -165,6 +179,12 @@ class FakeConversationStore:
         if "title" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (title write)")
         return self.titled
+
+    def rename_conversation(self, **kwargs):
+        self.calls.append(("rename", kwargs))
+        if "rename" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (rename)")
+        return self.renamed
 
     @property
     def call_names(self):

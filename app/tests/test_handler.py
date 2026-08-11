@@ -13,7 +13,13 @@ import json
 import pytest
 
 import handler
-from conftest import TEST_SUB, chat_event, conversation_event, conversations_event
+from conftest import (
+    TEST_SUB,
+    chat_event,
+    conversation_event,
+    conversations_event,
+    rename_event,
+)
 from models import ChatResponse
 
 
@@ -718,3 +724,85 @@ def test_the_title_budget_never_outlives_the_invocation(bedrock, loop, store, ti
     assert titler[-1]["deadline"] <= time.monotonic(), (
         "a 0.4s remaining budget should leave no room to start a titling call"
     )
+
+
+# --- renaming ----------------------------------------------------------------
+
+
+_CONV = "01J0000000000000000000000A"
+
+
+def test_a_rename_stores_the_title_and_echoes_what_was_stored(store):
+    response = handler.lambda_handler(rename_event(_CONV, {"title": "Aid appeal"}), None)
+
+    assert response["statusCode"] == 200
+    assert _body(response) == {"conversationId": _CONV, "title": "Aid appeal"}
+    rename = [kwargs for name, kwargs in store.calls if name == "rename"][0]
+    assert rename == {
+        "user_id": TEST_SUB,
+        "conversation_id": _CONV,
+        "title": "Aid appeal",
+    }
+
+
+def test_a_rename_normalises_dashes_out_of_the_students_title(store):
+    """The one display invariant this app holds everywhere, applied to a sidebar row because
+    a sidebar row is somewhere a student reads text."""
+    body = _body(
+        handler.lambda_handler(rename_event(_CONV, {"title": "Aid — appeal"}), None)
+    )
+    assert body["title"] == "Aid, appeal"
+
+
+def test_a_rename_of_a_conversation_that_is_not_the_callers_is_a_404(monkeypatch):
+    """Not an existence oracle: the only header this can address is one inside the caller's
+    own partition, so this says nothing about ids that exist elsewhere."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(renamed=False))
+
+    assert handler.lambda_handler(rename_event(_CONV, {"title": "x"}), None)["statusCode"] == 404
+
+
+@pytest.mark.parametrize(
+    "body", [{}, {"title": ""}, {"title": "   "}, None, {"title": 5}]
+)
+def test_a_rename_with_no_usable_title_is_a_400(store, body):
+    assert handler.lambda_handler(rename_event(_CONV, body), None)["statusCode"] == 400
+    assert store.calls == []
+
+
+def test_a_rename_past_the_cap_is_rejected_rather_than_truncated(store):
+    """These are the student's own words. A name silently shortened is a name they did not
+    choose, so the cap is enforced by saying so."""
+    over = "x" * (handler.SETTINGS.title_max_chars + 1)
+    response = handler.lambda_handler(rename_event(_CONV, {"title": over}), None)
+
+    assert response["statusCode"] == 400
+    assert str(handler.SETTINGS.title_max_chars) in _body(response)["error"]
+    assert store.calls == []
+
+
+def test_a_rename_with_a_malformed_id_is_a_400_before_the_table(store):
+    assert (
+        handler.lambda_handler(rename_event("../CONV#other", {"title": "x"}), None)[
+            "statusCode"
+        ]
+        == 400
+    )
+    assert store.calls == []
+
+
+def test_a_rename_without_a_sub_claim_is_a_401(store):
+    response = handler.lambda_handler(rename_event(_CONV, {"title": "x"}, sub=None), None)
+    assert response["statusCode"] == 401
+    assert store.calls == []
+
+
+def test_a_rename_that_fails_in_dynamodb_is_a_502_not_a_404(monkeypatch):
+    """A throttled rename must not tell the student their chat does not exist."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["rename"]))
+
+    assert handler.lambda_handler(rename_event(_CONV, {"title": "x"}), None)["statusCode"] == 502
