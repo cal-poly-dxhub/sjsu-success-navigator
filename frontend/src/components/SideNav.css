@@ -33,22 +33,7 @@
 .side-nav__brand {
 	display: flex;
 	align-items: center;
-	gap: 0.65rem;
 	min-width: 0;
-}
-
-.side-nav__brand-mark {
-	display: grid;
-	flex: 0 0 auto;
-	place-items: center;
-	width: 2rem;
-	height: 2rem;
-	border-radius: 10px;
-	background: var(--accent-blue);
-	box-shadow: 0 3px 0 #05407a;
-	color: #fff;
-	font-size: 1rem;
-	font-weight: 800;
 }
 
 .side-nav__brand-copy {
