@@ -16,6 +16,11 @@ type SideNavProps = {
 	historyError?: string | null;
 	userEmail?: string;
 	onLogout?: () => void;
+	/**
+	 * Opens the cost panel. Absent unless the stack stamped a cost model into config.json,
+	 * and its absence is what hides the control entirely - see lib/runtimeConfig.ts.
+	 */
+	onOpenCost?: () => void;
 	onClose: () => void;
 	onNewChat: () => void;
 	onSelectChat: (id: string) => void;
@@ -30,6 +35,7 @@ function NavContent({
 	historyError = null,
 	userEmail,
 	onLogout,
+	onOpenCost,
 	onNewChat,
 	onSelectChat,
 }: Omit<SideNavProps, 'open' | 'onClose'>) {
@@ -109,14 +115,47 @@ function NavContent({
 						{userEmail}
 					</p>
 					{onLogout ? (
-						<PressableButton
-							variant="ghost"
-							className="side-nav__logout"
-							onClick={onLogout}
-							disabled={busy}
-						>
-							Sign out
-						</PressableButton>
+						<div className="side-nav__account-actions">
+							<PressableButton
+								variant="ghost"
+								className="side-nav__logout"
+								onClick={onLogout}
+								disabled={busy}
+							>
+								Sign out
+							</PressableButton>
+							{/*
+							  A gear, not a currency symbol. The panel behind it is a demo instrument
+							  for sponsors, and a dollar sign in a student's sidebar advertises that
+							  this app has a price - the opposite of what this surface should say to
+							  the student it is for. Discreet at a glance; the label names it for
+							  anyone who looks, hovers, or is listening to a screen reader.
+							*/}
+							{onOpenCost ? (
+								<button
+									type="button"
+									className="side-nav__cost"
+									onClick={onOpenCost}
+									aria-label="Cost analysis"
+									title="Cost analysis"
+								>
+									<svg
+										viewBox="0 0 24 24"
+										width="17"
+										height="17"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="1.7"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										aria-hidden="true"
+									>
+										<circle cx="12" cy="12" r="3" />
+										<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+									</svg>
+								</button>
+							) : null}
+						</div>
 					) : null}
 				</div>
 			) : null}

@@ -70,6 +70,7 @@ from infra.config import (
     resolve_chat,
     resolve_chat_history,
     resolve_chunking,
+    resolve_cost_model,
     resolve_data_source_name,
     resolve_generation,
     resolve_cors_allow_origins,
@@ -1796,6 +1797,23 @@ function handler(event) {
                         # never disagree about the exact string Cognito matches.
                         "loginDomain": login_domain.base_url(),
                         "region": self.region,
+                        # The cost panel's whole model - published rates, measured usage,
+                        # measured baseline - or the key omitted entirely when
+                        # cost_model.enabled is false. THE OMISSION IS THE GATE: the
+                        # frontend renders the control only when this key is present, so
+                        # the panel comes off with a config edit and a deploy rather than a
+                        # code change. That is what has to be true before Okta federation
+                        # starts provisioning SJSU students into this pool just in time -
+                        # a student must not be shown what the system costs to run.
+                        #
+                        # Nothing here is account spend. Every figure is a published list
+                        # rate times usage measured against THIS stack, so the number
+                        # cannot silently blend in another project sharing the account.
+                        **(
+                            {"costModel": cost_model}
+                            if (cost_model := resolve_cost_model(config)) is not None
+                            else {}
+                        ),
                     },
                 )
             ],

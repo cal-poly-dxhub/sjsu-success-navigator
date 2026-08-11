@@ -1562,14 +1562,64 @@ def test_config_json_names_the_history_endpoint_the_frontend_reads():
     valid JSON at this stage either - every value is a `<<marker:...>>` placeholder that the
     deployment substitutes - so the KEYS are read out of the text."""
     staged = (_staged_asset_dir("SiteConfigDeployment") / "config.json").read_text()
-    assert set(re.findall(r'"([A-Za-z]+)":', staged)) == {
+    keys = set(re.findall(r'"([A-Za-z]+)":', staged))
+    assert {
         "chatApiUrl",
         "conversationsApiUrl",
         "userPoolId",
         "userPoolClientId",
         "loginDomain",
         "region",
-    }, "these are exactly the keys frontend/src/lib/runtimeConfig.ts requires"
+    } <= keys, "these are exactly the keys frontend/src/lib/runtimeConfig.ts requires"
+    # A subset rather than an equality, because `costModel` and its nested blocks legitimately
+    # sit alongside them when the cost panel is on. Nothing else may: an unexpected key here
+    # is a value that reached a world-readable file without anybody deciding it should.
+    assert keys - {
+        "chatApiUrl",
+        "conversationsApiUrl",
+        "userPoolId",
+        "userPoolClientId",
+        "loginDomain",
+        "region",
+    } <= {"costModel", "asOf", "region", "currency", "measuredAt", "rates", "measured", "baseline"}
+
+
+def test_the_cost_panel_is_gated_by_config_and_leaves_no_trace_when_off():
+    """`cost_model.enabled: false` must remove the key from config.json entirely.
+
+    THE OMISSION IS THE GATE. The frontend renders the control only when `costModel` is
+    present (lib/runtimeConfig.ts), so this is the whole mechanism by which the panel can be
+    switched off without a code change - which is what has to hold before Okta federation
+    starts provisioning SJSU students into this pool just in time. A student must not be
+    shown what the system costs to run, and "the component checks a flag" is a weaker
+    guarantee than "the data never reaches the browser".
+    """
+    config = copy.deepcopy(load_config())
+    config["cost_model"]["enabled"] = False
+
+    outdir = tempfile.mkdtemp()
+    app = cdk.App(outdir=outdir)
+    NavigatorStack(app, "SjsuNavigatorStack", config=config)
+    app.synth()
+    template = json.loads((Path(outdir) / "SjsuNavigatorStack.template.json").read_text())
+
+    # The prefix also matches the deployment's own CLI layer, which stages no source - so
+    # the non-empty check is what picks the deployment out rather than the layer beside it.
+    staged = None
+    for logical_id, resource in template["Resources"].items():
+        if not logical_id.startswith("SiteConfigDeployment"):
+            continue
+        keys = (resource.get("Properties") or {}).get("SourceObjectKeys") or []
+        if len(keys) == 1:
+            staged = Path(outdir) / ("asset." + keys[0].removesuffix(".zip"))
+    assert staged is not None, "the config.json deployment should still exist"
+
+    text = (staged / "config.json").read_text()
+    assert "costModel" not in text
+    # The rates themselves must be gone too, not merely unreferenced - the file is
+    # world-readable, so a leftover block would publish the figures anyway.
+    assert "generation_input_per_1m" not in text
+    assert '"chatApiUrl"' in text, "turning the panel off must not disturb the rest"
 
 
 def test_the_cloudfront_origin_joins_the_api_cors_allowlist_as_a_token():
