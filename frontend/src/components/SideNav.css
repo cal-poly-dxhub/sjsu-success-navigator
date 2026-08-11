@@ -33,22 +33,7 @@
 .side-nav__brand {
 	display: flex;
 	align-items: center;
-	gap: 0.65rem;
 	min-width: 0;
-}
-
-.side-nav__brand-mark {
-	display: grid;
-	flex: 0 0 auto;
-	place-items: center;
-	width: 2rem;
-	height: 2rem;
-	border-radius: 10px;
-	background: var(--accent-blue);
-	box-shadow: 0 3px 0 #05407a;
-	color: #fff;
-	font-size: 1rem;
-	font-weight: 800;
 }
 
 .side-nav__brand-copy {
@@ -263,17 +248,31 @@
 		z-index: 15;
 		display: grid;
 		place-items: center;
+		/* Footprint and position are load-bearing for the mobile header (the talk-pill's
+		   max-width is measured against them) and are unchanged. Only the surface joins
+		   the shared control shape: a bordered face over a bottom edge. */
 		width: 2.65rem;
 		height: 2.65rem;
 		padding: 0;
-		border: 1px solid rgba(28, 36, 48, 0.18);
-		border-radius: 13px;
+		border: var(--control-border) solid var(--btn-ghost-edge);
+		border-bottom-color: transparent;
+		border-radius: var(--control-radius);
 		background: rgba(255, 255, 255, 0.9);
-		box-shadow: 0 5px 16px rgba(28, 36, 48, 0.08);
+		box-shadow:
+			0 var(--control-edge) 0 var(--btn-ghost-edge),
+			0 5px 16px rgba(28, 36, 48, 0.08);
 		color: var(--accent-blue);
 		cursor: pointer;
 		backdrop-filter: blur(10px);
 		-webkit-backdrop-filter: blur(10px);
+		transition: box-shadow 80ms ease, transform 80ms ease;
+	}
+
+	.chat-app__nav-toggle:active {
+		transform: translateY(var(--control-edge));
+		box-shadow:
+			0 0 0 var(--btn-ghost-edge),
+			0 2px 8px rgba(28, 36, 48, 0.08);
 	}
 }
 
@@ -292,7 +291,8 @@
 
 @media (prefers-reduced-motion: reduce) {
 	.side-nav__new-chat,
-	.side-nav__chat {
+	.side-nav__chat,
+	.chat-app__nav-toggle {
 		transition: none;
 	}
 }

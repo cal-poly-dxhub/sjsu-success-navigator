@@ -27,7 +27,10 @@ function NavContent({
 		<>
 			<div className="side-nav__header">
 				<div className="side-nav__brand" aria-label="Student Success Navigator">
-					<span className="side-nav__brand-mark" aria-hidden="true">S</span>
+					{/* The name alone. A rounded blue tile holding an "S" used to sit here; it stood
+					    for nothing and read as a placeholder logo, and the product name does the job
+					    the tile was pretending to do. The aria-label stays because the two lines are
+					    separate elements and it fixes them into a single reading. */}
 					<span className="side-nav__brand-copy">
 						<strong>Student Success</strong>
 						<span>Navigator</span>

@@ -1,5 +1,4 @@
-import { motion } from 'motion/react';
-import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { PressableButton } from './PressableButton';
 import './TalkToPersonPill.css';
 
 type TalkToPersonPillProps = {
@@ -7,21 +6,19 @@ type TalkToPersonPillProps = {
 };
 
 /**
- * Deliberately not a PressableButton: the handoff to a human is the one control on the page
- * that stands for an SJSU office rather than for the assistant, so it carries its own
- * identity (blue seal, gold ring, SJSU Cares attribution) instead of the app's button styling.
+ * The handoff to a human stands for an SJSU office rather than for the assistant, so it
+ * keeps its own identity - the blue seal in a gold ring, and the SJSU Cares attribution
+ * above the label. That identity now sits inside the app's shared button shape instead of
+ * replacing it: this used to be a bare floating pill, which read as a control borrowed
+ * from somewhere else.
  */
 export function TalkToPersonPill({ onClick }: TalkToPersonPillProps) {
-	const reduceMotion = usePrefersReducedMotion();
-
 	return (
-		<motion.button
-			type="button"
+		<PressableButton
+			variant="ghost"
 			className="talk-pill"
 			onClick={onClick}
 			aria-label="Talk to a person at SJSU Cares"
-			whileTap={reduceMotion ? undefined : { scale: 0.97 }}
-			transition={{ type: 'spring', stiffness: 600, damping: 28 }}
 		>
 			<span className="talk-pill__seal" aria-hidden="true">
 				<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" focusable="false">
@@ -32,6 +29,6 @@ export function TalkToPersonPill({ onClick }: TalkToPersonPillProps) {
 				<span className="talk-pill__kicker">SJSU Cares</span>
 				<span className="talk-pill__label">Talk to a person</span>
 			</span>
-		</motion.button>
+		</PressableButton>
 	);
 }

@@ -40,6 +40,26 @@ const { title = 'Student Success Navigator' } = Astro.props;
 		font-family: 'Nunito Sans', Verdana, sans-serif;
 	}
 
+	/*
+	 * Large-monitor scaling, and the reason the avatar stops being a doll in an empty field.
+	 *
+	 * Measured before this existed: the stage, its two columns and the avatar came out at
+	 * exactly 1120 / 588 / 532 / 399px at 1600px, 1920px AND 2560px - the composition
+	 * stopped growing around 1360px and everything past that was margin. This app is
+	 * rem-driven almost everywhere (column caps, the bubble's measure, the card grid's
+	 * track floor, type, spacing, the side nav), so growing the root grows all of it
+	 * together and keeps every proportion the layout was designed with.
+	 *
+	 * Gated at 1440px and starting at exactly 16px there, so nothing at or below the
+	 * desktop breakpoint - and nothing on mobile - changes by a single pixel. The px
+	 * breakpoints elsewhere are unaffected by root size, so there is no feedback loop.
+	 */
+	@media (min-width: 1440px) {
+		html {
+			font-size: clamp(16px, calc(16px + 4 * (100vw - 1440px) / 1120), 20px);
+		}
+	}
+
 	*,
 	*::before,
 	*::after {

@@ -23,7 +23,9 @@
 	z-index: 0;
 	pointer-events: none;
 	background-color: var(--bg-deep);
-	background-image: url('/paper-fiber.svg');
+	/* Authored at 480px, painted at 480px. The tile size is load-bearing: the chat-switch
+	   wipe in ChatApp.tsx slides this by whole BG_TILE_PX tiles. */
+	background-image: url('/paper-grain.svg');
 	background-size: 480px 480px;
 	background-repeat: repeat;
 	background-position: 0 0;
@@ -36,12 +38,18 @@
 	margin-left: var(--side-nav-width);
 }
 
+/*
+ * The 70rem cap is the old 1120px one, in the unit that now scales (see Layout.astro). The
+ * 62vw floor is what keeps it growing past the point where even a scaled cap would stall:
+ * below 1440px `max()` always picks 70rem, so every viewport at or under the desktop
+ * breakpoint resolves to exactly the width it did before.
+ */
 .chat-app__stage {
 	position: relative;
 	z-index: 2;
 	display: grid;
 	gap: 1.5rem;
-	width: min(1120px, calc(100% - 2rem));
+	width: min(max(70rem, 62vw), calc(100% - 2rem));
 	margin: 0 auto;
 	padding: 2.25rem 0 7.5rem;
 	overflow: visible;
@@ -108,7 +116,8 @@
 
 .chat-app__dock-inner {
 	pointer-events: auto;
-	width: min(720px, 100%);
+	/* 45rem is the old 720px, in the unit that scales with the rest of the composition. */
+	width: min(45rem, 100%);
 	margin: 0 auto;
 }
 
