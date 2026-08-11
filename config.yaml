@@ -139,6 +139,21 @@ chat:
   # shortens the budget rather than overrunning it.
   converse_deadline_seconds: 22
 
+chat_history:
+  # ONE DynamoDB table for conversation headers and messages, partitioned on the Cognito
+  # `sub` (docs/accounts-and-storage.md, Storage). The name is the only knob: the key
+  # schema, the on-demand billing mode and the TTL attribute are all IMMUTABLE-ish
+  # properties whose values the application code has to agree with, so they are spelled in
+  # the stack rather than here (see the section comment in infra/infra_stack.py).
+  #
+  # Global within an account+region, like the vector bucket and the KB - so a SECOND stack
+  # in one account means editing this first, which is the tradeoff infra/config.py's naming
+  # convention already accepts. Unlike those two, this table is retained on `cdk destroy`,
+  # so a destroy-then-redeploy collides here until the leftover table is renamed or removed
+  # by hand. That is deliberate: the alternative is deleting student transcripts as a side
+  # effect of tearing down infrastructure.
+  table_name: sjsu-navigator-chat-history
+
 generation:
   # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.
   model_id: us.anthropic.claude-sonnet-4-6

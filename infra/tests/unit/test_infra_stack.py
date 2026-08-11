@@ -80,6 +80,7 @@ def test_config_loads_with_expected_sections():
         "request",
         "retrieval",
         "chat",
+        "chat_history",
         "generation",
         "guardrail",
     ):
@@ -652,6 +653,162 @@ def test_guardrail_version_description_changes_when_the_config_does():
     assert len(description.removeprefix("input config-")) == 12
 
 
+# --- Chat history table (docs/accounts-and-storage.md, Storage) --------------------------
+#
+# Infrastructure only: no application code reads or writes this table yet. That makes these
+# assertions the ONLY thing standing between a wrong table shape and a slice that discovers
+# it at runtime - and three of the four properties below cannot be corrected in place once
+# there is data (the key schema replaces the table, TTL needs a disable/enable cycle, PITR
+# only covers what it was on for). Every literal is spelled here rather than imported from
+# infra.config: a test that reads the same constant the stack does pins nothing.
+
+
+def test_the_history_table_is_keyed_on_the_user_with_a_prefixed_sort_key():
+    """pk=USER#<sub>, sk=CONV#<convId> or MSG#<convId>#<ulid> - one table, both item kinds,
+    separated by the sort-key prefix.
+
+    The key schema is IMMUTABLE. Changing either attribute replaces the table, and a
+    replacement of this table is the loss of every transcript on it, so this is pinned at
+    the shape the access patterns were designed against rather than left to drift."""
+    table = _resource(_template(), "AWS::DynamoDB::Table")["Properties"]
+
+    assert table["KeySchema"] == [
+        {"AttributeName": "pk", "KeyType": "HASH"},
+        {"AttributeName": "sk", "KeyType": "RANGE"},
+    ]
+    # Both declared as strings: the sort key is a compound prefix, never a number, and a
+    # numeric type would make begins_with() - which is how BOTH reads work - impossible.
+    assert table["AttributeDefinitions"] == [
+        {"AttributeName": "pk", "AttributeType": "S"},
+        {"AttributeName": "sk", "AttributeType": "S"},
+    ]
+
+
+def test_the_history_table_is_on_demand_with_pitr_and_ttl_on_expires_at():
+    """On-demand because pilot traffic is a spike against an idle table; PITR because this
+    holds the only copy of a student's transcript.
+
+    TTL IS ENABLED ON AN ATTRIBUTE NOTHING WRITES, and that is the deliberate part. The
+    retention window for identifiable transcripts is an open question with the university
+    (docs/accounts-and-storage.md, Open). Items with no `expiresAt` never expire, so turning
+    it on now costs nothing and turning it on later is a table-level change - this is the
+    cheap half of a decision that has not been made."""
+    table = _resource(_template(), "AWS::DynamoDB::Table")["Properties"]
+
+    assert table["BillingMode"] == "PAY_PER_REQUEST"
+    assert "ProvisionedThroughput" not in table
+    assert table["PointInTimeRecoverySpecification"] == {
+        "PointInTimeRecoveryEnabled": True
+    }
+    assert table["TimeToLiveSpecification"] == {
+        "AttributeName": "expiresAt",
+        "Enabled": True,
+    }
+
+
+def test_the_history_table_has_no_secondary_index():
+    """No GSI and no LSI in v1: every access pattern in the doc is served by the primary
+    key. An index that exists is billed and backfilled whether or not anything queries it,
+    and adding one later is purely additive - so an index appearing here would mean one was
+    added without a query to justify it."""
+    table = _resource(_template(), "AWS::DynamoDB::Table")["Properties"]
+
+    assert "GlobalSecondaryIndexes" not in table
+    assert "LocalSecondaryIndexes" not in table
+
+
+def test_the_history_table_survives_a_stack_destroy():
+    """RETAIN, and the one place this stack breaks its own one-click-uninstall rule.
+
+    Everything else here is reproducible from source - a destroyed source bucket refills on
+    the next scrape, a destroyed KB re-ingests. This table is the only copy of what students
+    actually said, including crisis disclosures, so `cdk destroy` must not take it. The cost
+    is a fixed global name left behind, which collides loudly on the next deploy; that is the
+    better half of the trade and it is why this is asserted rather than assumed."""
+    table = _resource(_template(), "AWS::DynamoDB::Table")
+
+    assert table["DeletionPolicy"] == "Retain"
+    assert table["UpdateReplacePolicy"] == "Retain"
+
+
+def test_the_history_table_name_comes_from_config():
+    from infra.config import resolve_chat_history
+
+    table = _resource(_template(), "AWS::DynamoDB::Table")["Properties"]
+    assert table["TableName"] == resolve_chat_history(load_config())["table_name"]
+
+
+def test_the_chat_role_reaches_the_history_table_and_nothing_else():
+    """The replacement for the blanket "no dynamodb:" ban this table made wrong, and a
+    tighter statement than that ban was: the grant is scoped to THIS table's ARN by GetAtt.
+
+    dynamodb:Scan IS DELIBERATELY ABSENT, which is why this is hand-rolled rather than
+    grant_read_write_data (whose read set includes it). Scan is the only operation here that
+    takes no partition key, and the entire isolation story for this table is that the Lambda
+    derives the partition key from the JWT `sub` - so a Scan grant is the hole in exactly the
+    property the single-table design was chosen for. Nothing needs it; a handler that reaches
+    for it should get AccessDenied rather than another student's transcript.
+
+    No table-management actions either: this role uses the table, it does not administer it."""
+    policy = _resource_named(_template(), "AWS::IAM::Policy", "ChatFunctionRole")
+    statements = policy["Properties"]["PolicyDocument"]["Statement"]
+    dynamo = [
+        s
+        for s in statements
+        if any(a.startswith("dynamodb:") for a in _actions(s))
+    ]
+    assert len(dynamo) == 1, f"expected one DynamoDB statement, got {len(dynamo)}"
+
+    table_id = _logical_id(_template(), "AWS::DynamoDB::Table")
+    assert _resources(dynamo[0]) == [{"Fn::GetAtt": [table_id, "Arn"]}]
+
+    granted = set(_actions(dynamo[0]))
+    assert granted == {
+        "dynamodb:Query",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DescribeTable",
+    }, sorted(granted)
+    for forbidden in (
+        # The cross-partition read.
+        "dynamodb:Scan",
+        # Table administration, and the two that would let this role destroy or unpick the
+        # retention decision the stack just made.
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:*",
+    ):
+        assert forbidden not in granted, f"{forbidden} is granted to the chat role"
+
+
+def _actions(statement: dict) -> list:
+    """A policy statement's actions, as a list whether one or many were rendered.
+
+    CloudFormation renders a single-action statement as a bare string and a multi-action one
+    as a list, so a test that assumes either shape passes vacuously against the other.
+    """
+    action = statement.get("Action", [])
+    return [action] if isinstance(action, str) else list(action)
+
+
+def _resources(statement: dict) -> list:
+    """The same normalization for Resource, which collapses the same way.
+
+    A one-resource statement renders as a bare value (here an Fn::GetAtt mapping), a
+    multi-resource one as a list. Normalizing means the assertion stays about WHICH ARNs are
+    granted rather than about how many happened to be rendered on the day it was written.
+    """
+    resource = statement.get("Resource", [])
+    return resource if isinstance(resource, list) else [resource]
+
+
 # --- Section 4: chat Lambda + role + deps layer --------------------------------------------
 
 
@@ -689,6 +846,7 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
     )
 
     config = load_config()
+    table_id = _logical_id(_template(), "AWS::DynamoDB::Table")
     env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")["Properties"][
         "Environment"
     ]["Variables"]
@@ -698,6 +856,10 @@ def test_chat_env_wires_the_kb_guardrail_and_config_values_by_reference():
     assert env["INPUT_GUARDRAIL_VERSION"] == {
         "Fn::GetAtt": ["InputGuardrailVersion", "Version"]
     }
+    # The history table's name, by REF rather than as the literal from config.yaml - the
+    # same no-hardcoded-names rule the KB and guardrail ids follow. No application code
+    # reads it yet; it ships with the table so the slice that does is pure application code.
+    assert env["CHAT_HISTORY_TABLE_NAME"] == {"Ref": table_id}
     assert env["GENERATION_MODEL_ID"] == resolve_generation(config)["model_id"]
     assert env["BEDROCK_REGION"] == {"Ref": "AWS::Region"}
     assert env["NUMBER_OF_RESULTS"] == str(resolve_retrieval(config)["number_of_results"])
@@ -782,10 +944,17 @@ def test_chat_role_can_retrieve_and_invoke_through_the_inference_profile():
 def test_chat_role_grants_no_gav_specific_or_write_access():
     """Gav's query Lambda also reads its catalog bucket and writes feedback to DynamoDB.
     Neither exists here. A leftover grant is exactly the kind of thing that survives a port
-    unnoticed, and this role should be able to write nothing at all."""
+    unnoticed, and this role should be able to reach no bucket at all.
+
+    "dynamodb:" WAS on this list and has been removed, because the chat history table is now
+    a deliberate part of the stack (docs/accounts-and-storage.md). What replaces it is not
+    nothing: test_the_chat_role_reaches_the_history_table_and_nothing_else pins the DynamoDB
+    grant to that one table's ARN and to data actions only, which is a tighter statement
+    than the blanket ban ever made - gav's feedback table would fail there, on the resource.
+    """
     policy = _resource_named(_template(), "AWS::IAM::Policy", "ChatFunctionRole")
     actions = json.dumps(policy["Properties"]["PolicyDocument"]["Statement"])
-    for absent in ("dynamodb:", "s3:PutObject", "s3:GetObject", "CATALOG", "primo"):
+    for absent in ("s3:PutObject", "s3:GetObject", "CATALOG", "primo"):
         assert absent not in actions, f"{absent} is granted to the chat role"
 
 
@@ -851,6 +1020,12 @@ def test_chat_function_waits_for_the_knowledge_base_it_queries():
     assert "KnowledgeBase" in function["DependsOn"]
 
 
+def test_chat_function_waits_for_the_history_table_it_writes():
+    function = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")
+    table_id = _logical_id(_template(), "AWS::DynamoDB::Table")
+    assert table_id in function["DependsOn"]
+
+
 def test_chat_logs_are_retained_and_removable():
     log_group = _resource_named(_template(), "AWS::Logs::LogGroup", "ChatFunctionLogGroup")
     assert log_group["Properties"]["RetentionInDays"] == 90
@@ -868,6 +1043,7 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
     URL_LIST_FILE env var - so a hardcoded copy is how the bundled file and the opened file
     drift apart."""
     from infra.config import (
+        resolve_chat_history,
         resolve_generation,
         resolve_guardrail,
         resolve_knowledge_base,
@@ -884,6 +1060,11 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
         resolve_scraper(config)["url_list_file"],
         resolve_scraper(config)["schedule_cron"],
         resolve_scraper(config)["user_agent"],
+        # The history table's name is global within an account+region, exactly like the
+        # vector bucket, and it reaches the chat Lambda's environment as well as the table
+        # itself - so an inline copy is how the table that exists and the table the handler
+        # opens drift apart.
+        resolve_chat_history(config)["table_name"],
         # The guardrail name is a global name in the account. The model id is not, but it
         # reaches THREE IAM ARNs and the Lambda's environment, so an inline copy is how the
         # granted model and the invoked model drift apart.
@@ -1306,7 +1487,17 @@ def test_no_gav_specific_resources_were_inherited():
 
     assert template.find_resources("AWS::SNS::Topic") == {}, "the feedback path is gav's"
     assert template.find_resources("AWS::SNS::Subscription") == {}
-    assert template.find_resources("AWS::DynamoDB::Table") == {}
+
+    # EXACTLY ONE DynamoDB table, and it is the chat history table.
+    #
+    # This assertion used to read `find_resources("AWS::DynamoDB::Table") == {}`, because
+    # the only DynamoDB in sight was gav's feedback table and this stack had no store of
+    # its own. The chat history table (docs/accounts-and-storage.md) makes the blanket form
+    # wrong, so it is NARROWED rather than dropped: gav's feedback table would still fail
+    # here, as a second table under a different logical id.
+    tables = sorted(template.find_resources("AWS::DynamoDB::Table"))
+    assert len(tables) == 1, tables
+    assert tables[0].startswith("ChatHistoryTable"), tables
 
     # ONE distribution. Gav has two (widget CDN + demo site); a second here would mean
     # dual hosting came along with the frontend section.

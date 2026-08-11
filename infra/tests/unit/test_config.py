@@ -25,6 +25,7 @@ from infra.config import (
     load_config,
     resolve_cards,
     resolve_chat,
+    resolve_chat_history,
     resolve_chunking,
     resolve_cors_allow_origins,
     resolve_data_source_name,
@@ -677,6 +678,56 @@ def _repointed(config, csv_path):
     """
     config["scraper"]["url_list_file"] = str(csv_path)
     return config
+
+
+# --- Rejections: chat_history ------------------------------------------------------------
+
+
+def test_chat_history_resolves_to_the_decided_table_name(config):
+    """One table for headers and messages both (docs/accounts-and-storage.md, Storage)."""
+    assert resolve_chat_history(config)["table_name"] == "sjsu-navigator-chat-history"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "chat history",   # spaces are not in DynamoDB's charset
+        "chat/history",   # nor is a slash, which reads plausible from the ARN format
+        "chat:history",
+        "chat#history",   # the item-key separator, easy to carry over by habit
+    ],
+)
+def test_invalid_table_name_is_rejected(config, name):
+    """DynamoDB rejects these at CreateTable, which fails the DEPLOY partway through a stack
+    update rather than failing the synth."""
+    config["chat_history"]["table_name"] = name
+    with pytest.raises(ValueError, match="not a valid DynamoDB table name"):
+        resolve_chat_history(config)
+
+
+def test_too_short_table_name_is_rejected(config):
+    """3 characters is DynamoDB's floor. Caught here because the likely way to hit it is a
+    truncated or half-edited name, which is exactly the shape that reads fine at a glance."""
+    config["chat_history"]["table_name"] = "ch"
+    with pytest.raises(ValueError, match="3-255 characters"):
+        resolve_chat_history(config)
+
+
+def test_missing_chat_history_block_is_rejected(config):
+    """Not defaulted. A generated table name would still deploy and still work, and the
+    stack would quietly stop being reproducible - the name is global, so the next deploy in
+    another account would get a different one."""
+    del config["chat_history"]
+    with pytest.raises(ValueError, match="chat_history"):
+        resolve_chat_history(config)
+
+
+def test_validate_config_covers_the_history_table(config):
+    """The table holds student data, so a name error must fail the build rather than the
+    deploy: CreateTable is rejected mid-update, after other resources have already changed."""
+    config["chat_history"]["table_name"] = "chat history"
+    with pytest.raises(ValueError, match="not a valid DynamoDB table name"):
+        validate_config(config)
 
 
 # --- Rejections: cors --------------------------------------------------------------------
