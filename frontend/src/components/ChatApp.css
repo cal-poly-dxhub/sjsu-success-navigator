@@ -23,7 +23,9 @@
 	z-index: 0;
 	pointer-events: none;
 	background-color: var(--bg-deep);
-	background-image: url('/paper-fiber.svg');
+	/* Authored at 480px, painted at 480px. The tile size is load-bearing: the chat-switch
+	   wipe in ChatApp.tsx slides this by whole BG_TILE_PX tiles. */
+	background-image: url('/paper-grain.svg');
 	background-size: 480px 480px;
 	background-repeat: repeat;
 	background-position: 0 0;
