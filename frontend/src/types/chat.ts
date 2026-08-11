@@ -112,6 +112,21 @@ export type ConversationTurn = {
 	safetyHandoff?: SafetyHandoff;
 	/** Active RAG flow phase; talk-only turns stay conversational. */
 	phase: RagPhase | 'done';
+	/**
+	 * Whether this turn is still ARRIVING, and the one thing that decides whether it
+	 * animates.
+	 *
+	 * THE INVARIANT: animating is a property of a turn arriving live, not of a turn being
+	 * rendered. A reply typing itself out is Sammy answering in front of the student; a
+	 * conversation reopened from the sidebar is finished, so it renders finished - whole
+	 * text, cards already on the table, first frame.
+	 *
+	 * True for a turn built from a reply the browser just received, false for one read back
+	 * out of storage (turnsFromStoredMessages) or out of the sidebar's cache of a turn it
+	 * has already played (settleTurns). Nothing downstream re-derives this from position in
+	 * the feed: being the newest turn is not the same as being a new turn.
+	 */
+	live: boolean;
 	query?: string;
 	createdAt: number;
 };

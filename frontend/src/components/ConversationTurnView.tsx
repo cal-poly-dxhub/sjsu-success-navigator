@@ -34,9 +34,27 @@ export function ConversationTurnView({
 	const cardGroupRef = useRef<HTMLDivElement>(null);
 	const anchoredRef = useRef(false);
 	const trailingText = turn.trailingText?.trim() ? turn.trailingText : '';
-	// The deal is over for anything that is not currently dealing, so an archived turn and
-	// a reduced-motion one both start here rather than waiting out a timer for nothing.
-	const [dealt, setDealt] = useState(!isActive || reduceMotion);
+
+	/**
+	 * IS THIS TURN ARRIVING, and therefore the one thing in this component that decides
+	 * whether anything animates.
+	 *
+	 * Two conditions, and both are needed. `turn.live` is the turn's own account of where it
+	 * came from: a reply the browser just received, or a finished one read back from storage
+	 * or from the sidebar's cache. `isActive` is position - only the newest turn in the feed
+	 * is ever mid-arrival, everything above it has been overtaken.
+	 *
+	 * The bug this replaces was reading position ALONE. Being the newest turn in a
+	 * conversation the student just reopened is not the same as being a new turn, so every
+	 * reopened conversation re-typed its last answer and re-dealt its cards - a performance
+	 * of something that finished days ago.
+	 */
+	const isArriving = isActive && turn.live;
+
+	// The deal is over for anything that is not currently arriving, so an archived turn, a
+	// reopened one and a reduced-motion one all start here rather than waiting out a timer
+	// for cards that are already on the table.
+	const [dealt, setDealt] = useState(!isArriving || reduceMotion);
 
 	/**
 	 * The prose finishing typing is what brings the cards out - there is no reveal button
@@ -44,9 +62,9 @@ export function ConversationTurnView({
 	 * column grows underneath it.
 	 */
 	const revealCards = useCallback(() => {
-		if (!isActive || !hasRag || phase !== 'conversational') return;
+		if (!isArriving || !hasRag || phase !== 'conversational') return;
 		onPhaseChange(turn.id, 'grid');
-	}, [isActive, hasRag, phase, onPhaseChange, turn.id]);
+	}, [isArriving, hasRag, phase, onPhaseChange, turn.id]);
 
 	// A turn with cards but no prose has nothing to finish typing, so nothing would ever
 	// call revealCards. The contract says prose is never empty; this is the belt.
@@ -55,7 +73,10 @@ export function ConversationTurnView({
 		revealCards();
 	}, [turn.text, revealCards]);
 
-	const showCards = hasRag && (isActive ? phase === 'grid' : true);
+	// A turn that is not arriving shows its cards outright. Only a live turn withholds them,
+	// and only until its prose has finished typing - waiting on a phase transition that will
+	// never come is how a reopened conversation loses the card group under its last answer.
+	const showCards = hasRag && (isArriving ? phase === 'grid' : true);
 
 	// The prose under the cards waits for the group to finish landing, so the turn reads
 	// top to bottom at one pace: lead-in, cards, then the question about them. It also
@@ -96,7 +117,7 @@ export function ConversationTurnView({
 			{turn.query ? <UserPrompt text={turn.query} /> : null}
 
 			<div className="conversation-exchange__response">
-				{turn.text && isActive ? (
+				{turn.text && isArriving ? (
 					<ConversationalBubble
 						text={turn.text}
 						introDelayMs={introDelayMs}
@@ -105,7 +126,7 @@ export function ConversationTurnView({
 					/>
 				) : null}
 
-				{turn.text && !isActive ? (
+				{turn.text && !isArriving ? (
 					<div className="conversation-turn__static-bubble">
 						<FormattedMessage text={turn.text} />
 					</div>
@@ -121,18 +142,18 @@ export function ConversationTurnView({
 							cards={turn.cards}
 							onFollowup={onFollowup}
 							createdAt={turn.createdAt}
-							deal={isActive}
+							deal={isArriving}
 							archived={!isActive}
 						/>
 					</div>
 				) : null}
 
 				{/* Prose the model wrote after its cards, rendered after them. Same two
-				    treatments as the lead-in: typed while the turn is live, static once it
-				    is archived. */}
+				    treatments as the lead-in: typed while the turn is arriving, static
+				    once it is finished. */}
 				{showTrailing ? (
 					<div className="conversation-turn__trailing">
-						{isActive ? (
+						{isArriving ? (
 							<ConversationalBubble
 								text={trailingText}
 								introDelayMs={0}

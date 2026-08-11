@@ -26,6 +26,7 @@ export function createConversationTurn(
 		id?: string;
 		createdAt?: number;
 		phase?: ConversationTurn['phase'];
+		live?: boolean;
 	},
 ): ConversationTurn {
 	const cards = options?.cards?.slice(0, 4) ?? [];
@@ -39,7 +40,23 @@ export function createConversationTurn(
 		query: options?.query,
 		createdAt: options?.createdAt ?? Date.now(),
 		phase: options?.phase ?? (hasRag ? 'conversational' : 'conversational'),
+		// Live by default because the ordinary reason to build a turn is that one just
+		// arrived - a reply, an error, the welcome. The one caller that is reconstructing
+		// something already finished says so (turnsFromStoredMessages).
+		live: options?.live ?? true,
 	};
+}
+
+/**
+ * The same turns, finished.
+ *
+ * A turn animates once, while it is arriving. This is what the sidebar's cache stores, so
+ * that leaving a conversation and coming back to it shows what was said rather than
+ * performing it again - the student already watched that reply type itself out. It is the
+ * in-tab twin of `turnsFromStoredMessages` returning turns that were never live.
+ */
+export function settleTurns(turns: ConversationTurn[]): ConversationTurn[] {
+	return turns.map((turn) => (turn.live ? { ...turn, live: false } : turn));
 }
 
 /** Mark all prior turns with cards as done (grid archive). */
@@ -81,6 +98,10 @@ export function appendConversationTurn(
  * Turn ids are namespaced by the conversation: two conversations both starting at index 0
  * would otherwise hand React the same key for different content when the student switches
  * between them.
+ *
+ * NONE OF THESE IS LIVE. They were answered days ago and are being read back, so they render
+ * finished - whole prose, cards already dealt - rather than replaying an arrival that already
+ * happened. See ConversationTurn.live.
  */
 export function turnsFromStoredMessages(
 	messages: StoredMessage[],
@@ -98,6 +119,7 @@ export function turnsFromStoredMessages(
 				createdAt: pendingAt ?? options.createdAt,
 				id: `${conversationId}-${turns.length}`,
 				phase: 'done',
+				live: false,
 			}),
 		);
 		pendingQuery = undefined;
