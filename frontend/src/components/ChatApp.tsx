@@ -12,6 +12,7 @@ import {
 	appendConversationTurn,
 	archiveActiveTurns,
 	createConversationTurn,
+	settleTurns,
 	turnsFromResponse,
 	turnsFromStoredMessages,
 } from '../lib/conversationTurns';
@@ -175,10 +176,18 @@ export default function ChatApp() {
 	 * This is a CACHE of what is on screen, not a record: it exists so switching away and
 	 * back does not re-fetch, and every line of it is either something the server sent or
 	 * something the server was just told. A reload throws all of it away and asks again.
+	 *
+	 * What it stores is SETTLED, and that is the whole difference between the feed and the
+	 * cache. The feed holds a turn that is arriving and types it out; the cache holds the
+	 * same turn once it has arrived, so coming back to this conversation shows the answer
+	 * rather than performing it a second time. A turn read from here is in exactly the state
+	 * one read from the server is (turnsFromStoredMessages), which is why the two ways back
+	 * into a conversation look the same.
 	 */
 	const updateChat = useCallback((id: string, nextTurns: ConversationTurn[]) => {
+		const settled = settleTurns(nextTurns);
 		setChats((current) =>
-			current.map((chat) => (chat.id === id ? { ...chat, turns: nextTurns } : chat)),
+			current.map((chat) => (chat.id === id ? { ...chat, turns: settled } : chat)),
 		);
 	}, []);
 
