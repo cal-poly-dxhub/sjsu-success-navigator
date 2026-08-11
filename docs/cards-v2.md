@@ -70,6 +70,12 @@ question about them, in the order they are meant to be read.
 
 ## Retrieval contract
 
+- The FIRST search of every turn is primed server-side (2026-08-10): the
+  orchestrator retrieves on the student's own message before the model is
+  called and injects the results as a completed tool exchange, in the exact
+  wire shape a real call produces. The common case is one Converse call. The
+  tool stays declared as the escape hatch for a sharper second search; a
+  priming failure logs and degrades to the model searching itself.
 - The retrieval tool returns up to K results, deduplicated by URL before the
   model sees them, each carrying a small integer id, its page title, and its
   WHOLE chunk text. A 500-char excerpt cap used to sit here and it hid the

@@ -156,6 +156,20 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       fourteen fails were this shape. The chunk is bounded upstream by the chunking
       config, so a second blind cap in the tool-result layer had no job to do; the
       slice and its constant are gone, not resized.
+- [x] retrieval primed on every turn, the tool as the escape hatch (docs/cards-v2.md,
+      Retrieval contract), plus the prompt pass the eval demanded. The first search runs
+      server-side on the student's message and lands as a completed tool exchange; the
+      model answers in one Converse call in the common case and searches again only when
+      the results miss but the corpus plausibly has it. Evidence-driven: of eval turns
+      that logged, 20/30 made exactly one search, 2 made two, and the single wrong SKIP
+      was a scored fail - retrieval need is a property of the product, not a per-turn
+      decision. The prompt rewrite fixes what the transcript showed: examples now mark
+      annotations as [bracketed] stage directions (the bare "Results:" format taught the
+      model to narrate its routing decisions into prose, five answers), third-party worry
+      routes to BIT with cards instead of tripping the panel, asked-for facts go in the
+      card outright, and a result's silence is never asserted as "no rule exists" (the
+      pantry-eligibility fail). Priming degrades honestly: past-deadline skips it,
+      retrieval failure logs and falls back to the model searching itself.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a
