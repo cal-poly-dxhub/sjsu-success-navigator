@@ -68,6 +68,12 @@ class ChatResponse(BaseModel):
     # one (docs/accounts-and-storage.md, Turn lifecycle). None when no turn was recorded -
     # a guardrail block, which never became a turn.
     conversation_id: str | None = Field(default=None, alias="conversationId")
+    # The name this conversation was just given, present ONLY on the turn that created it
+    # (app/titles.py). Additive and one-directional: the sidebar can show the real title
+    # immediately instead of its own placeholder, and no other turn carries the field.
+    # The server is still the authority - this is the same value a later GET /conversations
+    # returns, arriving sooner.
+    title: str | None = None
     conversational_text: str = Field(alias="conversationalText")
     # Prose the model wrote AFTER its cards, which renders below the card group rather than
     # above it. None for the ordinary reply that ends with its cards, and always None on a
@@ -176,6 +182,45 @@ class ConversationResponse(BaseModel):
 
     conversation_id: str = Field(alias="conversationId")
     messages: list[ConversationMessage]
+
+
+class ConversationRenameRequest(BaseModel):
+    """PATCH /conversations/{conversationId} - the one field a rename may carry.
+
+    THERE IS NO CONVERSATION ID IN THE BODY, and no user id, for the reason every other
+    request model here says: the id comes from the validated path and the partition comes
+    from the JWT claim. A body that could name either would be a body that could name
+    somebody else's.
+
+    The cap is the same `title_max_chars` the model titling is held to, so the sidebar's
+    rows have one length limit rather than two. An over-cap name is a 400 rather than a
+    silent truncation: it is the student's own words, and shortening them without saying so
+    would show them a name they did not choose.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    title: str = Field(min_length=1)
+
+
+class ConversationTitleResponse(BaseModel):
+    """The result of a rename: the id and the title as STORED, after normalisation."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    title: str
+
+
+class ConversationDeleteResponse(BaseModel):
+    """The result of a delete. `deletedMessages` is the count actually removed, which the
+    browser ignores and a log line does not: it is how "delete removed every message" stops
+    being a claim and becomes a number."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    deleted_messages: int = Field(alias="deletedMessages")
 
 
 class HealthResponse(BaseModel):

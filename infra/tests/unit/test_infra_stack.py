@@ -1024,6 +1024,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "retrieve.py",
         "safety.py",
         "settings.py",
+        "titles.py",
         "tools.py",
     ]
     assert "requirements.txt" not in listing
@@ -1100,18 +1101,20 @@ def _logical_id(template: Template, type_name: str) -> str:
     return next(iter(found))
 
 
-def test_the_api_serves_exactly_the_three_routes_the_handler_implements():
-    """NARROWED, not relaxed. This used to read "only the billable route exists"; the two
-    history reads (docs/accounts-and-storage.md, Storage access patterns) are additions to
-    that list, so the assertion becomes the exact set - which still fails on a fourth route
-    nobody meant to add, and additionally fails if one of these is dropped or renamed. The
-    strings are the route keys app/handler.lambda_handler dispatches on, so a rename on
-    either side breaks here rather than at runtime as a 404."""
+def test_the_api_serves_exactly_the_five_routes_the_handler_implements():
+    """NARROWED, not relaxed. This used to read "only the billable route exists"; the history
+    reads and the two conversation WRITES (docs/accounts-and-storage.md, Storage access
+    patterns) are additions to that list, so the assertion is the exact set - which still
+    fails on a route nobody meant to add, and additionally fails if one of these is dropped
+    or renamed. The strings are the route keys app/handler.lambda_handler dispatches on, so a
+    rename on either side breaks here rather than at runtime as a 404."""
     routes = _template().find_resources("AWS::ApiGatewayV2::Route")
     assert {route["Properties"]["RouteKey"] for route in routes.values()} == {
         "POST /chat",
         "GET /conversations",
         "GET /conversations/{conversationId}",
+        "PATCH /conversations/{conversationId}",
+        "DELETE /conversations/{conversationId}",
     }
 
 
@@ -1637,7 +1640,16 @@ def test_the_amended_cors_block_keeps_the_authorization_header():
     problem rather than the auth problem it would be."""
     api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
     assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
-    assert set(api["CorsConfiguration"]["AllowMethods"]) == {"POST", "GET", "OPTIONS"}
+    # PATCH and DELETE are the rename and delete routes. Both are cross-origin and both
+    # carry Authorization, so both are preflighted: dropping either here fails the OPTIONS
+    # and surfaces as a CORS error rather than as the missing method it is.
+    assert set(api["CorsConfiguration"]["AllowMethods"]) == {
+        "POST",
+        "GET",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+    }
 
 
 def test_the_site_content_is_the_container_built_astro_output():
@@ -1856,3 +1868,56 @@ def test_each_deps_layer_ships_its_own_packages():
     assert not any(p.startswith("pydantic") for p in scraper_packages), (
         "the scraper layer should not carry the chat Lambda's deps"
     )
+
+
+def test_the_chat_role_can_invoke_the_titling_model():
+    """A SEPARATE grant, because it is a separate model id: the generation statement names
+    one model, so a titling call against another is AccessDenied - and unlike a denied
+    generation, that failure is swallowed by design (every conversation keeps its
+    first-message title), so it would be discovered from a sidebar that never improves
+    rather than from an error."""
+    from infra.config import resolve_generation
+
+    generation = resolve_generation(load_config())
+    assert generation["title_model_id"] != generation["model_id"], (
+        "this test covers the two-models case"
+    )
+    policy = _resource_named(_template(), "AWS::IAM::Policy", "ChatFunctionRole")
+    rendered = json.dumps(policy["Properties"]["PolicyDocument"]["Statement"])
+
+    assert f":inference-profile/{generation['title_model_id']}" in rendered
+    assert f"::foundation-model/{generation['title_base_model_id']}" in rendered
+
+
+def test_the_chat_function_is_told_which_model_names_a_conversation():
+    """By reference to the same resolved config the IAM grant is built from, so the id the
+    function invokes is by construction the id it is allowed to invoke."""
+    from infra.config import resolve_chat, resolve_generation
+
+    config = load_config()
+    env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")[
+        "Properties"
+    ]["Environment"]["Variables"]
+
+    assert env["TITLE_MODEL_ID"] == resolve_generation(config)["title_model_id"]
+    assert env["TITLE_MAX_CHARS"] == str(resolve_chat(config)["title_max_chars"])
+    assert env["TITLE_DEADLINE_SECONDS"] == str(
+        resolve_chat(config)["title_deadline_seconds"]
+    )
+
+
+def test_the_two_conversation_writes_are_served_by_the_chat_function_and_gated():
+    """Covered by test_every_route_is_jwt_gated too, and stated again here because the reason
+    is stronger for these two: they CHANGE stored data, and the only thing that decides whose
+    data is the `sub` claim the partition key is built from."""
+    template = _template()
+    writes = [
+        route
+        for route in template.find_resources("AWS::ApiGatewayV2::Route").values()
+        if route["Properties"]["RouteKey"].startswith(("PATCH ", "DELETE "))
+    ]
+    assert len(writes) == 2
+    integration_id = next(iter(template.find_resources("AWS::ApiGatewayV2::Integration")))
+    for route in writes:
+        assert route["Properties"]["AuthorizationType"] == "JWT"
+        assert integration_id in json.dumps(route["Properties"]["Target"])

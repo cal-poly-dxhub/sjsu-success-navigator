@@ -152,6 +152,20 @@ chat:
   # takes the minimum of this and Lambda's own remaining time, so a slow cold start
   # shortens the budget rather than overrunning it.
   converse_deadline_seconds: 22
+  # The ONE cap on a conversation title, and it is one number on purpose: both things that
+  # can name a conversation are held to it - the model call in app/titles.py (which rejects
+  # a longer reply outright) and the first-message truncation that is its fallback. Two
+  # numbers would drift, and the drift would show as a sidebar whose row lengths depend on
+  # which path happened to name them. It is also the cap on a student's own rename, so a
+  # typed name and a generated one fit the same row.
+  title_max_chars: 80
+  # The titling call's OWN wall-clock budget, in seconds. Small deliberately: the student's
+  # answer is already written and about to be returned by the time this runs, so this
+  # number is the most a label may ever cost a turn. Past it the call is not attempted and
+  # the conversation keeps its first-message title, which is a worse name and not a worse
+  # outcome. The handler additionally takes the minimum of this and Lambda's own remaining
+  # time, so a slow answer costs the title rather than the response.
+  title_deadline_seconds: 3
 
 chat_history:
   # ONE DynamoDB table for conversation headers and messages, partitioned on the Cognito
@@ -171,6 +185,17 @@ chat_history:
 generation:
   # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.
   model_id: us.anthropic.claude-sonnet-4-6
+  # The model that names a conversation (app/titles.py). A SEPARATE, smaller model rather
+  # than reusing model_id above: the task is four words with no retrieval and no tool loop,
+  # it runs inside a budget measured in seconds AFTER the student's answer is already
+  # written, and Haiku is both the cheaper and the one that finishes in time. Resolved
+  # through the same inference-profile branch as model_id, so the stack grants it the same
+  # IAM shape.
+  #
+  # If this id is wrong or the model is not enabled in the account, the failure is the
+  # designed one and not an outage: the titling call errors, the error is swallowed at
+  # WARNING, and every conversation keeps the first-message title it was already given.
+  title_model_id: us.anthropic.claude-haiku-4-5
   # Camp's Converse inference knobs, carried over.
   max_tokens: 1200
   temperature: 0.2

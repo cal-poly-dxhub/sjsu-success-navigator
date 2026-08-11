@@ -3,10 +3,12 @@ import { LayoutGroup, motion } from 'motion/react';
 import type { ChatResponse, ChatSession, ConversationTurn, RagPhase } from '../types/chat';
 import {
 	ChatApiError,
+	deleteConversation,
 	fetchConversation,
 	fetchConversations,
 	incomingBatchFromResponse,
 	postChat,
+	renameConversation,
 } from '../lib/chatApi';
 import {
 	appendConversationTurn,
@@ -277,7 +279,18 @@ export default function ChatApp() {
 				setChats((current) =>
 					current.map((chat) =>
 						chat.id === activeChatId && !chat.conversationId
-							? { ...chat, conversationId: next.conversationId }
+							? {
+									...chat,
+									conversationId: next.conversationId,
+									// THE SERVER'S NAME FOR THIS CONVERSATION, present only on the
+									// turn that created it. It replaces the placeholder this
+									// component wrote from the same message a moment ago, so the
+									// row says what a reload would say. Absent when the server's
+									// titling produced nothing usable, in which case the
+									// placeholder and the stored fallback title are the same
+									// truncation of the same sentence.
+									title: next.title ?? chat.title,
+								}
 							: chat,
 					),
 				);
@@ -446,6 +459,43 @@ export default function ChatApp() {
 		void signOut();
 	};
 
+	/**
+	 * Rename one conversation. The sidebar's copy is updated only AFTER the server agrees,
+	 * and to the title the server stored rather than the one that was typed: the server
+	 * normalises it, so rendering the typed string would put a name on screen that a reload
+	 * disagrees with.
+	 */
+	const handleRenameChat = async (id: string, title: string) => {
+		const chat = chats.find((item) => item.id === id);
+		if (!chat?.conversationId) return;
+
+		const stored = await renameConversation(chat.conversationId, title);
+		setChats((current) =>
+			current.map((item) => (item.id === id ? { ...item, title: stored } : item)),
+		);
+	};
+
+	/**
+	 * Delete one conversation, server first.
+	 *
+	 * If the deleted chat was the one on screen there is nothing left to show, so this lands
+	 * on a fresh welcome chat rather than an emptied one. The transition is skipped
+	 * deliberately: the row the animation would slide away from no longer exists.
+	 */
+	const handleDeleteChat = async (id: string) => {
+		const chat = chats.find((item) => item.id === id);
+		if (!chat?.conversationId) return;
+
+		await deleteConversation(chat.conversationId);
+
+		const replacement = chat.id === activeChatId ? newChatSession() : null;
+		setChats((current) => {
+			const remaining = current.filter((item) => item.id !== id);
+			return replacement ? [replacement, ...remaining] : remaining;
+		});
+		if (replacement) showChat(replacement);
+	};
+
 	const handleNewChat = () => {
 		if (openingChatId) return;
 		const chat = newChatSession();
@@ -498,6 +548,8 @@ export default function ChatApp() {
 				onClose={() => setNavOpen(false)}
 				onNewChat={handleNewChat}
 				onSelectChat={handleSelectChat}
+				onRenameChat={handleRenameChat}
+				onDeleteChat={handleDeleteChat}
 			/>
 
 			{/* Mobile only (display:none above the breakpoint): the two header controls are

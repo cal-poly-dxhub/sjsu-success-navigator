@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 for _name, _value in {
     "KNOWLEDGE_BASE_ID": "KB-TEST",
     "GENERATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
+    "TITLE_MODEL_ID": "us.anthropic.claude-haiku-4-5",
     "BEDROCK_REGION": "us-west-2",
     "INPUT_GUARDRAIL_ID": "gr-test",
     "INPUT_GUARDRAIL_VERSION": "1",
@@ -108,6 +109,29 @@ def conversation_event(conversation_id, sub=TEST_SUB):
     )
 
 
+def rename_event(conversation_id, body, sub=TEST_SUB):
+    """PATCH /conversations/{conversationId}. The id is in the PATH, never the body."""
+    return _authorized(
+        {
+            "routeKey": "PATCH /conversations/{conversationId}",
+            "pathParameters": {"conversationId": conversation_id},
+            "body": body if isinstance(body, str) or body is None else json.dumps(body),
+        },
+        sub,
+    )
+
+
+def delete_event(conversation_id, sub=TEST_SUB):
+    """DELETE /conversations/{conversationId}. No body at all."""
+    return _authorized(
+        {
+            "routeKey": "DELETE /conversations/{conversationId}",
+            "pathParameters": {"conversationId": conversation_id},
+        },
+        sub,
+    )
+
+
 class FakeConversationStore:
     """A ConversationStore stand-in that records the turn's table access in order.
 
@@ -115,11 +139,25 @@ class FakeConversationStore:
     BEFORE the model is called, so a disclosure that then times out is still on record.
     """
 
-    def __init__(self, history=(), fail_on=(), conversations=(), messages=()):
+    def __init__(
+        self,
+        history=(),
+        fail_on=(),
+        conversations=(),
+        messages=(),
+        renamed=True,
+        titled=True,
+        deleted_messages=0,
+    ):
         self.history = list(history)
         self.fail_on = set(fail_on)
         self.conversations = list(conversations)
         self.messages = list(messages)
+        # What the two CONDITIONAL writes report back. False is not an error: it is the
+        # condition holding - no such header, or one the student named themselves.
+        self.renamed = renamed
+        self.titled = titled
+        self.deleted_messages = deleted_messages
         self.calls = []
         self.appended = []
 
@@ -148,6 +186,24 @@ class FakeConversationStore:
         if "display" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (display read)")
         return list(self.messages)
+
+    def set_generated_title(self, **kwargs):
+        self.calls.append(("title", kwargs))
+        if "title" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (title write)")
+        return self.titled
+
+    def rename_conversation(self, **kwargs):
+        self.calls.append(("rename", kwargs))
+        if "rename" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (rename)")
+        return self.renamed
+
+    def delete_conversation(self, **kwargs):
+        self.calls.append(("delete", kwargs))
+        if "delete" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (delete)")
+        return self.deleted_messages
 
     @property
     def call_names(self):

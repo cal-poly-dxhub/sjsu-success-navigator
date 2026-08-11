@@ -114,6 +114,54 @@ export async function fetchConversation(conversationId: string): Promise<StoredM
 	return body.messages ?? [];
 }
 
+/**
+ * Rename one conversation. Returns the title as the server STORED it.
+ *
+ * The stored value is echoed back and used rather than the string that was typed, because
+ * the server normalises it (whitespace, and the em and en dashes the whole app rewrites into
+ * commas). Rendering the typed string instead would show a name the sidebar and a reload
+ * disagree about.
+ */
+export async function renameConversation(
+	conversationId: string,
+	title: string,
+): Promise<string> {
+	const config = await loadRuntimeConfig();
+	const auth = authorizationHeader();
+
+	const response = await fetch(
+		`${config.conversationsApiUrl}/${encodeURIComponent(conversationId)}`,
+		{
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json', ...auth },
+			body: JSON.stringify({ title }),
+		},
+	);
+	if (!response.ok) throw await failureFrom(response);
+
+	const body = (await response.json()) as { title?: string };
+	return body.title ?? title;
+}
+
+/**
+ * Delete one conversation and every message under it. A hard delete, server side.
+ *
+ * There is nothing to send but the id, and the id is in the path: what gets deleted is
+ * whatever that id names INSIDE the caller's own partition, which the server builds from the
+ * JWT. So this cannot be pointed at anybody else's conversation, and it is idempotent - a
+ * second click removes nothing and still succeeds.
+ */
+export async function deleteConversation(conversationId: string): Promise<void> {
+	const config = await loadRuntimeConfig();
+	const auth = authorizationHeader();
+
+	const response = await fetch(
+		`${config.conversationsApiUrl}/${encodeURIComponent(conversationId)}`,
+		{ method: 'DELETE', headers: auth },
+	);
+	if (!response.ok) throw await failureFrom(response);
+}
+
 export function incomingBatchFromResponse(response: ChatResponse): StatementCard[] {
 	const batch = response.statementBatches?.[0];
 	return batch?.cards?.slice(0, 4) ?? [];

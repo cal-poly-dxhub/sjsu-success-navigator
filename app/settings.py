@@ -62,6 +62,13 @@ class Settings:
     # Identity: no defaults (see the module docstring).
     knowledge_base_id: str
     generation_model_id: str
+    # The model that names a conversation (app/titles.py). Identity, so no default, for the
+    # same reason the generation model has none: a literal here would mean a misconfigured
+    # deploy quietly billing a model nobody chose. It is a SEPARATE value rather than a
+    # reuse of generation_model_id because the two calls have nothing in common - one writes
+    # a student's answer under a long system prompt, the other writes four words - and the
+    # small model is both cheaper and, inside a two-second budget, the one that finishes.
+    title_model_id: str
     bedrock_region: str
     input_guardrail_id: str
     input_guardrail_version: str
@@ -92,6 +99,16 @@ class Settings:
     # Wall-clock budget for the whole Converse loop. Defaults to 22 to match config.yaml;
     # the handler narrows it further using Lambda's own remaining time.
     converse_deadline_seconds: int = 22
+    # The ONE cap on a conversation title, applied to both of the things that can produce
+    # one: the model's answer (app/titles.py rejects anything longer) and the first-message
+    # truncation that is the fallback (app/history.py). Two numbers would drift, and the
+    # drift would show up as a sidebar whose rows change length depending on which path
+    # named them.
+    title_max_chars: int = 80
+    # The titling call's OWN wall-clock budget, in seconds, and the reason a titling outage
+    # cannot cost a student their answer: the reply is already written and returned by the
+    # time this runs, so past this budget the title is simply not attempted.
+    title_deadline_seconds: int = 3
 
     # The card contract (config.yaml `cards`). Each value is read by BOTH the parser in
     # cards.py and the prompt builder in prompts.py, which is the whole point of it being one
@@ -111,6 +128,7 @@ def load_settings() -> Settings:
     return Settings(
         knowledge_base_id=_required("KNOWLEDGE_BASE_ID"),
         generation_model_id=_required("GENERATION_MODEL_ID"),
+        title_model_id=_required("TITLE_MODEL_ID"),
         # Lambda auto-sets AWS_REGION and it is reserved, so the stack passes the region
         # under its own key (see the chat Lambda's environment block).
         bedrock_region=_required("BEDROCK_REGION"),
@@ -127,6 +145,8 @@ def load_settings() -> Settings:
         max_conversations_listed=_int("MAX_CONVERSATIONS_LISTED", 40),
         max_conversation_messages=_int("MAX_CONVERSATION_MESSAGES", 60),
         converse_deadline_seconds=_int("CONVERSE_DEADLINE_SECONDS", 22),
+        title_max_chars=_int("TITLE_MAX_CHARS", 80),
+        title_deadline_seconds=_int("TITLE_DEADLINE_SECONDS", 3),
         card_max_cards=_int("CARD_MAX_CARDS", 4),
         card_max_retrieval_results=_int("CARD_MAX_RETRIEVAL_RESULTS", 6),
         card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 90),

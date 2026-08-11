@@ -953,6 +953,37 @@ class NavigatorStack(Stack):
                     ],
                 )
             )
+        # Invoke the TITLING model (app/titles.py). A separate grant because it is a separate
+        # model id: the generation grant above names one model, so a titling call against
+        # another would be AccessDenied - which, unlike a denied generation, fails silently
+        # by design (every conversation keeps its first-message title) and would therefore
+        # be discovered from a sidebar that never improves rather than from an error.
+        #
+        # Skipped entirely when the two ids are the same, because the statement above
+        # already covers it and a duplicate grant reads like a second, different permission.
+        title_model_id = generation_cfg["title_model_id"]
+        if title_model_id != generation_model_id:
+            if generation_cfg["title_is_inference_profile"]:
+                title_base_model_id = generation_cfg["title_base_model_id"]
+                title_resources = [
+                    f"arn:{self.partition}:bedrock:{self.region}:{self.account}"
+                    f":inference-profile/{title_model_id}",
+                    f"arn:{self.partition}:bedrock:{self.region}"
+                    f"::foundation-model/{title_base_model_id}",
+                    f"arn:{self.partition}:bedrock:*::foundation-model/{title_base_model_id}",
+                ]
+            else:
+                title_resources = [
+                    f"arn:{self.partition}:bedrock:{self.region}"
+                    f"::foundation-model/{title_model_id}"
+                ]
+            chat_lambda_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock:InvokeModel*"],
+                    resources=title_resources,
+                )
+            )
+
         # ApplyGuardrail on the ONE guardrail: the standalone input screen (source=INPUT).
         # Nothing is attached to Converse, so there is no second ARN to grant.
         chat_lambda_role.add_to_policy(
@@ -1095,6 +1126,7 @@ class NavigatorStack(Stack):
                     "!safety.py",
                     "!orchestrator.py",
                     "!history.py",
+                    "!titles.py",
                 ],
             ),
             layers=[chat_deps_layer],
@@ -1128,6 +1160,9 @@ class NavigatorStack(Stack):
             environment={
                 "KNOWLEDGE_BASE_ID": knowledge_base.attr_knowledge_base_id,
                 "GENERATION_MODEL_ID": generation_model_id,
+                # The model that names a conversation. Identity like the one above, and
+                # granted its own InvokeModel statement above when it differs.
+                "TITLE_MODEL_ID": title_model_id,
                 # Lambda auto-sets AWS_REGION and it is RESERVED (it cannot be set in a
                 # function's configuration), so the region is passed under our own key.
                 "BEDROCK_REGION": self.region,
@@ -1150,6 +1185,12 @@ class NavigatorStack(Stack):
                 # killed mid-Converse - billed, with no response reaching the student.
                 # Validated at synth to sit under the function timeout above.
                 "CONVERSE_DEADLINE_SECONDS": str(chat_cfg["converse_deadline_seconds"]),
+                # The conversation title's cap and the titling call's own budget. The cap
+                # reaches TWO places inside the function, like the card caps do: the model
+                # title's validator and the first-message truncation that is its fallback,
+                # so the two can never disagree about how long a sidebar row may be.
+                "TITLE_MAX_CHARS": str(chat_cfg["title_max_chars"]),
+                "TITLE_DEADLINE_SECONDS": str(chat_cfg["title_deadline_seconds"]),
                 # The card contract's caps. Each one reaches TWO places inside the function -
                 # the parser that enforces it and the system prompt that states it - and both
                 # read it from here, so the number the model is told is by construction the
@@ -1391,7 +1432,11 @@ class NavigatorStack(Stack):
         # hatch to append the CloudFront origin, and a second literal here would be a
         # silent way for the two to drift - dropping Authorization on the amended block
         # would break every /chat call at the preflight.
-        cors_allow_methods = ["POST", "GET", "OPTIONS"]
+        # PATCH and DELETE join the list for the two conversation-management routes. Both
+        # are cross-origin calls from the site to the API and both carry Authorization, so
+        # both are preflighted: leave either out and the browser fails at the OPTIONS, which
+        # surfaces as a CORS error rather than as the missing method it is.
+        cors_allow_methods = ["POST", "GET", "PATCH", "DELETE", "OPTIONS"]
         cors_allow_headers = ["Content-Type", "Authorization"]
         self._cors_allow_origins = list(cors_allow_origins)
         self._cors_allow_methods = cors_allow_methods
@@ -1473,6 +1518,22 @@ class NavigatorStack(Stack):
             # string and app/handler.get_conversation have to agree letter for letter.
             path="/conversations/{conversationId}",
             methods=[apigwv2.HttpMethod.GET],
+            integration=chat_integration,
+            authorizer=jwt_authorizer,
+        )
+
+        # THE TWO WRITE ROUTES on one conversation: rename it, and delete it with every
+        # message under it. Same function, same authorizer, same path, and the authorizer
+        # matters MORE here than on the reads it sits beside: these change stored data, and
+        # the only thing that decides whose data is the `sub` claim the partition key is
+        # built from. An ungated delete would be a delete with nobody to attribute.
+        #
+        # A separate add_routes call rather than more methods on the GET above, because the
+        # GET is a read of a projection and these are writes; keeping them apart is what
+        # makes each route's comment true of every method under it.
+        http_api.add_routes(
+            path="/conversations/{conversationId}",
+            methods=[apigwv2.HttpMethod.PATCH, apigwv2.HttpMethod.DELETE],
             integration=chat_integration,
             authorizer=jwt_authorizer,
         )

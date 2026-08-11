@@ -18,15 +18,35 @@ _SUB = "11111111-2222-3333-4444-555555555555"
 _CONV = "01J0000000000000000000000A"
 
 
-class _FakeTable:
-    """Records calls and hands back canned Items. `raises_on` fails one operation."""
+class _ClientError(Exception):
+    """Shaped like botocore's ClientError, because the error CODE is what the store reads.
 
-    def __init__(self, items=(), raises_on=None):
+    The suite stubs boto3 out entirely (tests/conftest.py), so botocore.exceptions does not
+    exist here - and that is the same reason history.py matches on the code rather than
+    importing the class. This stand-in is that contract written down: an exception carrying
+    `response["Error"]["Code"]`."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+class _FakeTable:
+    """Records calls and hands back canned Items. `raises_on` fails one operation.
+
+    `pages` overrides `items` when a test needs Query to paginate; each entry is one page,
+    and every page but the last reports a LastEvaluatedKey.
+    """
+
+    def __init__(self, items=(), raises_on=None, pages=None):
         self.items = list(items)
+        self.pages = None if pages is None else list(pages)
         self.raises_on = raises_on
         self.puts = []
         self.updates = []
         self.queries = []
+        self.deletes = []
+        self.batched_deletes = []
 
     def put_item(self, **kwargs):
         self.puts.append(kwargs)
@@ -38,13 +58,44 @@ class _FakeTable:
         self.updates.append(kwargs)
         if self.raises_on == "update_item":
             raise RuntimeError("ProvisionedThroughputExceeded")
+        if self.raises_on == "condition":
+            raise _ClientError("ConditionalCheckFailedException")
         return {}
+
+    def delete_item(self, **kwargs):
+        self.deletes.append(kwargs)
+        if self.raises_on == "delete_item":
+            raise RuntimeError("ProvisionedThroughputExceeded")
+        return {}
+
+    def batch_writer(self):
+        table = self
+
+        class _Batch:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def delete_item(self, **kwargs):
+                table.batched_deletes.append(kwargs)
+                if table.raises_on == "batch_delete":
+                    raise RuntimeError("ProvisionedThroughputExceeded")
+
+        return _Batch()
 
     def query(self, **kwargs):
         self.queries.append(kwargs)
         if self.raises_on == "query":
             raise RuntimeError("ProvisionedThroughputExceeded")
-        return {"Items": self.items}
+        if self.pages is None:
+            return {"Items": self.items}
+        page = self.pages[len(self.queries) - 1]
+        result = {"Items": page}
+        if len(self.queries) < len(self.pages):
+            result["LastEvaluatedKey"] = {"pk": "USER#x", "sk": page[-1]["sk"]}
+        return result
 
 
 @pytest.fixture
@@ -460,3 +511,151 @@ def test_a_zero_display_window_asks_dynamodb_nothing(table):
         == []
     )
     assert table.queries == []
+
+
+# --- titling, renaming and deleting -------------------------------------------------------
+
+
+def test_a_generated_title_replaces_the_first_message_one(table):
+    table.store.set_generated_title(
+        user_id=_SUB, conversation_id=_CONV, title="Financial aid appeal deadline"
+    )
+
+    update = table.updates[0]
+    assert update["Key"] == {"pk": f"USER#{_SUB}", "sk": f"CONV#{_CONV}"}
+    assert update["ExpressionAttributeValues"][":title"] == "Financial aid appeal deadline"
+    assert "if_not_exists" not in update["UpdateExpression"], (
+        "the whole point is to overwrite the fallback title the first message wrote"
+    )
+
+
+def test_a_generated_title_cannot_create_a_header(table):
+    """An UpdateItem with no condition is an upsert. Without this, titling a conversation
+    whose writes all failed would mint a header with a title and no messages under it - a
+    row in the sidebar that opens empty."""
+    table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
+    assert "attribute_exists(sk)" in table.updates[0]["ConditionExpression"]
+
+
+def test_a_generated_title_never_overwrites_a_student_chosen_name(table):
+    """The promise this feature makes to a student who renamed a chat, written as a
+    condition rather than as an ordering: no automatic titling can take their name away.
+
+    Today the ordering alone would do it (titling runs on the first turn, a rename cannot
+    have happened yet), but that is an accident of when things run and this is the
+    property."""
+    table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
+    condition = table.updates[0]["ConditionExpression"]
+    assert "attribute_not_exists(#userTitled)" in condition
+    assert table.updates[0]["ExpressionAttributeNames"]["#userTitled"] == "userTitled"
+
+
+def test_a_failed_condition_is_a_false_not_an_exception(monkeypatch):
+    fake = _FakeTable(raises_on="condition")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    assert store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="x") is False
+    assert store.rename_conversation(user_id=_SUB, conversation_id=_CONV, title="x") is False
+
+
+def test_any_other_dynamodb_failure_still_raises(monkeypatch):
+    """A throttled rename must not be reported to the student as "no such conversation".
+    Only the one named condition is swallowed; everything else reaches the handler's 502."""
+    fake = _FakeTable(raises_on="update_item")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    with pytest.raises(RuntimeError):
+        store.rename_conversation(user_id=_SUB, conversation_id=_CONV, title="x")
+
+
+def test_a_rename_marks_the_header_user_titled(table):
+    table.store.rename_conversation(
+        user_id=_SUB, conversation_id=_CONV, title="Aid appeal"
+    )
+
+    update = table.updates[0]
+    assert update["ExpressionAttributeValues"][":title"] == "Aid appeal"
+    assert update["ExpressionAttributeValues"][":true"] is True
+    assert update["ExpressionAttributeNames"]["#userTitled"] == "userTitled"
+    assert update["ConditionExpression"] == "attribute_exists(sk)", (
+        "a rename of a forged id must not create a header in the caller's own partition"
+    )
+
+
+def test_a_delete_removes_every_message_before_the_header(table):
+    table.items = [{"sk": f"MSG#{_CONV}#01"}, {"sk": f"MSG#{_CONV}#02"}]
+
+    assert table.store.delete_conversation(user_id=_SUB, conversation_id=_CONV) == 2
+
+    assert [d["Key"]["sk"] for d in table.batched_deletes] == [
+        f"MSG#{_CONV}#01",
+        f"MSG#{_CONV}#02",
+    ]
+    assert [d["Key"]["sk"] for d in table.deletes] == [f"CONV#{_CONV}"], (
+        "the header is the last thing deleted"
+    )
+
+
+def test_a_delete_that_fails_midway_leaves_the_header(monkeypatch):
+    """THE ORDERING IS THE WHOLE DESIGN. Failing here leaves an empty but VISIBLE
+    conversation, which the student can delete again. The reverse - header gone, messages
+    left - is an invisible orphaned transcript that nothing lists, nothing can address, and
+    no TTL will collect, because expiresAt is unset on these items."""
+    fake = _FakeTable(items=[{"sk": f"MSG#{_CONV}#01"}], raises_on="batch_delete")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    with pytest.raises(RuntimeError):
+        store.delete_conversation(user_id=_SUB, conversation_id=_CONV)
+
+    assert fake.deletes == [], "the header was deleted despite a failed message delete"
+
+
+def test_a_delete_pages_through_a_long_conversation(monkeypatch):
+    """Query returns at most 1 MB. Stopping at the first page would leave the tail of a long
+    conversation behind - the same orphaned-data failure, arriving quietly."""
+    pages = [
+        [{"sk": f"MSG#{_CONV}#01"}, {"sk": f"MSG#{_CONV}#02"}],
+        [{"sk": f"MSG#{_CONV}#03"}],
+    ]
+    fake = _FakeTable(pages=pages)
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    assert store.delete_conversation(user_id=_SUB, conversation_id=_CONV) == 3
+    assert len(fake.queries) == 2
+    assert "ExclusiveStartKey" in fake.queries[1]
+    assert len(fake.batched_deletes) == 3
+
+
+def test_a_delete_only_ever_addresses_the_callers_own_partition(table):
+    table.items = [{"sk": f"MSG#{_CONV}#01"}]
+    table.store.delete_conversation(user_id="attacker", conversation_id=_CONV)
+
+    assert table.queries[0]["ExpressionAttributeValues"][":pk"] == "USER#attacker"
+    assert table.batched_deletes[0]["Key"]["pk"] == "USER#attacker"
+    assert table.deletes[0]["Key"]["pk"] == "USER#attacker"
+
+
+def test_deleting_a_conversation_that_is_not_there_is_a_no_op(table):
+    """Idempotent by construction: a forged id addresses a prefix inside the caller's own
+    partition that holds nothing, and DeleteItem on an absent key is not an error."""
+    table.items = []
+    assert table.store.delete_conversation(user_id=_SUB, conversation_id=_CONV) == 0
+    assert table.batched_deletes == []
+
+
+def test_the_title_cap_travels_with_the_store(monkeypatch):
+    """One number for both things that can name a conversation. A store built with the
+    configured cap truncates the fallback title to it; the model title is held to the same
+    value in app/titles.py."""
+    fake = _FakeTable()
+    store = history.ConversationStore("chat-history-test", title_max_chars=20)
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    store.append_message(user_id=_SUB, conversation_id=_CONV, role="user", text="x" * 50)
+
+    title = fake.updates[0]["ExpressionAttributeValues"][":title"]
+    assert len(title) == 20 and title.endswith("…")

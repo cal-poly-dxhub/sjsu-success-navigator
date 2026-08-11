@@ -13,7 +13,14 @@ import json
 import pytest
 
 import handler
-from conftest import TEST_SUB, chat_event, conversation_event, conversations_event
+from conftest import (
+    TEST_SUB,
+    chat_event,
+    conversation_event,
+    conversations_event,
+    delete_event,
+    rename_event,
+)
 from models import ChatResponse
 
 
@@ -583,3 +590,276 @@ def test_an_event_with_no_route_key_still_runs_the_chat_turn(bedrock, store, loo
 
     assert response["statusCode"] == 200
     assert store.call_names[0] == "append"
+
+
+# --- naming a new conversation ------------------------------------------------------------
+#
+# A model call that must never delay or fail a turn (app/titles.py). The assertions below are
+# about that "never": what happens when it fails, when there is no time for it, and when the
+# reply it produces is unusable. The rules for judging a reply live in test_titles.py.
+
+
+@pytest.fixture
+def titler(monkeypatch):
+    """A generate_title stand-in. Records what the handler handed it."""
+    calls = []
+
+    def fake(*, question, answer, settings, deadline):
+        calls.append({"question": question, "answer": answer, "deadline": deadline})
+        return "Financial aid appeal deadline"
+
+    monkeypatch.setattr(handler, "generate_title", fake)
+    return calls
+
+
+def test_a_new_conversation_is_named_and_the_name_comes_back_on_the_turn(
+    bedrock, loop, store, titler
+):
+    """The title reaches the browser on the same response that minted the conversation, so
+    the sidebar shows the real name rather than its own placeholder. Additive: it is the same
+    value a later GET /conversations returns, arriving sooner."""
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None))
+
+    assert body["title"] == "Financial aid appeal deadline"
+    title_call = [kwargs for name, kwargs in store.calls if name == "title"][0]
+    assert title_call["title"] == "Financial aid appeal deadline"
+    assert title_call["conversation_id"] == body["conversationId"]
+    assert title_call["user_id"] == TEST_SUB
+
+
+def test_titling_happens_after_the_reply_is_written(bedrock, loop, store, titler):
+    """AFTER, for two independent reasons: the model can see the answer and name what the
+    conversation turned out to be about, and a title can never cost a student their reply."""
+    handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None)
+
+    assert store.call_names == ["append", "read", "append", "title"]
+    assert titler[0]["answer"] == "Peer Connections runs drop-in tutoring."
+
+
+def test_a_continuing_conversation_is_not_renamed(bedrock, loop, store, titler):
+    """A conversation the client CAN name already has one. Titling once is what makes this a
+    label rather than a per-turn cost, and it is also what stops an automatic title from
+    landing on a conversation a student renamed."""
+    handler.lambda_handler(
+        _event(json.dumps({"query": "and the deadline?", "conversationId": "01J" + "0" * 23}))
+        , None
+    )
+
+    assert titler == []
+    assert "title" not in store.call_names
+
+
+def test_a_titling_failure_still_returns_a_good_answer(monkeypatch, bedrock, loop, store):
+    """THE ACCEPTANCE CASE. Forced failure: the turn is a 200 carrying the reply, and the
+    conversation keeps the first-message title the user write already put on the header."""
+    def boom(**kwargs):
+        raise RuntimeError("Bedrock is unavailable")
+
+    monkeypatch.setattr(handler, "generate_title", boom)
+
+    response = handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None)
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["conversationalText"] == "Peer Connections runs drop-in tutoring."
+    assert body["conversationId"]
+    assert body["title"] is None, "no title was produced, so none is claimed"
+    assert store.appended[0]["role"] == "user", "the fallback title's write still happened"
+
+
+def test_an_unusable_reply_leaves_the_title_alone(monkeypatch, bedrock, loop, store):
+    monkeypatch.setattr(handler, "generate_title", lambda **kwargs: None)
+
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None))
+
+    assert body["title"] is None
+    assert "title" not in store.call_names, "nothing to write, so nothing is written"
+
+
+def test_a_failed_title_write_is_not_a_failed_turn(monkeypatch, bedrock, loop, titler):
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["title"]))
+
+    response = handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None)
+
+    assert response["statusCode"] == 200
+    assert _body(response)["title"] is None
+
+
+def test_a_student_named_conversation_is_reported_as_untitled_on_the_wire(
+    monkeypatch, bedrock, loop, titler
+):
+    """The store refusing the write (its condition held) is not a failure and must not be
+    reported as a name: the browser would show a title the server did not store."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(titled=False))
+
+    assert _body(handler.lambda_handler(_event(json.dumps({"query": "x"})), None))["title"] is None
+
+
+def test_the_title_budget_is_measured_from_after_the_loop(bedrock, loop, store, titler):
+    """A time.monotonic() deadline computed alongside the loop's would already be in the past
+    by the time the title needed it, and every conversation would silently keep its fallback
+    name. The deadline is derived where the work starts."""
+    import time
+
+    handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None)
+
+    assert titler[0]["deadline"] > time.monotonic()
+
+
+def test_the_title_budget_never_outlives_the_invocation(bedrock, loop, store, titler):
+    """The same minimum-of-two-budgets shape the loop uses, and here for a stronger reason:
+    the answer is already written and about to be returned, so an overrun would turn a
+    finished turn into a gateway 504."""
+    import time
+
+    class _Context:
+        def get_remaining_time_in_millis(self):
+            return 400
+
+    handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), _Context())
+
+    assert titler[-1]["deadline"] <= time.monotonic(), (
+        "a 0.4s remaining budget should leave no room to start a titling call"
+    )
+
+
+# --- renaming and deleting ----------------------------------------------------------------
+
+
+_CONV = "01J0000000000000000000000A"
+
+
+def test_a_rename_stores_the_title_and_echoes_what_was_stored(store):
+    response = handler.lambda_handler(rename_event(_CONV, {"title": "Aid appeal"}), None)
+
+    assert response["statusCode"] == 200
+    assert _body(response) == {"conversationId": _CONV, "title": "Aid appeal"}
+    rename = [kwargs for name, kwargs in store.calls if name == "rename"][0]
+    assert rename == {
+        "user_id": TEST_SUB,
+        "conversation_id": _CONV,
+        "title": "Aid appeal",
+    }
+
+
+def test_a_rename_normalises_dashes_out_of_the_students_title(store):
+    """The one display invariant this app holds everywhere, applied to a sidebar row because
+    a sidebar row is somewhere a student reads text."""
+    body = _body(
+        handler.lambda_handler(rename_event(_CONV, {"title": "Aid — appeal"}), None)
+    )
+    assert body["title"] == "Aid, appeal"
+
+
+def test_a_rename_of_a_conversation_that_is_not_the_callers_is_a_404(monkeypatch):
+    """Not an existence oracle: the only header this can address is one inside the caller's
+    own partition, so this says nothing about ids that exist elsewhere."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(renamed=False))
+
+    assert handler.lambda_handler(rename_event(_CONV, {"title": "x"}), None)["statusCode"] == 404
+
+
+@pytest.mark.parametrize(
+    "body", [{}, {"title": ""}, {"title": "   "}, None, {"title": 5}]
+)
+def test_a_rename_with_no_usable_title_is_a_400(store, body):
+    assert handler.lambda_handler(rename_event(_CONV, body), None)["statusCode"] == 400
+    assert store.calls == []
+
+
+def test_a_rename_past_the_cap_is_rejected_rather_than_truncated(store):
+    """These are the student's own words. A name silently shortened is a name they did not
+    choose, so the cap is enforced by saying so."""
+    over = "x" * (handler.SETTINGS.title_max_chars + 1)
+    response = handler.lambda_handler(rename_event(_CONV, {"title": over}), None)
+
+    assert response["statusCode"] == 400
+    assert str(handler.SETTINGS.title_max_chars) in _body(response)["error"]
+    assert store.calls == []
+
+
+def test_a_rename_with_a_malformed_id_is_a_400_before_the_table(store):
+    assert (
+        handler.lambda_handler(rename_event("../CONV#other", {"title": "x"}), None)[
+            "statusCode"
+        ]
+        == 400
+    )
+    assert store.calls == []
+
+
+def test_a_rename_without_a_sub_claim_is_a_401(store):
+    response = handler.lambda_handler(rename_event(_CONV, {"title": "x"}, sub=None), None)
+    assert response["statusCode"] == 401
+    assert store.calls == []
+
+
+def test_a_rename_that_fails_in_dynamodb_is_a_502_not_a_404(monkeypatch):
+    """A throttled rename must not tell the student their chat does not exist."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["rename"]))
+
+    assert handler.lambda_handler(rename_event(_CONV, {"title": "x"}), None)["statusCode"] == 502
+
+
+def test_a_delete_removes_the_conversation_and_reports_the_count(monkeypatch):
+    from conftest import FakeConversationStore
+
+    fake = FakeConversationStore(deleted_messages=4)
+    monkeypatch.setattr(handler, "STORE", fake)
+
+    response = handler.lambda_handler(delete_event(_CONV), None)
+
+    assert response["statusCode"] == 200
+    assert _body(response) == {"conversationId": _CONV, "deletedMessages": 4}
+    assert [kwargs for name, kwargs in fake.calls if name == "delete"][0] == {
+        "user_id": TEST_SUB,
+        "conversation_id": _CONV,
+    }
+
+
+def test_a_delete_takes_its_partition_from_the_claim_and_never_the_body(store):
+    """The forged-id case: the body cannot name a user and the path cannot name a partition,
+    so a delete addressed at somebody else's conversation deletes inside the caller's own
+    partition, where it is not."""
+    event = delete_event(_CONV)
+    event["body"] = json.dumps({"userId": "somebody-else"})
+
+    handler.lambda_handler(event, None)
+
+    assert [kwargs for name, kwargs in store.calls if name == "delete"][0]["user_id"] == TEST_SUB
+
+
+def test_deleting_a_conversation_that_is_not_there_is_still_a_200(store):
+    """Idempotent: a second click, a retry, and a forged id all leave nothing to delete and
+    nothing to report. It also means this route cannot be asked which ids exist."""
+    response = handler.lambda_handler(delete_event(_CONV), None)
+    assert response["statusCode"] == 200
+    assert _body(response)["deletedMessages"] == 0
+
+
+def test_a_delete_with_a_malformed_id_is_a_400_before_the_table(store):
+    assert handler.lambda_handler(delete_event("nope"), None)["statusCode"] == 400
+    assert store.calls == []
+
+
+def test_a_delete_without_a_sub_claim_is_a_401(store):
+    assert handler.lambda_handler(delete_event(_CONV, sub=None), None)["statusCode"] == 401
+    assert store.calls == []
+
+
+def test_a_delete_that_fails_is_a_502(monkeypatch):
+    """The header is deleted last, so what the student sees after this is the conversation
+    they tried to remove - still listed, still deletable, and the retry finishes the job."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["delete"]))
+
+    assert handler.lambda_handler(delete_event(_CONV), None)["statusCode"] == 502

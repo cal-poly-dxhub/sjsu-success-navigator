@@ -3,17 +3,21 @@
 Camp's main.py and its routers are replaced by this file; the service modules alongside it
 (settings, models, prompts, tools, retrieve, cards, safety, orchestrator) move in as files.
 
-THREE ROUTES, one function (see lambda_handler):
+FIVE ROUTES, one function (see lambda_handler):
 
-    POST /chat                              one turn
-    GET  /conversations                     the caller's own conversations
-    GET  /conversations/{conversationId}    one conversation, for display
+    POST   /chat                              one turn
+    GET    /conversations                     the caller's own conversations
+    GET    /conversations/{conversationId}    one conversation, for display
+    PATCH  /conversations/{conversationId}    rename it
+    DELETE /conversations/{conversationId}    delete it, and every message under it
 
-The two reads are the same identity story as the write and share it literally: `sub` comes
+Every route is the same identity story as the write and shares it literally: `sub` comes
 out of the JWT the authorizer validated, the DynamoDB partition is built from it, and a
 conversation id belonging to somebody else addresses nothing inside the caller's partition.
-Each user browsing their OWN history is the whole feature; there is no staff view here, and
-no request field that could ask for one.
+That is what makes the two WRITE routes safe on the same terms as the reads: a forged
+conversation id renames nothing and deletes nothing, because the only partition either can
+reach is the caller's own. Each user managing their OWN history is the whole feature; there
+is no staff view here, and no request field that could ask for one.
 
 Request order on POST /chat:
 
@@ -47,20 +51,24 @@ import time
 import boto3
 from botocore.config import Config
 
-from cards import join_prose
+from cards import join_prose, normalise_dashes
 from history import ConversationStore, new_conversation_id
 from models import (
     CONVERSATION_ID_PATTERN,
     ChatRequest,
     ChatResponse,
+    ConversationDeleteResponse,
     ConversationListResponse,
     ConversationMessage,
+    ConversationRenameRequest,
     ConversationResponse,
     ConversationSummary,
+    ConversationTitleResponse,
     StatementCard,
 )
 from orchestrator import run_chat
 from settings import load_settings
+from titles import generate_title
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -71,8 +79,11 @@ logger.setLevel(logging.INFO)
 SETTINGS = load_settings()
 
 # The conversation store. Named here, connected lazily: a cold start that never reaches a
-# turn should not pay for a client it does not use.
-STORE = ConversationStore(SETTINGS.chat_history_table_name)
+# turn should not pay for a client it does not use. The title cap travels with it so the
+# fallback title and the model's are held to one number.
+STORE = ConversationStore(
+    SETTINGS.chat_history_table_name, title_max_chars=SETTINGS.title_max_chars
+)
 
 _BEDROCK_CLIENT = None
 
@@ -125,6 +136,38 @@ def loop_deadline(context):
         except Exception:
             logger.exception(
                 "Could not read Lambda remaining time; using the configured budget"
+            )
+
+    return time.monotonic() + budget
+
+
+# Seconds held back from Lambda's remaining time when deriving the TITLING deadline: the
+# response still has to be serialised after the title call returns. Smaller than the loop's
+# reserve because by this point the only work left is json.dumps.
+_POST_TITLE_RESERVE_SECONDS = 1
+
+
+def title_deadline(context):
+    """A `time.monotonic()` timestamp the titling call must not start after.
+
+    The same minimum-of-two-budgets shape as loop_deadline, and it exists for a stronger
+    reason: the student's answer is already written and about to be returned, so a title
+    that overran would turn a finished turn into a gateway 504. Taking Lambda's real
+    remaining time means a slow answer simply costs the title, which is what the fallback
+    is for. A deadline already in the past is not an error - titles.generate_title checks
+    it first and does nothing.
+    """
+    budget = float(SETTINGS.title_deadline_seconds)
+
+    remaining_ms = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(remaining_ms):
+        try:
+            budget = min(
+                budget, (remaining_ms() / 1000.0) - _POST_TITLE_RESERVE_SECONDS
+            )
+        except Exception:
+            logger.exception(
+                "Could not read Lambda remaining time; using the configured title budget"
             )
 
     return time.monotonic() + budget
@@ -226,7 +269,39 @@ def _stored_cards(response):
     ]
 
 
-def run_turn(request, user_id, deadline):
+def name_new_conversation(*, user_id, conversation_id, question, answer, deadline):
+    """Name a conversation the model just created. Returns the title, or None.
+
+    THE FALLBACK IS ALREADY WRITTEN when this runs. The first user message put a truncated
+    title on the header on its way past (app/history.py), so every path out of here that is
+    not a good title - the deadline, a Bedrock error, an unusable reply, a failed write -
+    leaves the conversation named rather than nameless. That is why this whole function can
+    swallow its failures at INFO instead of failing the turn: there is no state in which
+    doing nothing is worse than what was already there.
+
+    Runs AFTER the assistant's reply is written and the answer is in hand, so the title can
+    reflect what the conversation turned out to be about rather than only what was asked.
+    """
+    try:
+        title = generate_title(
+            question=question, answer=answer, settings=SETTINGS, deadline=deadline
+        )
+        if title is None:
+            return None
+        if not STORE.set_generated_title(
+            user_id=user_id, conversation_id=conversation_id, title=title
+        ):
+            return None
+    except Exception:
+        logger.warning(
+            "Could not name a new conversation; it keeps its first-message title.",
+            exc_info=True,
+        )
+        return None
+    return title
+
+
+def run_turn(request, user_id, deadline, context=None):
     """One turn against the store, in the order docs/accounts-and-storage.md fixes.
 
       1. write the student's message. BEFORE the model call, so a disclosure that then
@@ -237,6 +312,9 @@ def run_turn(request, user_id, deadline):
          memory, so reading it back would say it twice).
       3. call the model.
       4. write the reply.
+      5. on a NEW conversation only, name it (app/titles.py). Last, after the answer
+         exists, and on its own short budget: a label can never be allowed to delay or
+         fail a turn, and by this point the fallback title is already on the header.
 
     A STORAGE FAILURE DOES NOT DENY THE STUDENT AN ANSWER. Each step is guarded on its own
     and logs at ERROR: a write that fails costs the record of one message, and a read that
@@ -244,6 +322,9 @@ def run_turn(request, user_id, deadline):
     screen the answer itself. Same posture as the guardrail outage above, for the same
     reason - and like that one, the log line is the alarm.
     """
+    # A conversation the CLIENT could not name is one that did not exist a moment ago, and
+    # that - not a lookup, not a message count - is what makes this the turn that titles it.
+    is_new_conversation = request.conversation_id is None
     conversation_id = request.conversation_id or new_conversation_id()
 
     user_sort_key = None
@@ -289,6 +370,18 @@ def run_turn(request, user_id, deadline):
         logger.exception("Could not record the assistant's reply; returning it anyway")
 
     response.conversation_id = conversation_id
+    # THE TITLE DEADLINE IS DERIVED HERE, not alongside the loop's. Both are
+    # `time.monotonic()` timestamps, so one computed before a twenty-second model call would
+    # already be in the past by the time the title needed it, and every new conversation
+    # would silently keep its fallback name. A deadline means "from now", and now is here.
+    if is_new_conversation:
+        response.title = name_new_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            question=request.query,
+            answer=join_prose(response.conversational_text, response.trailing_text),
+            deadline=title_deadline(context),
+        )
     return response
 
 
@@ -340,7 +433,9 @@ def post_chat(event, context):
     # STEP 4 - the turn: write, read, model, write. Under both loop caps (iterations and
     # wall clock).
     try:
-        response = run_turn(request, user_id, deadline=loop_deadline(context))
+        response = run_turn(
+            request, user_id, deadline=loop_deadline(context), context=context
+        )
     except Exception:
         # The student gets a plain failure, never a partial or invented answer. The
         # exception itself is logged, not returned: a botocore message can quote the
@@ -434,10 +529,8 @@ def get_conversation(event):
         logger.error("A /conversations request carried no JWT sub claim; refusing it")
         return _response(401, {"error": "Unauthenticated."})
 
-    conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
-    if not isinstance(conversation_id, str) or not re.match(
-        CONVERSATION_ID_PATTERN, conversation_id
-    ):
+    conversation_id = _conversation_id_from(event)
+    if conversation_id is None:
         return _response(400, {"error": "Malformed conversation id."})
 
     try:
@@ -465,12 +558,124 @@ def get_conversation(event):
     return _response(200, payload.model_dump(by_alias=True))
 
 
+def _conversation_id_from(event):
+    """The validated `conversationId` path parameter, or None.
+
+    Shared by the three routes that take one, because the validation is the same on all of
+    them and the reason is the same: the value composes a DynamoDB sort-key prefix, so an id
+    carrying a `#` would address keys the server did not intend. A 400 rather than a
+    security boundary - the boundary is the partition key, which comes from the JWT.
+    """
+    conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
+    if not isinstance(conversation_id, str) or not re.match(
+        CONVERSATION_ID_PATTERN, conversation_id
+    ):
+        return None
+    return conversation_id
+
+
+def patch_conversation(event):
+    """PATCH /conversations/{conversationId} - the student renames their own chat.
+
+    THE RENAME IS THE ONE PLACE A TITLE IS NOT THE SERVER'S IDEA, and the store records that
+    with `userTitled`, which model titling is forbidden from writing over. A name a student
+    chose is theirs.
+
+    Dashes are normalised on the way in, through the same function the card path uses. Not
+    censorship of what a student may type: it is the one display invariant this app holds
+    everywhere (docs/cards-v2.md), and a sidebar row is display.
+
+    A 404 here is not an existence oracle. The only header this can address is one inside
+    the caller's own partition, so "no such conversation" means no such conversation OF
+    YOURS - which the caller already knew, since they were looking at their own list.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A conversation rename carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    conversation_id = _conversation_id_from(event)
+    if conversation_id is None:
+        return _response(400, {"error": "Malformed conversation id."})
+
+    data = _parse_body(event)
+    try:
+        rename = ConversationRenameRequest.model_validate(data or {})
+    except Exception:
+        return _response(400, {"error": "Missing 'title' in request body."})
+
+    title = " ".join(normalise_dashes(rename.title).split())
+    if not title:
+        return _response(400, {"error": "A conversation title cannot be blank."})
+    if len(title) > SETTINGS.title_max_chars:
+        # Rejected rather than truncated: these are the student's own words, and a name
+        # silently shortened is a name they did not choose.
+        return _response(
+            400,
+            {"error": f"A title must be {SETTINGS.title_max_chars} characters or fewer."},
+        )
+
+    try:
+        renamed = STORE.rename_conversation(
+            user_id=user_id, conversation_id=conversation_id, title=title
+        )
+    except Exception:
+        logger.exception("Could not rename a conversation")
+        return _response(502, {"error": "Could not rename that conversation."})
+
+    if not renamed:
+        return _response(404, {"error": "No such conversation."})
+
+    payload = ConversationTitleResponse(conversationId=conversation_id, title=title)
+    return _response(200, payload.model_dump(by_alias=True))
+
+
+def delete_conversation(event):
+    """DELETE /conversations/{conversationId} - hard delete, messages first.
+
+    IDEMPOTENT, and deliberately not a 404 on a conversation that is not there. A delete
+    says what the caller wants the world to look like afterwards, and afterwards is the same
+    either way; a second click, a retried request, or a forged id all leave nothing to
+    delete and nothing to report. It also means this route cannot be used to ask which ids
+    exist.
+
+    A FAILURE PARTWAY THROUGH IS A 502 WITH THE HEADER STILL PRESENT. The store deletes
+    messages before the header exactly so the recoverable half is the one that survives: the
+    conversation is still in the student's list, still deletable, and the retry finishes it.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A conversation delete carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    conversation_id = _conversation_id_from(event)
+    if conversation_id is None:
+        return _response(400, {"error": "Malformed conversation id."})
+
+    try:
+        deleted = STORE.delete_conversation(
+            user_id=user_id, conversation_id=conversation_id
+        )
+    except Exception:
+        # The header is still there, because it is deleted last. What the student sees is
+        # the conversation they tried to remove, which is the recoverable failure.
+        logger.exception("Could not delete a conversation")
+        return _response(502, {"error": "Could not delete that conversation."})
+
+    payload = ConversationDeleteResponse(
+        conversationId=conversation_id, deletedMessages=deleted
+    )
+    return _response(200, payload.model_dump(by_alias=True))
+
+
 # The routes this function serves, spelled as HTTP API payload-2.0 route keys. The stack
-# creates exactly these three (infra/infra_stack.py, section 5) and points all of them at
+# creates exactly these five (infra/infra_stack.py, section 5) and points all of them at
 # this function.
 _CHAT_ROUTE = "POST /chat"
 _CONVERSATIONS_ROUTE = "GET /conversations"
 _CONVERSATION_ROUTE = "GET /conversations/{conversationId}"
+_CONVERSATION_RENAME_ROUTE = "PATCH /conversations/{conversationId}"
+_CONVERSATION_DELETE_ROUTE = "DELETE /conversations/{conversationId}"
 
 
 def lambda_handler(event, context):
@@ -495,6 +700,10 @@ def lambda_handler(event, context):
         return get_conversations(event)
     if route == _CONVERSATION_ROUTE:
         return get_conversation(event)
+    if route == _CONVERSATION_RENAME_ROUTE:
+        return patch_conversation(event)
+    if route == _CONVERSATION_DELETE_ROUTE:
+        return delete_conversation(event)
 
     logger.error("No handler for route %r", route)
     return _response(404, {"error": "Not found."})
