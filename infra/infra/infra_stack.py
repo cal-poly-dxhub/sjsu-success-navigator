@@ -1127,6 +1127,7 @@ class NavigatorStack(Stack):
                     "!orchestrator.py",
                     "!history.py",
                     "!titles.py",
+                    "!usage.py",
                 ],
             ),
             layers=[chat_deps_layer],

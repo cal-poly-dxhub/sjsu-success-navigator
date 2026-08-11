@@ -69,6 +69,7 @@ from models import (
 from orchestrator import run_chat
 from settings import load_settings
 from titles import generate_title
+from usage import TurnUsage
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -218,7 +219,7 @@ def user_id_from(event):
     return None
 
 
-def apply_input_guardrail(query):
+def apply_input_guardrail(query, usage=None):
     """Screen the BARE student query with ApplyGuardrail(source=INPUT).
 
     Returns the guardrail's replacement text when it blocks, or None to continue. The
@@ -229,6 +230,12 @@ def apply_input_guardrail(query):
     to the loop rather than refusing a legitimate question over an infrastructure fault.
     Bedrock is already the harder dependency behind it, and a student who hits a transient
     guardrail outage should not be told their question was rejected.
+
+    `usage` is the turn's billable tally (app/usage.py). The text units are taken from the
+    guardrail's OWN reported usage rather than counted off the query length, because the
+    unit is 1,000 characters of whatever the service decided to screen - and a screen that
+    blocked is billed exactly like one that passed, which is why this records before the
+    intervention check below.
     """
     try:
         result = _bedrock_client().apply_guardrail(
@@ -240,6 +247,9 @@ def apply_input_guardrail(query):
     except Exception:
         logger.exception("ApplyGuardrail failed; continuing without the input screen")
         return None
+
+    if usage is not None:
+        usage.record_guardrail(result.get("usage"))
 
     if result.get("action") != "GUARDRAIL_INTERVENED":
         return None
@@ -269,7 +279,9 @@ def _stored_cards(response):
     ]
 
 
-def name_new_conversation(*, user_id, conversation_id, question, answer, deadline):
+def name_new_conversation(
+    *, user_id, conversation_id, question, answer, deadline, usage=None
+):
     """Name a conversation the model just created. Returns the title, or None.
 
     THE FALLBACK IS ALREADY WRITTEN when this runs. The first user message put a truncated
@@ -284,7 +296,11 @@ def name_new_conversation(*, user_id, conversation_id, question, answer, deadlin
     """
     try:
         title = generate_title(
-            question=question, answer=answer, settings=SETTINGS, deadline=deadline
+            question=question,
+            answer=answer,
+            settings=SETTINGS,
+            deadline=deadline,
+            usage=usage,
         )
         if title is None:
             return None
@@ -301,7 +317,7 @@ def name_new_conversation(*, user_id, conversation_id, question, answer, deadlin
     return title
 
 
-def run_turn(request, user_id, deadline, context=None):
+def run_turn(request, user_id, deadline, context=None, usage=None):
     """One turn against the store, in the order docs/accounts-and-storage.md fixes.
 
       1. write the student's message. BEFORE the model call, so a disclosure that then
@@ -321,6 +337,10 @@ def run_turn(request, user_id, deadline, context=None):
     fails costs the context, but refusing to answer would cost a student in front of a
     screen the answer itself. Same posture as the guardrail outage above, for the same
     reason - and like that one, the log line is the alarm.
+
+    `usage` is the tally the caller opened before the guardrail screen. It is attached to
+    the response HERE, after the titling call, so the model calls this turn actually made -
+    the loop's, plus the small one that named a new conversation - are all in it.
     """
     # A conversation the CLIENT could not name is one that did not exist a moment ago, and
     # that - not a lookup, not a message count - is what makes this the turn that titles it.
@@ -353,7 +373,9 @@ def run_turn(request, user_id, deadline, context=None):
         logger.exception("Could not read conversation history; answering without it")
         history = []
 
-    response = run_chat(request, SETTINGS, history=history, deadline=deadline)
+    response = run_chat(
+        request, SETTINGS, history=history, deadline=deadline, usage=usage
+    )
 
     try:
         STORE.append_message(
@@ -381,7 +403,9 @@ def run_turn(request, user_id, deadline, context=None):
             question=request.query,
             answer=join_prose(response.conversational_text, response.trailing_text),
             deadline=title_deadline(context),
+            usage=usage,
         )
+    response.usage = usage
     return response
 
 
@@ -417,16 +441,25 @@ def post_chat(event, context):
         logger.error("A /chat request carried no JWT sub claim; refusing it")
         return _response(401, {"error": "Unauthenticated."})
 
+    # The turn's billable tally, opened before the first thing that spends anything and
+    # mutated in place from here down (app/usage.py). It rides out on the response so the
+    # cost panel can price the conversation in front of the student from what this
+    # conversation actually used, rather than from the sample average in config.yaml.
+    usage = TurnUsage()
+
     # STEP 3 - the guardrail screen. NOTHING IS WRITTEN ON A BLOCK, and that is deliberate:
     # a blocked message never became a turn, and storing it would smuggle the attack text
     # into the history the model reads on the NEXT turn - past the screen that just caught
     # it. The conversation id is echoed unchanged, because no turn was recorded under it.
-    blocked_text = apply_input_guardrail(query)
+    # The usage IS returned: a blocked screen was billed like any other, and a meter that
+    # only counts the turns that worked is a meter that reads low under attack.
+    blocked_text = apply_input_guardrail(query, usage=usage)
     if blocked_text is not None:
         return _chat_response(
             ChatResponse(
                 conversationId=request.conversation_id,
                 conversationalText=blocked_text,
+                usage=usage,
             )
         )
 
@@ -434,7 +467,11 @@ def post_chat(event, context):
     # wall clock).
     try:
         response = run_turn(
-            request, user_id, deadline=loop_deadline(context), context=context
+            request,
+            user_id,
+            deadline=loop_deadline(context),
+            context=context,
+            usage=usage,
         )
     except Exception:
         # The student gets a plain failure, never a partial or invented answer. The
@@ -447,9 +484,12 @@ def post_chat(event, context):
     # reading only the FIRST statement batch. The counts say strictly more and cannot go
     # stale against the response shape.
     logger.info(
-        "chat cards=%s safety=%s",
+        "chat cards=%s safety=%s calls=%s in=%s out=%s",
         sum(len(batch.cards) for batch in (response.statement_batches or [])),
         response.safety_handoff is not None,
+        usage.model_calls,
+        usage.input_tokens,
+        usage.output_tokens,
     )
     return _chat_response(response)
 

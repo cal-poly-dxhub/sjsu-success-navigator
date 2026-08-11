@@ -43,6 +43,7 @@ from prompts import build_system_prompt
 from retrieve import retrieve_chunks
 from safety import SAFETY_FALLBACK_TEXT, apply_safety_handoff_to_response
 from tools import TOOL_CONFIG
+from usage import TurnUsage
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def run_chat(
     settings: Settings,
     history: Sequence[StoredMessage] = (),
     deadline: float | None = None,
+    usage: TurnUsage | None = None,
 ) -> ChatResponse:
     """Run the Converse tool-use loop under TWO independent caps.
 
@@ -106,6 +108,12 @@ def run_chat(
     Both caps exit through _response_from_text with whatever text the model had produced by
     then. That is the point: the alternative is being killed mid-Converse, where the
     invocation is billed and the student gets a gateway 504 carrying no response at all.
+
+    `usage` is the turn's billable tally (app/usage.py), MUTATED IN PLACE and never read.
+    It is an argument rather than a return value because every exit here is an exit under a
+    cap: a turn that hits the deadline on its third call still billed three, and a tally
+    riding on the response would be lost on exactly the paths worth counting. Passing None
+    counts nothing, which is what the loop's own tests do.
     """
     client = _bedrock_client(settings.bedrock_region)
 
@@ -120,7 +128,7 @@ def run_chat(
     last_text = ""
 
     _prime_first_search(messages, sources=sources, request=request,
-                        settings=settings, deadline=deadline)
+                        settings=settings, deadline=deadline, usage=usage)
 
     for iteration in range(settings.max_converse_iterations):
         # Checked BEFORE the call, not after: the point is never to start a Converse
@@ -150,6 +158,9 @@ def run_chat(
             },
         )
 
+        if usage is not None:
+            usage.record_model_call(response)
+
         assistant_message = response["output"]["message"]
         messages.append(assistant_message)
 
@@ -172,7 +183,13 @@ def run_chat(
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             tool_results.append(
-                _run_tool(tool_use, sources=sources, request=request, settings=settings)
+                _run_tool(
+                    tool_use,
+                    sources=sources,
+                    request=request,
+                    settings=settings,
+                    usage=usage,
+                )
             )
 
         messages.append({"role": "user", "content": tool_results})
@@ -198,6 +215,7 @@ def _prime_first_search(
     request: ChatRequest,
     settings: Settings,
     deadline: float,
+    usage: TurnUsage | None = None,
 ) -> None:
     """Run the first retrieval server-side and append it as a completed tool exchange.
 
@@ -221,6 +239,10 @@ def _prime_first_search(
     query = request.query.strip()
     try:
         chunks = retrieve_chunks(query, settings)
+        # Counted only once it returned. A retrieval that raised may or may not have been
+        # billed, and a meter that guesses in its own favour is not a meter.
+        if usage is not None:
+            usage.record_retrieval()
         options = sources.add_chunks(chunks, limit=settings.card_max_retrieval_results)
     except Exception:
         logger.warning(
@@ -265,6 +287,7 @@ def _run_tool(
     sources: TurnSources,
     request: ChatRequest,
     settings: Settings,
+    usage: TurnUsage | None = None,
 ) -> dict[str, Any]:
     tool_name = tool_use["name"]
     tool_use_id = tool_use["toolUseId"]
@@ -277,6 +300,8 @@ def _run_tool(
 
     search_query = str(tool_input.get("query", request.query)).strip()
     chunks = retrieve_chunks(search_query, settings)
+    if usage is not None:
+        usage.record_retrieval()
     options = sources.add_chunks(chunks, limit=settings.card_max_retrieval_results)
 
     return _tool_result_block(

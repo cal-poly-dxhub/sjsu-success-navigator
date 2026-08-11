@@ -1,5 +1,18 @@
 /**
- * The cost panel's arithmetic: published AWS list rates x measured usage.
+ * The cost panel's arithmetic: published AWS list rates x usage.
+ *
+ * TWO KINDS OF USAGE, and the panel keeps them apart because they are not equally
+ * trustworthy about any particular conversation:
+ *
+ *   - MEASURED, this conversation. `conversationCost` prices the tokens the server counted
+ *     on the turns actually sent in this tab (app/usage.py), so it is the real bill for the
+ *     chat in front of the reader.
+ *   - MEASURED, a sample. `perMessage` and `fixedMonthly` price a projection from the
+ *     24-question average and the deployed baseline in config.yaml, which is the only
+ *     honest way to answer "what would a month of this cost".
+ *
+ * The same rate table prices both, so the two halves of the panel can never disagree about
+ * what a token costs.
  *
  * Kept out of the component so the numbers can be read - and argued with - without reading
  * JSX. Nothing here fetches anything; every input arrives in the CostModel that the stack
@@ -8,22 +21,23 @@
  * WHAT THIS IS NOT: a bill. No Cost Explorer call, no billing API, no account spend. That
  * is a correctness property as much as a scoping one - the AWS account this stack lives in
  * also runs other projects, so an account total would silently blend somebody else's spend
- * into a figure labelled as this system's. Rate x measured-usage cannot.
+ * into a figure labelled as this system's. Rate x usage cannot.
  */
 
-import type { CostBaseline, CostMeasured, CostModel, CostRates } from './runtimeConfig';
+import type { ConversationUsage, TurnUsage } from '../types/chat';
+import type { CostBaseline, CostMeasured, CostRates } from './runtimeConfig';
 
-/** One message's cost, split into the lines the panel itemizes. */
+/** One message's cost, at the sample's average shape. */
 export type PerMessageCost = {
 	inputTokens: number;
 	outputTokens: number;
-	/** Bedrock Converse input + output. Measured. */
+	/** Bedrock Converse input + output. */
 	model: number;
-	/** ApplyGuardrail content-filter units. Measured. */
+	/** ApplyGuardrail content-filter units. */
 	guardrail: number;
-	/** S3 Vectors query + the embedding of the query text. Measured. */
+	/** S3 Vectors query + the embedding of the query text. */
 	retrieval: number;
-	/** API Gateway, Lambda, CloudFront, DynamoDB. Priced, not measured - see the panel. */
+	/** API Gateway, Lambda, CloudFront, DynamoDB. Priced from configured memory and rates. */
 	plumbing: number;
 	total: number;
 };
@@ -43,13 +57,89 @@ export type FixedMonthlyCost = {
 const PER_MILLION = 1e6;
 const BYTES_PER_GB = 1e9;
 
+export const NO_CONVERSATION_USAGE: ConversationUsage = {
+	messages: 0,
+	modelCalls: 0,
+	inputTokens: 0,
+	outputTokens: 0,
+	guardrailContentUnits: 0,
+	retrievals: 0,
+};
+
 /**
- * What one message costs, at the depth the sample was measured at.
+ * Fold one reply's usage into the conversation's running total.
  *
- * The measured questions were all asked with no prior turns, so this is a first question's
- * price and `perPriorTurn` below states the depth adder separately rather than burying it
- * in an average. Two sliders would let a reader vary depth; the panel deliberately has one,
- * so the effect is disclosed as a line instead of hidden in the headline.
+ * `messages` counts TURNS, not model calls, and the difference is the thing the panel is
+ * there to show: a message that made the model search again billed two calls. A blocked
+ * turn counts too - it billed a guardrail screen and the student sent it.
+ */
+export function addTurnUsage(
+	current: ConversationUsage | undefined,
+	turn: TurnUsage,
+): ConversationUsage {
+	const base = current ?? NO_CONVERSATION_USAGE;
+	return {
+		messages: base.messages + 1,
+		modelCalls: base.modelCalls + (turn.modelCalls ?? 0),
+		inputTokens: base.inputTokens + (turn.inputTokens ?? 0),
+		outputTokens: base.outputTokens + (turn.outputTokens ?? 0),
+		guardrailContentUnits: base.guardrailContentUnits + (turn.guardrailContentUnits ?? 0),
+		retrievals: base.retrievals + (turn.retrievals ?? 0),
+	};
+}
+
+/**
+ * What this conversation has actually cost.
+ *
+ * Every token term is measured. The per-message plumbing term is not, and cannot be from
+ * inside the request: a Lambda's billed duration is reported after the invocation ends, so
+ * the panel prices it from the same measured constant the projection uses, multiplied by
+ * the number of messages this conversation really sent. That is the one estimated component
+ * of an otherwise measured figure, and it is well under a tenth of a cent per message.
+ */
+export function conversationCost(
+	rates: CostRates,
+	measured: CostMeasured,
+	usage: ConversationUsage,
+): number {
+	const model =
+		(usage.inputTokens / PER_MILLION) * rates.generation_input_per_1m +
+		(usage.outputTokens / PER_MILLION) * rates.generation_output_per_1m;
+
+	const guardrail =
+		(usage.guardrailContentUnits / 1000) * rates.guardrail_content_per_1k_units;
+
+	const retrieval =
+		usage.retrievals *
+		(rates.vector_query_per_1m / PER_MILLION +
+			(measured.retrieval_query_tokens / PER_MILLION) * rates.embedding_per_1m);
+
+	return model + guardrail + retrieval + usage.messages * plumbingPerMessage(rates, measured);
+}
+
+/**
+ * The per-request lines that bill on invocation rather than on tokens.
+ *
+ * Shared by the measured conversation and the projected month, so a message costs the same
+ * to plumb on both halves of the panel.
+ */
+function plumbingPerMessage(rates: CostRates, measured: CostMeasured): number {
+	return (
+		rates.api_requests_per_1m / PER_MILLION +
+		rates.cloudfront_per_1m_requests / PER_MILLION +
+		rates.lambda_per_1m_requests / PER_MILLION +
+		measured.chat_lambda_gb_seconds * rates.lambda_per_gb_second +
+		(measured.chat_dynamodb_writes / PER_MILLION) * rates.dynamodb_write_per_1m +
+		(measured.chat_dynamodb_reads / PER_MILLION) * rates.dynamodb_read_per_1m
+	);
+}
+
+/**
+ * What one message costs on average, from the sample.
+ *
+ * This is what the monthly projection multiplies, and it is deliberately NOT what the panel
+ * shows for the conversation on screen: an average over 24 questions answers "what will a
+ * month cost", never "what did this chat cost".
  */
 export function perMessage(rates: CostRates, measured: CostMeasured): PerMessageCost {
 	const inputTokens = measured.model_calls_avg * measured.context_tokens_per_call_base;
@@ -69,13 +159,7 @@ export function perMessage(rates: CostRates, measured: CostMeasured): PerMessage
 		(rates.vector_query_per_1m / PER_MILLION +
 			(measured.retrieval_query_tokens / PER_MILLION) * rates.embedding_per_1m);
 
-	const plumbing =
-		rates.api_requests_per_1m / PER_MILLION +
-		rates.cloudfront_per_1m_requests / PER_MILLION +
-		rates.lambda_per_1m_requests / PER_MILLION +
-		measured.chat_lambda_gb_seconds * rates.lambda_per_gb_second +
-		(measured.chat_dynamodb_writes / PER_MILLION) * rates.dynamodb_write_per_1m +
-		(measured.chat_dynamodb_reads / PER_MILLION) * rates.dynamodb_read_per_1m;
+	const plumbing = plumbingPerMessage(rates, measured);
 
 	return {
 		inputTokens,
@@ -86,23 +170,6 @@ export function perMessage(rates: CostRates, measured: CostMeasured): PerMessage
 		plumbing,
 		total: model + guardrail + retrieval + plumbing,
 	};
-}
-
-/**
- * What one prior turn of conversation history adds to a message.
- *
- * Small on purpose, and worth stating for that reason: the server replays only the TEXT of
- * previous turns (app/history.py's context projection), never the retrieved passages behind
- * them, and it stops growing at chat.max_history_messages. A reader who assumes deep
- * conversations get expensive fast is wrong by about two orders of magnitude, and the panel
- * should say so rather than let the assumption stand.
- */
-export function perPriorTurn(rates: CostRates, measured: CostMeasured): number {
-	return (
-		(measured.model_calls_avg * measured.context_tokens_per_call_per_prior_turn) /
-			PER_MILLION *
-		rates.generation_input_per_1m
-	);
 }
 
 /** What runs whether or not anybody asks anything. Every line is rate x measured quantity. */
@@ -143,39 +210,17 @@ export function fixedMonthly(rates: CostRates, baseline: CostBaseline): FixedMon
 }
 
 /**
- * A month at a given message volume: the floor plus the variable part.
- *
- * The two are reported separately rather than blended because they answer different
- * questions - "what does it cost to keep this switched on" and "what does each student
- * question add" - and a single number answers neither.
- */
-export function monthlyAt(model: CostModel, messages: number) {
-	const per = perMessage(model.rates, model.measured);
-	const fixed = fixedMonthly(model.rates, model.baseline);
-	const variable = messages * per.total;
-	return { per, fixed, variable, total: fixed.total + variable };
-}
-
-/**
  * Money, at a precision that fits the magnitude.
  *
- * A message costs fractions of a cent and a month costs dollars; one format cannot show
- * both without either rounding a real line to $0.00 or printing a monthly total to four
- * decimals. The "<" case matters: several real line items round to zero at four decimals,
- * and printing $0.0000 for something that is not zero is the one rounding error worth
- * avoiding on a page whose whole claim is that the figures are checkable.
+ * A conversation costs fractions of a cent and a month costs dollars; one format cannot
+ * show both without either rounding a real figure to $0.00 or printing a monthly total to
+ * four decimals.
  */
 export function money(value: number, digits: number): string {
 	return `$${value.toLocaleString('en-US', {
 		minimumFractionDigits: digits,
 		maximumFractionDigits: digits,
 	})}`;
-}
-
-export function smallMoney(value: number): string {
-	if (value === 0) return '$0';
-	if (value < 0.0001) return '<$0.0001';
-	return value >= 0.01 ? money(value, 2) : money(value, 4);
 }
 
 export function count(value: number): string {

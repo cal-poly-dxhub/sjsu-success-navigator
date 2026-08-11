@@ -40,6 +40,31 @@ export type SafetyHandoff = {
 	contacts: SafetyContact[];
 };
 
+/**
+ * What ONE turn billed, as the server counted it (app/usage.py).
+ *
+ * Present on every reply the handler produces, including a guardrail block, which billed a
+ * screen and nothing else. This is measurement, not estimate: the token counts come from
+ * what Bedrock reported on each Converse call this turn actually made.
+ */
+export type TurnUsage = {
+	/** Converse invocations, which is NOT one per message: a second search bills a second call. */
+	modelCalls: number;
+	inputTokens: number;
+	outputTokens: number;
+	guardrailContentUnits: number;
+	retrievals: number;
+};
+
+/**
+ * A conversation's running total: every turn's usage, plus how many turns there were.
+ *
+ * Accrued IN THIS TAB from the replies as they arrive. Nothing stores it, so a conversation
+ * reopened from the sidebar starts empty rather than showing what it cost when it happened -
+ * the panel says so rather than presenting a zero as a measurement.
+ */
+export type ConversationUsage = TurnUsage & { messages: number };
+
 export type ChatResponse = {
 	/**
 	 * The conversation this turn belongs to. THE SERVER MINTS IT and the client's only job
@@ -66,6 +91,12 @@ export type ChatResponse = {
 	statementBatches?: StatementBatch[];
 	safetyHandoff?: SafetyHandoff;
 	talkToPersonAvailable?: boolean;
+	/**
+	 * What this turn cost in billable units. Optional because a deployment older than the
+	 * handler that reports it simply does not send one, and the meter then stays at zero
+	 * rather than the panel breaking.
+	 */
+	usage?: TurnUsage;
 };
 
 /** One row of GET /conversations: a stored conversation header. */
@@ -103,6 +134,13 @@ export type ChatSession = {
 	conversationId?: string;
 	title: string;
 	turns?: ConversationTurn[];
+	/**
+	 * What this conversation has billed since it was opened in this tab, accrued from the
+	 * `usage` on each reply. Undefined until a reply arrives, which is what the cost panel
+	 * renders as "nothing metered yet" - honest for both a fresh chat and one reopened from
+	 * history, since stored messages carry no usage.
+	 */
+	usage?: ConversationUsage;
 };
 
 /**

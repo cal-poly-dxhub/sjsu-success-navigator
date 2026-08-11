@@ -26,6 +26,7 @@ import { SideNav } from './SideNav';
 import { SjsuCaresModal } from './SjsuCaresModal';
 import { TalkToPersonPill } from './TalkToPersonPill';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { addTurnUsage } from '../lib/costModel';
 import { currentUsername, signOut } from '../lib/auth';
 import { loadRuntimeConfig } from '../lib/runtimeConfig';
 import type { CostModel } from '../lib/runtimeConfig';
@@ -275,26 +276,44 @@ export default function ChatApp() {
 			// is exactly the bug this replaces. It is recorded once and never overwritten:
 			// the server echoes the same id back for the life of the conversation, and it is
 			// absent on a guardrail block, where no turn was recorded to belong to.
-			if (next.conversationId) {
-				setChats((current) =>
-					current.map((chat) =>
-						chat.id === activeChatId && !chat.conversationId
-							? {
-									...chat,
-									conversationId: next.conversationId,
-									// THE SERVER'S NAME FOR THIS CONVERSATION, present only on the
-									// turn that created it. It replaces the placeholder this
-									// component wrote from the same message a moment ago, so the
-									// row says what a reload would say. Absent when the server's
-									// titling produced nothing usable, in which case the
-									// placeholder and the stored fallback title are the same
-									// truncation of the same sentence.
-									title: next.title ?? chat.title,
-								}
-							: chat,
-					),
-				);
-			}
+			// One pass over the sidebar for both things this reply can add to the active
+			// chat: the id the server minted, and what the turn billed. Usage is folded in
+			// whatever else the reply carried - a guardrail block has no conversation id and
+			// still spent money on the screen that blocked it.
+			setChats((current) =>
+				current.map((chat) => {
+					if (chat.id !== activeChatId) return chat;
+
+					// THE CONVERSATION'S RUNNING METER, accrued from what the server counted
+					// on each reply (app/usage.py). Held per chat rather than per tab, so
+					// switching conversations switches the figure with it, and never written
+					// anywhere: a chat reopened from history has no meter, because stored
+					// messages do not carry what they cost.
+					const metered = next.usage
+						? { ...chat, usage: addTurnUsage(chat.usage, next.usage) }
+						: chat;
+
+					// THE ID THE SERVER MINTED, kept so the NEXT turn can say which
+					// conversation it belongs to. Without this the client posts no id, the
+					// server mints a fresh one every time, and the model is handed an empty
+					// history on every message - which is exactly the bug this replaces. It
+					// is recorded once and never overwritten: the server echoes the same id
+					// back for the life of the conversation, and it is absent on a guardrail
+					// block, where no turn was recorded to belong to.
+					if (!next.conversationId || metered.conversationId) return metered;
+					return {
+						...metered,
+						conversationId: next.conversationId,
+						// THE SERVER'S NAME FOR THIS CONVERSATION, present only on the turn
+						// that created it. It replaces the placeholder this component wrote
+						// from the same message a moment ago, so the row says what a reload
+						// would say. Absent when the server's titling produced nothing usable,
+						// in which case the placeholder and the stored fallback title are the
+						// same truncation of the same sentence.
+						title: next.title ?? metered.title,
+					};
+				}),
+			);
 
 			setTalkToPersonAvailable(next.talkToPersonAvailable ?? true);
 			setPendingPrompt(null);
@@ -636,6 +655,9 @@ export default function ChatApp() {
 				<CostPanel
 					open={showCostPanel}
 					model={costModel}
+					// The meter for the conversation on screen, not for the tab: opening a
+					// different chat shows what that one has billed here.
+					usage={activeChat?.usage}
 					onClose={() => setShowCostPanel(false)}
 				/>
 			) : null}

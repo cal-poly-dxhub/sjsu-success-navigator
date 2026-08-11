@@ -1,7 +1,7 @@
 /*
- * The cost panel. A modal over the conversation, sized for reading rather than glancing:
- * every figure on it is meant to be checked, so the itemizations get room and the numbers
- * are set in a tabular face so columns line up down the page.
+ * The cost panel. A modal over the conversation, and two cards: what the chat on screen has
+ * billed, and what a month at a given volume would. Numbers are set in a tabular face so
+ * the counts line up down the column while they change.
  */
 
 .cost-panel__scrim {
@@ -98,7 +98,6 @@
 
 .cost-panel__close:focus-visible,
 .cost-panel__scrim:focus-visible,
-.cost-rates summary:focus-visible,
 .cost-slider:focus-visible {
 	outline: 3px solid var(--accent-blue, #0055a2);
 	outline-offset: 2px;
@@ -154,7 +153,7 @@
 	color: var(--text-muted, #6b7380);
 }
 
-/* --- itemizations ------------------------------------------------------- */
+/* --- the conversation's own counts --------------------------------------- */
 
 .cost-rows {
 	list-style: none;
@@ -180,46 +179,10 @@
 	color: var(--text-secondary, #3d4654);
 }
 
-/*
- * The measured/priced marker. Small, but it is the panel's honesty: the Bedrock lines are
- * observed token counts and the plumbing line is arithmetic over configured memory, and a
- * reader deciding how much to trust the total needs to see which is which.
- */
-.cost-rows__k em {
-	display: inline-block;
-	margin-left: 0.4rem;
-	font-style: normal;
-	font-size: 0.61rem;
-	font-weight: 700;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-	color: #2f6a3f;
-	background: rgba(47, 106, 63, 0.1);
-	border-radius: 999px;
-	padding: 0.1rem 0.4rem;
-	vertical-align: 0.08em;
-}
-
-.cost-rows__k em.cost-rows__priced {
-	color: #7a5a12;
-	background: rgba(197, 148, 26, 0.14);
-}
-
 .cost-rows__v {
 	font-variant-numeric: tabular-nums;
 	font-weight: 600;
 	white-space: nowrap;
-}
-
-.cost-note {
-	margin: 0.8rem 0 0;
-	font-size: 0.76rem;
-	line-height: 1.55;
-	color: var(--text-muted, #6b7380);
-}
-
-.cost-note strong {
-	color: var(--text-secondary, #3d4654);
 }
 
 /* --- the one slider ----------------------------------------------------- */
@@ -246,11 +209,17 @@
 	accent-color: var(--accent-blue, #0055a2);
 }
 
+/*
+ * The two figures the projected total is made of. They sit UNDER it rather than beside it,
+ * so the number the slider moves is read first and these explain where it came from.
+ */
 .cost-figures {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
 	gap: 0.85rem;
-	padding-top: 0.15rem;
+	margin-top: 1rem;
+	padding-top: 0.9rem;
+	border-top: 1px solid #eef0f3;
 }
 
 .cost-figures__label {
@@ -260,67 +229,6 @@
 	letter-spacing: 0.07em;
 	text-transform: uppercase;
 	color: var(--text-muted, #6b7380);
-}
-
-.cost-total {
-	display: flex;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: 0.75rem;
-	margin: 0.9rem 0 0;
-	padding: 0.6rem 0.75rem;
-	border-radius: 10px;
-	background: rgba(0, 85, 162, 0.07);
-	font-size: 0.85rem;
-	font-weight: 600;
-	color: var(--text-secondary, #3d4654);
-}
-
-.cost-total strong {
-	font-size: 1.1rem;
-	font-variant-numeric: tabular-nums;
-	color: var(--text-primary, #1c2430);
-}
-
-/* --- rates table -------------------------------------------------------- */
-
-.cost-rates {
-	margin-top: 0.9rem;
-	font-size: 0.76rem;
-}
-
-.cost-rates summary {
-	cursor: pointer;
-	font-weight: 600;
-	color: var(--text-secondary, #3d4654);
-	border-radius: 6px;
-}
-
-.cost-rates table {
-	width: 100%;
-	margin-top: 0.55rem;
-	border-collapse: collapse;
-}
-
-.cost-rates th,
-.cost-rates td {
-	text-align: left;
-	padding: 0.3rem 0.4rem;
-	border-bottom: 1px solid #eef0f3;
-	color: var(--text-muted, #6b7380);
-}
-
-.cost-rates th {
-	font-size: 0.66rem;
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-}
-
-.cost-rates td:last-child {
-	text-align: right;
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
-	color: var(--text-secondary, #3d4654);
 }
 
 .cost-panel__foot {
@@ -335,12 +243,6 @@
 
 .cost-panel__foot strong {
 	color: var(--text-secondary, #3d4654);
-}
-
-.cost-panel__foot em {
-	font-style: normal;
-	font-weight: 700;
-	color: #7a5a12;
 }
 
 /* --- the control that opens it, in the side nav's account block ---------- */
