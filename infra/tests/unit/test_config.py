@@ -822,3 +822,80 @@ def test_the_configured_converse_deadline_leaves_room_after_the_loop():
 
     deadline = resolve_chat(load_config())["converse_deadline_seconds"]
     assert deadline <= CHAT_LAMBDA_TIMEOUT_SECONDS - 5
+
+
+def test_the_cost_panel_is_off_by_a_config_flag_and_that_is_not_an_error():
+    """`enabled: false` resolves to None so the stack omits the key from config.json.
+
+    A disabled block is deliberately NOT validated past the flag: somebody re-measuring the
+    numbers should be able to leave the block half-written while the panel is off without
+    failing `cdk synth` for everyone else.
+    """
+    from infra.config import resolve_cost_model
+
+    config = copy.deepcopy(load_config())
+    config["cost_model"]["enabled"] = False
+    assert resolve_cost_model(config) is None
+
+    config["cost_model"]["rates"] = {"nonsense": "not a number"}
+    assert resolve_cost_model(config) is None, "off must not validate the rest"
+
+
+def test_an_absent_cost_model_block_is_also_off():
+    """A config.yaml with no cost_model at all is a valid config, not a missing section.
+    This is what a fresh install in another account looks like before anyone measures it."""
+    from infra.config import resolve_cost_model
+
+    config = copy.deepcopy(load_config())
+    del config["cost_model"]
+    assert resolve_cost_model(config) is None
+    validate_config(config)
+
+
+def test_an_enabled_cost_model_rejects_a_missing_rate():
+    """Every rate is required when the panel is on, with no defaults anywhere.
+
+    A missing rate would otherwise reach the browser as `undefined`, and the arithmetic
+    there renders "$NaN" - on a page whose entire claim is that the figures are checkable.
+    Failing at synth names the key instead.
+    """
+    from infra.config import resolve_cost_model
+
+    config = copy.deepcopy(load_config())
+    del config["cost_model"]["rates"]["generation_input_per_1m"]
+    with pytest.raises(ValueError, match="generation_input_per_1m"):
+        resolve_cost_model(config)
+
+
+def test_an_enabled_cost_model_rejects_a_free_question():
+    """A zero here reads as a measurement rather than as an unfilled placeholder, and the
+    panel would confidently show $0.00 for a system that bills real Bedrock tokens."""
+    from infra.config import resolve_cost_model
+
+    config = copy.deepcopy(load_config())
+    config["cost_model"]["measured"]["context_tokens_per_call_base"] = 0
+    with pytest.raises(ValueError, match="greater than zero"):
+        resolve_cost_model(config)
+
+
+def test_the_committed_cost_model_prices_a_question_in_a_plausible_range():
+    """The real config.yaml, priced end to end.
+
+    Guards the paste rather than the arithmetic: `measure_usage.py` prints a block a human
+    copies into config.yaml, and a dropped digit there produces a panel that is confidently
+    wrong rather than obviously broken. The bounds are deliberately wide - this catches a
+    factor-of-ten slip, not a re-measurement.
+    """
+    from infra.config import resolve_cost_model
+
+    model = resolve_cost_model(load_config())
+    assert model is not None
+    rates, measured = model["rates"], model["measured"]
+    per_question = (
+        measured["model_calls_avg"]
+        * measured["context_tokens_per_call_base"]
+        / 1e6
+        * rates["generation_input_per_1m"]
+        + measured["output_tokens_avg"] / 1e6 * rates["generation_output_per_1m"]
+    )
+    assert 0.005 < per_question < 0.25, f"a question priced at ${per_question:.4f}"

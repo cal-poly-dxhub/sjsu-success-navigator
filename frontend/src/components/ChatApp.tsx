@@ -18,12 +18,15 @@ import {
 } from '../lib/conversationTurns';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
+import { CostPanel } from './CostPanel';
 import { SammyStage } from './SammyStage';
 import { SideNav } from './SideNav';
 import { SjsuCaresModal } from './SjsuCaresModal';
 import { TalkToPersonPill } from './TalkToPersonPill';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { currentUsername, signOut } from '../lib/auth';
+import { loadRuntimeConfig } from '../lib/runtimeConfig';
+import type { CostModel } from '../lib/runtimeConfig';
 import { inferSjsuCaresServiceTheme } from '../lib/sjsuCares';
 import './ChatApp.css';
 
@@ -98,6 +101,31 @@ export default function ChatApp() {
 	const [isLoading, setIsLoading] = useState(false);
 	const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 	const [showSjsuCaresModal, setShowSjsuCaresModal] = useState(false);
+	const [showCostPanel, setShowCostPanel] = useState(false);
+	/**
+	 * The cost model, or null when the stack did not stamp one.
+	 *
+	 * Loaded on mount rather than at build time for the same reason the API URL is: it does
+	 * not exist until `cdk deploy` writes config.json. Null covers both "the panel is off"
+	 * and "config.json could not be read at all" - the control simply does not render, which
+	 * is the right outcome for both. A failure here must never break the chat, so the fetch
+	 * swallows its error: this is a demo instrument, not part of answering a student.
+	 */
+	const [costModel, setCostModel] = useState<CostModel | null>(null);
+
+	useEffect(() => {
+		let cancelled = false;
+		void loadRuntimeConfig()
+			.then((config) => {
+				if (!cancelled) setCostModel(config.costModel ?? null);
+			})
+			.catch(() => {
+				/* No cost panel. The chat itself surfaces its own config failures. */
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 	// Straight off the last reply's `talkToPersonAvailable`, defaulting to shown. It used to
 	// be read back out of a ChatResponse this component rebuilt from its own turns, which
 	// could only ever return the default - the turns never carried the field.
@@ -463,6 +491,10 @@ export default function ChatApp() {
 				historyError={historyError}
 				userEmail={userEmail}
 				onLogout={handleSignOut}
+				// Undefined when no cost model was stamped, which is what keeps the control
+				// out of the sidebar entirely rather than rendering a button that opens
+				// nothing.
+				onOpenCost={costModel ? () => setShowCostPanel(true) : undefined}
 				onClose={() => setNavOpen(false)}
 				onNewChat={handleNewChat}
 				onSelectChat={handleSelectChat}
@@ -547,6 +579,14 @@ export default function ChatApp() {
 				onClose={() => setShowSjsuCaresModal(false)}
 				highlightedServiceTheme={inferSjsuCaresServiceTheme(lastUserQuery)}
 			/>
+
+			{costModel ? (
+				<CostPanel
+					open={showCostPanel}
+					model={costModel}
+					onClose={() => setShowCostPanel(false)}
+				/>
+			) : null}
 		</div>
 	);
 }

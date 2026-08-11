@@ -175,6 +175,149 @@ generation:
   max_tokens: 1200
   temperature: 0.2
 
+# --- Cost model (the demo cost panel) -------------------------------------------------
+#
+# Feeds the frontend's cost panel, stamped into config.json at deploy exactly like the API
+# and pool ids. Nothing here reads a bill: it is published AWS list rates multiplied by
+# MEASURED token usage. No Cost Explorer call, no billing API, no account spend - which is
+# also what makes every figure attributable to THIS stack rather than to an account that
+# also runs other projects. The panel says "estimate" for that reason.
+#
+# THE GATE. `enabled: false` omits the whole block from config.json, so the frontend never
+# renders the button. That is the switch for Okta federation: a just-in-time-provisioned
+# SJSU student must not see operating cost, and turning it off is a config edit, not a
+# code change.
+#
+# THREE PARTS, deliberately kept apart:
+#   rates     - published AWS list prices. Change when AWS changes them, and move `as_of`.
+#   measured  - what one real question consumed, from eval/measure_usage.py against the
+#               DEPLOYED stack. Re-run that script and paste its output after any change
+#               that moves token usage (retrieval.number_of_results, chunking, the system
+#               prompt, cards.max_retrieval_results, generation.max_tokens).
+#   baseline  - what exists at zero traffic, measured against the deployed resources.
+#
+# WHY MEASURED AND NOT DERIVED. Three things make the obvious estimate wrong, and all
+# three are invisible from outside:
+#   - one question is not one model call (the agentic loop re-calls after a tool result,
+#     and each call resends the whole context);
+#   - the retrieved passages ride in the input tokens and dominate them (85% of the cost);
+#   - the guardrail bills per 1,000-character text unit, not per question.
+cost_model:
+  # The gate. false -> no costModel key in config.json -> no button in the UI.
+  enabled: true
+  # Shown on the panel. Rates move; a figure with no date is not checkable.
+  as_of: "2026-08-11"
+  region: us-west-2
+  currency: USD
+
+  # Published AWS list prices for us-west-2. Every line except the two generation rates was
+  # read from the AWS Price List API on 2026-08-11 (`aws pricing get-products`, location
+  # "US West (Oregon)"), so they are checkable against the service rather than trusted.
+  #
+  # THE TWO GENERATION RATES ARE THE EXCEPTION, and the exception is the API's, not ours:
+  # the Price List API does not publish rates for the newer Bedrock Anthropic models. All
+  # 1,008 us-west-2 AmazonBedrock price rows were paged on 2026-08-11 and none names a
+  # Claude Sonnet model. These two therefore come from the published Bedrock pricing page
+  # and are the one pair a reader has to take on the date rather than re-derive. Recheck
+  # both when `as_of` moves.
+  rates:
+    generation_input_per_1m: 3.00        # Claude Sonnet 4.6 input (pricing page)
+    generation_output_per_1m: 15.00      # Claude Sonnet 4.6 output (pricing page)
+    embedding_per_1m: 0.02               # TitanEmbeddingV2-Text-input-tokens
+    guardrail_content_per_1k_units: 0.15 # Guardrail-ContentPolicyUnitsConsumed
+    # NO sensitive-information (PII) rate: this stack's guardrail is PROMPT_ATTACK only,
+    # so there is no PII policy for a line to price.
+    vector_query_per_1m: 2.50            # Vectors-Request-Tier3 ($0.0000025/request)
+    vector_storage_per_gb_month: 0.06    # Vectors-TimedStorage-ByteHrs
+    vector_put_per_gb: 0.20              # Vectors-Put-Bytes
+    s3_storage_per_gb_month: 0.023       # S3 Standard, first 50 TB
+    lambda_per_1m_requests: 0.20
+    lambda_per_gb_second: 0.0000166667   # Lambda duration, tier 1
+    api_requests_per_1m: 1.00            # HTTP API (v2), first 300M
+    cloudfront_per_1m_requests: 1.00     # US-Requests-HTTPS-Proxy ($0.01/10k)
+    logs_ingest_per_gb: 0.50             # custom log data ingested, Standard class
+    dynamodb_write_per_1m: 0.625         # on-demand write request units
+    dynamodb_read_per_1m: 0.125          # on-demand read request units
+
+  # What ONE question actually consumed. From eval/measure_usage.py, which drives the real
+  # orchestrator against this stack's own model, knowledge base, guardrail and prompt (read
+  # out of the deployed chat Lambda's environment) and reads `usage` off each Converse
+  # response. See that script for the one thing it cannot measure - the Lambda line below.
+  measured:
+    at: "2026-08-11"
+    # 24 questions from eval/ground-truth.yaml, spread across its behaviors (RAG answers and
+    # safety triage alike - there is no pre-model phrase gate, so a safety turn costs a full
+    # model call and excluding it would flatter the average).
+    sample_questions: 24
+    # Converse invocations per question. Above 1 because the loop re-calls the model after a
+    # tool result: 22 of the 24 answered in one call, 2 needed a second search.
+    model_calls_avg: 1.08
+    # Input tokens for ONE model call: system prompt + card contract + history + the
+    # retrieved passages. Measured PER CALL rather than per question so the loop-length
+    # effect and the history-depth effect stay separable; the panel multiplies them back.
+    context_tokens_per_call_base: 6903
+    # The depth effect, isolated by a controlled experiment: the SAME question asked in
+    # front of 0..4 prior turns, three probes, every probe at every depth. Identical
+    # question means identical retrieval, so the only thing moving is the replayed
+    # transcript. Measuring it the obvious way instead - walking a conversation - measures
+    # nothing, because each turn asks a DIFFERENT question and the retrieval difference
+    # (thousands of tokens) swamps the history difference (tens).
+    context_tokens_per_call_per_prior_turn: 98
+    output_tokens_avg: 249
+    retrievals_avg: 1.08
+    # Content-filter text units per question. A text unit covers 1,000 characters and there
+    # is exactly one ApplyGuardrail call per question, over the student's bare question, so
+    # this is 1 for anything under 1,000 chars; request.max_query_chars caps the ceiling
+    # at 2.
+    guardrail_content_units_avg: 1.0
+    # Tokens embedded per retrieval (the student's question, which the retriever embeds).
+    retrieval_query_tokens: 100
+    # NOT MEASURED BY THE HARNESS, and the panel says so. measure_usage.py runs the loop in
+    # process rather than through API Gateway and Lambda, so it cannot observe a real
+    # invocation's billed duration. This is the mean billed duration of 384 REAL /chat
+    # invocations over 30 days (CloudWatch REPORT lines) times the function's configured
+    # 1024 MB. Well under a tenth of a cent against a ~2.6-cent question.
+    chat_lambda_gb_seconds: 7.16
+    # Also priced rather than measured: read off the turn's write path in app/history.py
+    # (the student's message, the reply, and the conversation header) and its one
+    # descending history query.
+    chat_dynamodb_writes: 3
+    chat_dynamodb_reads: 2
+
+  # What exists when nobody is asking anything. Inputs, not answers: the panel multiplies
+  # these by the rates above and itemizes the result, so the floor can be checked rather
+  # than trusted. Measured against the deployed stack on 2026-08-11.
+  baseline:
+    # S3 Standard across both buckets: the KB source bucket (888,745 B) and the site
+    # bucket (1,548,535 B).
+    s3_stored_bytes: 2437280
+    # S3 Vectors: 414 vectors in the live index. The per-vector size is measured, not
+    # assumed - 1024 float32 dimensions (4,096 B) plus the chunk text and Bedrock's
+    # metadata keys, averaged over a 30-vector sample.
+    vector_count: 414
+    vector_bytes_each: 7288
+    # Tokens embedded by ONE full re-ingestion: 414 chunks at a measured mean of 2,131
+    # characters each, at the usual 4-characters-per-token approximation.
+    ingest_embedded_tokens: 220567
+    # Scraper Lambda: 512 MB, mean billed duration 202s over the 9 runs logged so far.
+    # (Nine rather than thirty because the stack is younger than the window - the KB was
+    # created 2026-08-05. The cadence below comes from the cron, not from that count.)
+    scraper_seconds_per_run: 202
+    scraper_memory_gb: 0.5
+    # Scraper INVOCATIONS per month, from scraper.schedule_cron above: one run daily.
+    scrapes_per_month: 30.4
+    # RE-INDEXES per month - how often a run actually finds changed content and pays for
+    # embeddings plus S3 Vectors writes. A SEPARATE number from scrapes_per_month on
+    # purpose: most runs find nothing new, so counting every scrape as a re-index would
+    # overstate this line several-fold. An assumption about how often SJSU edits its site,
+    # not a measurement - nobody can measure it for you.
+    reindexes_per_month: 4
+    # Also an assumption, and an upper bound for that reason. Shown as its own line item.
+    deploys_per_month: 4
+    # CloudWatch Logs across the stack's five log groups (398,510 B at rest today). Stated
+    # as a monthly INGEST figure, which is the thing the rate prices.
+    log_gb_per_month: 0.02
+
 guardrail:
   # ONE guardrail, PROMPT_ATTACK on input only, applied AFTER the deterministic safety
   # intercept (ordering is load-bearing - docs/synthesis.md).

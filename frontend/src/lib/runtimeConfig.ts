@@ -35,6 +35,79 @@ export type RuntimeConfig = {
 	 */
 	loginDomain: string;
 	region: string;
+	/**
+	 * The cost panel's model, or absent when the panel is off.
+	 *
+	 * ABSENCE IS THE GATE, and it is why this is optional rather than carrying a `false`
+	 * flag: the stack omits the key entirely when config.yaml's `cost_model.enabled` is
+	 * false, so a build that never receives it cannot render the control at all. Okta
+	 * federation provisions any SJSU student into this pool just in time, and a student
+	 * must not be shown operating cost - one config edit takes the whole surface away.
+	 *
+	 * Not a bill. Every figure is a published AWS list rate multiplied by usage measured
+	 * against this stack (eval/measure_usage.py), so nothing here can blend in the spend of
+	 * another project sharing the AWS account.
+	 */
+	costModel?: CostModel;
+};
+
+/** Published AWS list prices, all for the stack's own region. */
+export type CostRates = {
+	generation_input_per_1m: number;
+	generation_output_per_1m: number;
+	embedding_per_1m: number;
+	guardrail_content_per_1k_units: number;
+	vector_query_per_1m: number;
+	vector_storage_per_gb_month: number;
+	vector_put_per_gb: number;
+	s3_storage_per_gb_month: number;
+	lambda_per_1m_requests: number;
+	lambda_per_gb_second: number;
+	api_requests_per_1m: number;
+	cloudfront_per_1m_requests: number;
+	logs_ingest_per_gb: number;
+	dynamodb_write_per_1m: number;
+	dynamodb_read_per_1m: number;
+};
+
+/** What one real question consumed, measured against the deployed stack. */
+export type CostMeasured = {
+	sample_questions: number;
+	model_calls_avg: number;
+	context_tokens_per_call_base: number;
+	context_tokens_per_call_per_prior_turn: number;
+	output_tokens_avg: number;
+	retrievals_avg: number;
+	guardrail_content_units_avg: number;
+	retrieval_query_tokens: number;
+	/** Priced from real billed durations and configured memory, not measured by the harness. */
+	chat_lambda_gb_seconds: number;
+	chat_dynamodb_writes: number;
+	chat_dynamodb_reads: number;
+};
+
+/** What exists at zero traffic, measured against the deployed resources. */
+export type CostBaseline = {
+	s3_stored_bytes: number;
+	vector_count: number;
+	vector_bytes_each: number;
+	ingest_embedded_tokens: number;
+	scraper_seconds_per_run: number;
+	scraper_memory_gb: number;
+	scrapes_per_month: number;
+	reindexes_per_month: number;
+	deploys_per_month: number;
+	log_gb_per_month: number;
+};
+
+export type CostModel = {
+	asOf: string;
+	region: string;
+	currency: string;
+	measuredAt: string;
+	rates: CostRates;
+	measured: CostMeasured;
+	baseline: CostBaseline;
 };
 
 let cached: Promise<RuntimeConfig> | null = null;

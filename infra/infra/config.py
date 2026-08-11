@@ -795,6 +795,131 @@ def resolve_http_api(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The `cost_model` block: rates x measured usage for the demo cost panel.
+
+    Returns None when the block is absent or `enabled` is false, and the stack then omits
+    `costModel` from config.json entirely - which is the whole gate. The frontend renders
+    the control only when the key is present, so turning the panel off is a config edit
+    rather than a code change. That matters for the Okta federation landing next: it
+    provisions any SJSU student just in time, and this surface must not show them what the
+    system costs to run.
+
+    OFF IS NOT AN ERROR, so a disabled block is not validated past `enabled`. A half-filled
+    block somebody is still measuring should not fail `cdk synth` while the panel is off.
+
+    EVERY NUMBER IS REQUIRED WHEN IT IS ON, with no defaults anywhere. A missing rate would
+    otherwise reach the browser as `undefined`, and the arithmetic there would render "$NaN"
+    on a page whose entire purpose is being checkable. Failing at synth names the key.
+    """
+    cost_cfg = config.get("cost_model")
+    if not cost_cfg:
+        return None
+    if not isinstance(cost_cfg, dict):
+        raise ValueError("cost_model must be a mapping.")
+    if not cost_cfg.get("enabled", False):
+        return None
+
+    def _numbers(block_name: str, keys: tuple) -> Dict[str, float]:
+        block = cost_cfg.get(block_name)
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"cost_model.{block_name} is missing or is not a mapping. The cost panel "
+                "prices every line from these values, so there is no default to fall back on."
+            )
+        resolved: Dict[str, float] = {}
+        for key in keys:
+            value = block.get(key)
+            # Booleans are ints in Python and would sail through an isinstance check, which
+            # is exactly the kind of typo (`enabled: true` pasted into a rate) worth naming.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"cost_model.{block_name}.{key} must be a number (got {value!r}). "
+                    "A missing value reaches the browser as undefined and renders as $NaN."
+                )
+            if value < 0:
+                raise ValueError(
+                    f"cost_model.{block_name}.{key} must not be negative (got {value})."
+                )
+            resolved[key] = float(value)
+        return resolved
+
+    rates = _numbers(
+        "rates",
+        (
+            "generation_input_per_1m",
+            "generation_output_per_1m",
+            "embedding_per_1m",
+            "guardrail_content_per_1k_units",
+            "vector_query_per_1m",
+            "vector_storage_per_gb_month",
+            "vector_put_per_gb",
+            "s3_storage_per_gb_month",
+            "lambda_per_1m_requests",
+            "lambda_per_gb_second",
+            "api_requests_per_1m",
+            "cloudfront_per_1m_requests",
+            "logs_ingest_per_gb",
+            "dynamodb_write_per_1m",
+            "dynamodb_read_per_1m",
+        ),
+    )
+    measured = _numbers(
+        "measured",
+        (
+            "sample_questions",
+            "model_calls_avg",
+            "context_tokens_per_call_base",
+            "context_tokens_per_call_per_prior_turn",
+            "output_tokens_avg",
+            "retrievals_avg",
+            "guardrail_content_units_avg",
+            "retrieval_query_tokens",
+            "chat_lambda_gb_seconds",
+            "chat_dynamodb_writes",
+            "chat_dynamodb_reads",
+        ),
+    )
+    baseline = _numbers(
+        "baseline",
+        (
+            "s3_stored_bytes",
+            "vector_count",
+            "vector_bytes_each",
+            "ingest_embedded_tokens",
+            "scraper_seconds_per_run",
+            "scraper_memory_gb",
+            "scrapes_per_month",
+            "reindexes_per_month",
+            "deploys_per_month",
+            "log_gb_per_month",
+        ),
+    )
+
+    # A question that costs nothing means the measured block was never filled in, and the
+    # panel would confidently show $0.00 for a system that bills real Bedrock tokens. That
+    # is the one wrong number worth failing synth over: a zero reads as a measurement, not
+    # as a placeholder.
+    if measured["model_calls_avg"] <= 0 or measured["context_tokens_per_call_base"] <= 0:
+        raise ValueError(
+            "cost_model.measured.model_calls_avg and .context_tokens_per_call_base must be "
+            "greater than zero - a question cannot cost nothing. Run eval/measure_usage.py "
+            "against the deployed stack and paste its output."
+        )
+
+    return {
+        "asOf": _non_empty_str(cost_cfg, "cost_model", "as_of"),
+        "region": _non_empty_str(cost_cfg, "cost_model", "region"),
+        "currency": _non_empty_str(cost_cfg, "cost_model", "currency"),
+        "measuredAt": _non_empty_str(
+            _require_mapping(cost_cfg, "measured"), "cost_model.measured", "at"
+        ),
+        "rates": rates,
+        "measured": measured,
+        "baseline": baseline,
+    }
+
+
 def validate_config(config: Dict[str, Any]) -> None:
     """Run every validator, discarding the results.
 
@@ -821,6 +946,10 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_chat(config)
     resolve_chat_history(config)
     resolve_cards(config)
+    # Returns None when the panel is off, which is a valid config rather than an error -
+    # but an ENABLED block with a bad rate still fails synth here, before any construct
+    # exists, rather than reaching a browser as $NaN.
+    resolve_cost_model(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:
