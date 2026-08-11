@@ -19,7 +19,7 @@ from usage import TurnUsage
 _SETTINGS = Settings(
     knowledge_base_id="KB123",
     generation_model_id="us.anthropic.claude-sonnet-4-6",
-    title_model_id="us.anthropic.claude-haiku-4-5",
+    title_model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
     bedrock_region="us-west-2",
     input_guardrail_id="gr-1",
     input_guardrail_version="3",

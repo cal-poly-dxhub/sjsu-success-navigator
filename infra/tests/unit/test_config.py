@@ -908,13 +908,15 @@ def test_the_titling_model_gets_the_same_profile_resolution(config):
     and every conversation keeps its fallback title, which reads as a bad titling model
     rather than a missing grant."""
     generation = resolve_generation(config)
-    assert generation["title_model_id"] == "us.anthropic.claude-haiku-4-5"
+    assert generation["title_model_id"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert generation["title_is_inference_profile"] is True
-    assert generation["title_base_model_id"] == "anthropic.claude-haiku-4-5"
+    assert (
+        generation["title_base_model_id"] == "anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
 
 
 def test_a_bare_titling_model_id_is_not_treated_as_a_profile(config):
-    config["generation"]["title_model_id"] = "anthropic.claude-haiku-4-5"
+    config["generation"]["title_model_id"] = "anthropic.claude-haiku-4-5-20251001-v1:0"
     generation = resolve_generation(config)
     assert generation["title_is_inference_profile"] is False
     assert generation["title_base_model_id"] is None

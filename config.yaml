@@ -195,7 +195,14 @@ generation:
   # If this id is wrong or the model is not enabled in the account, the failure is the
   # designed one and not an outage: the titling call errors, the error is swallowed at
   # WARNING, and every conversation keeps the first-message title it was already given.
-  title_model_id: us.anthropic.claude-haiku-4-5
+  # That is exactly what shipped first: `us.anthropic.claude-haiku-4-5` was written to
+  # match the shape of model_id above and is not a profile that exists, so every new
+  # conversation logged a ValidationException ("The provided model identifier is invalid")
+  # and kept its first-message title. DO NOT SHORTEN THIS BACK: the two models are not
+  # published under the same convention in this account - Sonnet 4.6 carries the bare
+  # alias, Haiku 4.5 only the dated, versioned form. `aws bedrock list-inference-profiles`
+  # is the authority, not the sibling line.
+  title_model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
   # Camp's Converse inference knobs, carried over.
   max_tokens: 1200
   temperature: 0.2
