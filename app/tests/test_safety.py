@@ -13,6 +13,7 @@ import pytest
 
 import handler
 import safety
+from conftest import chat_event
 from models import ChatResponse
 
 
@@ -111,7 +112,7 @@ def test_plain_answers_pass_through_untouched():
 # --- the pipeline: no pre-model gate -----------------------------------------------------
 
 
-def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch):
+def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch, store):
     """Triage belongs to the model now (decision, 2026-08-10). A crisis phrase is not
     short-circuited before the loop: the guardrail screens it and the loop answers it,
     with the safety panel coming out of the model's own <safety> block."""
@@ -143,11 +144,14 @@ def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch)
     monkeypatch.setattr(handler, "run_chat", _fake_loop)
 
     response = handler.lambda_handler(
-        {"body": json.dumps({"query": "I want to kill myself"})}, None
+        chat_event({"query": "I want to kill myself"}), None
     )
     body = json.loads(response["body"])
 
     assert guardrail.calls == 1, "the guardrail screens every message now"
+    assert store.call_names == ["append", "read", "append"], (
+        "a disclosure is on record before the model is called, and the reply after it"
+    )
     assert loop_queries == ["I want to kill myself"], "the loop answers crisis messages"
     assert body["safetyHandoff"] is not None
     assert [c["id"] for c in body["safetyHandoff"]["contacts"]] == ["crisis-988"]

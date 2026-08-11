@@ -123,9 +123,23 @@ chat:
   # through to its non-agentic fallback silently, so a request that spent six model calls
   # looked identical to one that answered on the first.
   max_converse_iterations: 6
-  # Conversation turns kept from a request, trimmed SERVER-SIDE (camp's value). The client
-  # is never trusted to cap its own history - that is a paid-token control.
+  # How many previous MESSAGES a turn reads back out of the history table - the Limit on
+  # the one descending query, and the window the model is shown (camp's value). Messages,
+  # not turns: 12 is six exchanges. It used to trim a transcript the CLIENT posted; the
+  # transcript is the server's now (docs/accounts-and-storage.md, Turn lifecycle), so this
+  # bounds a read rather than distrusting a payload. Still a paid-token control either way.
   max_history_messages: 12
+  # The two READ endpoints' caps (GET /conversations and GET /conversations/{id}), and
+  # deliberately separate numbers from max_history_messages above. That one is the window
+  # the MODEL is shown, paid for in tokens on every single turn, so it is small on purpose.
+  # These bound a browser read of already-stored items: the cost is one DynamoDB query and
+  # the wrong number is a student's own history truncated in front of them.
+  #
+  # Both are the NEWEST n - the list sorts by last activity, the transcript takes the tail -
+  # so hitting either cap hides the oldest, which is the half a student is least likely to
+  # have come back for.
+  max_conversations_listed: 40
+  max_conversation_messages: 60
   # WALL-CLOCK budget for the whole Converse loop, in seconds. The iteration cap alone
   # does not bound time: six iterations of a slow model, or one retrieval that stalls,
   # can outlast the function. Past this the loop stops and returns the best answer it

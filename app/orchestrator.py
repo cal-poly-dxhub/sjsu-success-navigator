@@ -22,12 +22,13 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Sequence
 
 import boto3
 from botocore.config import Config
 
 from settings import Settings
+from history import StoredMessage
 from models import ChatRequest, ChatResponse
 from cards import (
     TurnSources,
@@ -83,9 +84,17 @@ def _bedrock_client(region: str):
 def run_chat(
     request: ChatRequest,
     settings: Settings,
+    history: Sequence[StoredMessage] = (),
     deadline: float | None = None,
 ) -> ChatResponse:
     """Run the Converse tool-use loop under TWO independent caps.
+
+    `history` is the previous turns, READ FROM DYNAMODB BY THE CALLER (app/handler.py) and
+    never taken from the request. It arrives as an argument rather than being fetched here
+    so this function stays a pure function of what it is given - which is what lets the
+    tests drive a dangling user turn, an empty conversation and a full window without a
+    table. The turn's ORDER, including that the user message is written before this runs,
+    is the handler's business.
 
     `max_converse_iterations` bounds how many model calls happen.
     `deadline` bounds how long they may take, as a `time.monotonic()` timestamp. The two
@@ -106,7 +115,7 @@ def run_chat(
     # The id-to-URL map for this turn. Built here, never persisted, and the only thing that
     # can put a URL on a card - which is what makes a model-invented URL unrepresentable.
     sources = TurnSources()
-    messages = _build_converse_messages(request, settings)
+    messages = _build_converse_messages(request, history, settings)
     system_prompt = build_system_prompt(settings)
     last_text = ""
 
@@ -280,24 +289,44 @@ def _run_tool(
 
 
 def _build_converse_messages(
-    request: ChatRequest, settings: Settings
+    request: ChatRequest,
+    history: Sequence[StoredMessage],
+    settings: Settings,
 ) -> list[dict[str, Any]]:
+    """Stored history plus this turn's message, in a shape Converse will accept.
+
+    THE NEW MESSAGE IS APPENDED BEFORE THE MERGE, and that ordering is the fix for the reef
+    the doc names (docs/accounts-and-storage.md, Reefs). A turn whose model call failed
+    leaves a user message with no assistant reply, so the next turn reads a history ENDING
+    IN A USER ROLE - and Converse rejects two user messages in a row outright, which would
+    make one failed turn poison every turn after it. Merging afterwards folds the dangling
+    message into this one, so the disclosure that never got an answer is still in front of
+    the model rather than dropped on the floor.
+
+    Trimming here as well as in the query is not a second opinion about the window: it is
+    what makes this function total. A caller that hands over more than the configured window
+    gets it trimmed rather than silently billed for it.
+    """
     messages: list[dict[str, Any]] = []
 
-    for item in (request.history or [])[-settings.max_history_messages :]:
+    for item in list(history)[-settings.max_history_messages :]:
         text = item.text.strip()
         if not text:
             continue
         messages.append({"role": item.role, "content": [{"text": text}]})
 
-    messages = _merge_consecutive_roles(messages)
-
-    while messages and messages[0]["role"] == "assistant":
-        messages.pop(0)
-
     messages.append(
         {"role": "user", "content": [{"text": _build_user_message(request)}]}
     )
+
+    messages = _merge_consecutive_roles(messages)
+
+    # Converse also requires the FIRST message to be a user turn. A window that begins
+    # mid-conversation can open on an assistant reply; the loop above always ends on a user
+    # message, so this can never empty the list.
+    while messages and messages[0]["role"] == "assistant":
+        messages.pop(0)
+
     return messages
 
 

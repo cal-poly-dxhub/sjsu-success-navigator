@@ -14,6 +14,13 @@
 
 export type RuntimeConfig = {
 	chatApiUrl: string;
+	/**
+	 * Base URL for the history reads: GET here lists the signed-in student's own
+	 * conversations, and GET here + "/<conversationId>" opens one. Stamped by the stack
+	 * alongside chatApiUrl rather than derived from it - stripping "/chat" and re-appending
+	 * would put this stack's route names in a file this stack does not build.
+	 */
+	conversationsApiUrl: string;
 	userPoolId: string;
 	/** The WEB app client - authorization code + PKCE. Never the eval client. */
 	userPoolClientId: string;
@@ -46,15 +53,25 @@ export function loadRuntimeConfig(): Promise<RuntimeConfig> {
 		})
 		.then((config) => {
 			const missing = (
-				['chatApiUrl', 'userPoolId', 'userPoolClientId', 'loginDomain', 'region'] as const
+				[
+					'chatApiUrl',
+					'conversationsApiUrl',
+					'userPoolId',
+					'userPoolClientId',
+					'loginDomain',
+					'region',
+				] as const
 			).filter((key) => !config[key]);
 			if (missing.length > 0) {
 				throw new Error(`config.json is missing: ${missing.join(', ')}`);
 			}
-			// Trailing slashes stripped on both URLs because every use appends a path.
+			// Trailing slashes stripped on all three URLs because every use appends a path.
 			return {
 				...config,
 				chatApiUrl: config.chatApiUrl.replace(/\/$/, ''),
+				// Trailing slash off for the same reason: the single-conversation URL is
+				// this plus "/<id>", and a double slash is a different path to API Gateway.
+				conversationsApiUrl: config.conversationsApiUrl.replace(/\/$/, ''),
 				loginDomain: config.loginDomain.replace(/\/$/, ''),
 			};
 		})

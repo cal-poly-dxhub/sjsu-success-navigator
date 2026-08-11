@@ -41,6 +41,13 @@ export type SafetyHandoff = {
 };
 
 export type ChatResponse = {
+	/**
+	 * The conversation this turn belongs to. THE SERVER MINTS IT and the client's only job
+	 * is to send it back on the next turn (docs/accounts-and-storage.md, Turn lifecycle) -
+	 * without that, every turn opens a new conversation and the model sees no history.
+	 * Absent when no turn was recorded, which is the guardrail block.
+	 */
+	conversationId?: string;
 	conversationalText: string;
 	/**
 	 * Prose the model wrote after its cards. Renders BELOW the card group, which is what
@@ -53,15 +60,41 @@ export type ChatResponse = {
 	talkToPersonAvailable?: boolean;
 };
 
-export type ChatHistoryMessage = {
-	role: 'user' | 'assistant';
-	text: string;
+/** One row of GET /conversations: a stored conversation header. */
+export type ConversationSummary = {
+	conversationId: string;
+	title: string;
+	createdAt?: string;
+	lastActivityAt?: string;
+	messageCount: number;
 };
 
+/**
+ * One stored message from GET /conversations/{id} - the DISPLAY projection. Its cards are
+ * the stored ones with their URLs already resolved, which is what the browser renders and
+ * exactly what the model is never handed back.
+ */
+export type StoredMessage = {
+	role: 'user' | 'assistant';
+	text: string;
+	cards: StatementCard[];
+	createdAt?: string;
+};
+
+/**
+ * A conversation as the sidebar holds it. `turns` is UNDEFINED until it has been fetched -
+ * that is "not loaded yet", not "empty" - and a chat the student started in this tab has no
+ * `conversationId` until the server's first reply mints one.
+ *
+ * This is a VIEW of server state, never the truth: nothing is written here that the server
+ * was not told, and a reload rebuilds all of it from the read endpoints.
+ */
 export type ChatSession = {
+	/** Stable React key. Deliberately not the conversation id: a new chat has no id yet. */
 	id: string;
+	conversationId?: string;
 	title: string;
-	response: ChatResponse;
+	turns?: ConversationTurn[];
 };
 
 /**

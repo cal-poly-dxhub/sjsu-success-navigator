@@ -10,6 +10,7 @@ import copy
 import pytest
 
 import orchestrator
+from conftest import stored
 from models import ChatRequest
 from retrieve import RetrievedChunk
 from settings import Settings
@@ -20,6 +21,7 @@ _SETTINGS = Settings(
     bedrock_region="us-west-2",
     input_guardrail_id="gr-1",
     input_guardrail_version="3",
+    chat_history_table_name="chat-history-test",
     max_converse_iterations=6,
     converse_deadline_seconds=22,
 )
@@ -409,22 +411,24 @@ def test_inference_config_comes_from_settings_not_literals(monkeypatch, no_retri
     assert fake.kwargs["modelId"] == "us.anthropic.claude-sonnet-4-6"
 
 
-def test_history_is_trimmed_server_side_to_the_configured_window(monkeypatch, no_retrieval):
-    """The client is never trusted to cap its own history - it is a paid-token control."""
+def test_history_is_trimmed_to_the_configured_window(monkeypatch, no_retrieval):
+    """The window is applied at the query's Limit too, so this is what makes the function
+    total rather than a second opinion: a caller handing over more than the window gets it
+    trimmed rather than silently billed for it."""
     settings = Settings(**{**_SETTINGS.__dict__, "max_history_messages": 2})
     fake = _FakeBedrock([_text_turn("hi")])
     monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
 
-    request = ChatRequest(
-        query="and financial aid?",
+    orchestrator.run_chat(
+        ChatRequest(query="and financial aid?"),
+        settings,
         history=[
-            {"role": "user", "text": "one"},
-            {"role": "assistant", "text": "two"},
-            {"role": "user", "text": "three"},
-            {"role": "assistant", "text": "four"},
+            stored("user", "one"),
+            stored("assistant", "two"),
+            stored("user", "three"),
+            stored("assistant", "four"),
         ],
     )
-    orchestrator.run_chat(request, settings)
 
     # 2 trimmed history turns + the current user message + the primed search exchange.
     sent = str(fake.kwargs["messages"])
@@ -440,8 +444,8 @@ def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypat
     single byte of what the model is sent. Compared as whole message lists, history included,
     because the suppression note lived inside the last one."""
     history = [
-        {"role": "user", "text": "where do I get tutoring?"},
-        {"role": "assistant", "text": "Peer Connections runs drop-in tutoring."},
+        stored("user", "where do I get tutoring?"),
+        stored("assistant", "Peer Connections runs drop-in tutoring."),
     ]
     query = "How do I book a calculus tutor at Peer Connections?"
 
@@ -450,13 +454,86 @@ def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypat
         fake = _FakeBedrock([_text_turn("Here you go.")])
         monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
         orchestrator.run_chat(
-            ChatRequest(query=query, followup=followup, history=history), _SETTINGS
+            ChatRequest(query=query, followup=followup), _SETTINGS, history=history
         )
         sent.append(fake.kwargs["messages"])
 
     typed, clicked = sent
     assert clicked == typed
     assert "follow-up" not in str(clicked) and "no cards" not in str(clicked)
+
+
+# --- the role-alternation reef -----------------------------------------------------------
+
+
+def _roles(messages):
+    return [message["role"] for message in messages]
+
+
+def test_a_history_ending_in_a_user_turn_does_not_break_alternation(monkeypatch, no_retrieval):
+    """THE REEF the doc names (docs/accounts-and-storage.md, Reefs). A turn whose model call
+    failed leaves a user message with no assistant reply, so the NEXT turn reads a history
+    ending in a user role - and Bedrock Converse rejects two user messages in a row outright.
+    Untreated, one failed turn poisons every turn after it in that conversation.
+
+    The unanswered message is MERGED into this one rather than dropped: it is the disclosure
+    that never got an answer, and the student is most likely asking about it again."""
+    fake = _FakeBedrock([_text_turn("Here's what I can tell you.")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="are you there?"),
+        _SETTINGS,
+        history=[
+            stored("user", "my roommate is threatening me"),
+            stored("assistant", "That sounds frightening."),
+            stored("user", "it happened again last night"),
+        ],
+    )
+
+    messages = fake.kwargs["messages"]
+    assert _roles(messages) == ["user", "assistant", "user", "assistant", "user"]
+    sent = str(messages)
+    assert "it happened again last night" in sent, "the unanswered message is not dropped"
+    assert "are you there?" in sent
+
+
+def test_a_window_that_opens_on_an_assistant_turn_drops_it(monkeypatch, no_retrieval):
+    """Converse also requires the FIRST message to be a user turn, and a window of the last
+    N messages can open anywhere in a conversation."""
+    fake = _FakeBedrock([_text_turn("ok")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="and the deadline?"),
+        _SETTINGS,
+        history=[stored("assistant", "half of an answer"), stored("user", "thanks")],
+    )
+
+    messages = fake.kwargs["messages"]
+    assert _roles(messages) == ["user", "assistant", "user"]
+    assert "half of an answer" not in str(messages)
+
+
+def test_consecutive_stored_messages_of_one_role_are_merged(monkeypatch, no_retrieval):
+    """Two failed turns in a row, or two assistant items written by a future path: either
+    way the model sees one turn per role, which is the only shape Converse accepts."""
+    fake = _FakeBedrock([_text_turn("ok")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="hello?"),
+        _SETTINGS,
+        history=[
+            stored("user", "first try"),
+            stored("user", "second try"),
+        ],
+    )
+
+    messages = fake.kwargs["messages"]
+    assert _roles(messages) == ["user", "assistant", "user"]
+    assert "first try" in messages[0]["content"][0]["text"]
+    assert "second try" in messages[0]["content"][0]["text"]
 
 
 def test_the_first_search_is_primed_before_the_model_speaks(monkeypatch):

@@ -664,6 +664,16 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
             chat_cfg, "chat", "max_converse_iterations"
         ),
         "max_history_messages": _positive_int(chat_cfg, "chat", "max_history_messages"),
+        # The read endpoints' caps. Validated the same way as the loop caps and for the
+        # same reason - a zero or a negative here is a sidebar that lists nothing and a
+        # conversation that opens blank, which looks like data loss rather than a typo in
+        # config.yaml.
+        "max_conversations_listed": _positive_int(
+            chat_cfg, "chat", "max_conversations_listed"
+        ),
+        "max_conversation_messages": _positive_int(
+            chat_cfg, "chat", "max_conversation_messages"
+        ),
         "converse_deadline_seconds": deadline,
     }
 

@@ -3,17 +3,36 @@
 Camp's main.py and its routers are replaced by this file; the service modules alongside it
 (settings, models, prompts, tools, retrieve, cards, safety, orchestrator) move in as files.
 
-Request order:
+THREE ROUTES, one function (see lambda_handler):
+
+    POST /chat                              one turn
+    GET  /conversations                     the caller's own conversations
+    GET  /conversations/{conversationId}    one conversation, for display
+
+The two reads are the same identity story as the write and share it literally: `sub` comes
+out of the JWT the authorizer validated, the DynamoDB partition is built from it, and a
+conversation id belonging to somebody else addresses nothing inside the caller's partition.
+Each user browsing their OWN history is the whole feature; there is no staff view here, and
+no request field that could ask for one.
+
+Request order on POST /chat:
 
   1. validate    - parse the body, reject a missing or oversized query as a clean 400 before
                    anything is billed.
-  2. guardrail   - ApplyGuardrail(source=INPUT) on the BARE query, PROMPT_ATTACK only. A block
-                   returns the configured message with no retrieval and no generation.
-  3. agent loop  - the Bedrock Converse tool-use loop under Sammy's system prompt. Safety is
-                   the model's triage call (decision, 2026-08-10): the prompt carries the
-                   emergency instruction and a keyed resource roster, the model emits a
-                   <safety> block, and app/safety.py resolves the keys into the fixed contact
-                   panel. There is no pre-model phrase gate.
+  2. identity    - the Cognito `sub` from the JWT the API Gateway authorizer already
+                   validated. Never from the body.
+  3. guardrail   - ApplyGuardrail(source=INPUT) on the BARE query, PROMPT_ATTACK only. A block
+                   returns the configured message with no retrieval, no generation and
+                   nothing written.
+  4. the turn    - write the student's message, read the previous N back, call the model,
+                   write the reply. HISTORY IS SERVER-AUTHORITATIVE (docs/accounts-and-storage.md,
+                   Turn lifecycle): the client sends a conversation id and a message, and
+                   nothing it sends can put words in a previous turn's mouth.
+
+Step 4 is the Bedrock Converse tool-use loop under Sammy's system prompt. Safety is the
+model's triage call (decision, 2026-08-10): the prompt carries the emergency instruction and
+a keyed resource roster, the model emits a <safety> block, and app/safety.py resolves the
+keys into the fixed contact panel. There is no pre-model phrase gate.
 
 Wiring comes from env vars set by the CDK stack (see settings.py). The response body is the
 camelCase wire contract the frontend expects, produced by the pydantic aliases in models.py.
@@ -22,12 +41,24 @@ camelCase wire contract the frontend expects, produced by the pydantic aliases i
 import base64
 import json
 import logging
+import re
 import time
 
 import boto3
 from botocore.config import Config
 
-from models import ChatRequest
+from cards import join_prose
+from history import ConversationStore, new_conversation_id
+from models import (
+    CONVERSATION_ID_PATTERN,
+    ChatRequest,
+    ChatResponse,
+    ConversationListResponse,
+    ConversationMessage,
+    ConversationResponse,
+    ConversationSummary,
+    StatementCard,
+)
 from orchestrator import run_chat
 from settings import load_settings
 
@@ -38,6 +69,10 @@ logger.setLevel(logging.INFO)
 # A missing environment variable raises here, on the first invocation, naming the
 # variable - rather than surfacing later as a 502 on a student's question.
 SETTINGS = load_settings()
+
+# The conversation store. Named here, connected lazily: a cold start that never reaches a
+# turn should not pay for a client it does not use.
+STORE = ConversationStore(SETTINGS.chat_history_table_name)
 
 _BEDROCK_CLIENT = None
 
@@ -118,6 +153,28 @@ def _response(status_code, payload):
     }
 
 
+def user_id_from(event):
+    """The Cognito `sub`, out of the claims the JWT authorizer validated. Or None.
+
+    THE ONLY PLACE A USER IS IDENTIFIED, and it does not read the body. `sub` is immutable
+    and API Gateway has already checked the token's signature, issuer, audience and expiry
+    by the time this runs (HTTP API payload 2.0 puts the claims at
+    requestContext.authorizer.jwt.claims), so this is a read rather than a decision.
+
+    A body field would be the same value with none of that behind it - a client could put
+    anybody's id in it, and every partition key in DynamoDB is built from this. That is
+    exactly why ChatRequest has no user field: the convenience and the vulnerability are the
+    same line of code.
+    """
+    request_context = (event or {}).get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+    claims = (authorizer.get("jwt") or {}).get("claims") or {}
+    sub = claims.get("sub")
+    if isinstance(sub, str) and sub.strip():
+        return sub.strip()
+    return None
+
+
 def apply_input_guardrail(query):
     """Screen the BARE student query with ApplyGuardrail(source=INPUT).
 
@@ -156,10 +213,89 @@ def _chat_response(response):
     return _response(200, response.model_dump(by_alias=True))
 
 
-def lambda_handler(event, context):
-    """POST /chat, in the order the module docstring fixes: validate, guardrail, loop.
-    Safety handoffs come out of the loop - the model triages and emits keys, the server
-    resolves them into the fixed panel (app/safety.py)."""
+def _stored_cards(response):
+    """This turn's cards as they will be stored: resolved URLs, one flat list.
+
+    A turn makes exactly one card group, so flattening the batches loses nothing. These are
+    for a display read that does not exist yet - the model is never shown them again.
+    """
+    return [
+        card.model_dump(by_alias=True)
+        for batch in (response.statement_batches or [])
+        for card in batch.cards
+    ]
+
+
+def run_turn(request, user_id, deadline):
+    """One turn against the store, in the order docs/accounts-and-storage.md fixes.
+
+      1. write the student's message. BEFORE the model call, so a disclosure that then
+         times out is still on record. That ordering is the whole reason this is not one
+         write at the end.
+      2. read the previous N back - one descending, limited, strongly consistent query,
+         excluding the message just written (the orchestrator appends the current turn in
+         memory, so reading it back would say it twice).
+      3. call the model.
+      4. write the reply.
+
+    A STORAGE FAILURE DOES NOT DENY THE STUDENT AN ANSWER. Each step is guarded on its own
+    and logs at ERROR: a write that fails costs the record of one message, and a read that
+    fails costs the context, but refusing to answer would cost a student in front of a
+    screen the answer itself. Same posture as the guardrail outage above, for the same
+    reason - and like that one, the log line is the alarm.
+    """
+    conversation_id = request.conversation_id or new_conversation_id()
+
+    user_sort_key = None
+    try:
+        user_sort_key = STORE.append_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            role="user",
+            text=request.query.strip(),
+        )
+    except Exception:
+        # No sort key to exclude below. If this was the ambiguous kind of failure - the
+        # write landed and the response did not - the read picks the message up and the
+        # orchestrator's consecutive-role merge folds it into the copy it appends, so the
+        # worst case is one sentence said twice rather than a rejected Converse call.
+        logger.exception("Could not record the student's message; answering anyway")
+
+    try:
+        history = STORE.recent_messages(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=SETTINGS.max_history_messages,
+            exclude_sort_key=user_sort_key,
+        )
+    except Exception:
+        logger.exception("Could not read conversation history; answering without it")
+        history = []
+
+    response = run_chat(request, SETTINGS, history=history, deadline=deadline)
+
+    try:
+        STORE.append_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            role="assistant",
+            # The prose the model wrote, both sides of the card group, with the card tags
+            # already resolved out of it. Cards ride alongside as their own attribute; what
+            # goes back to the model on the next turn is this text and nothing else.
+            text=join_prose(response.conversational_text, response.trailing_text),
+            cards=_stored_cards(response),
+        )
+    except Exception:
+        logger.exception("Could not record the assistant's reply; returning it anyway")
+
+    response.conversation_id = conversation_id
+    return response
+
+
+def post_chat(event, context):
+    """POST /chat, in the order the module docstring fixes: validate, identity, guardrail,
+    turn. Safety handoffs come out of the loop - the model triages and emits keys, the
+    server resolves them into the fixed panel (app/safety.py)."""
     data = _parse_body(event)
     query = (data or {}).get("query")
     if not isinstance(query, str) or not query.strip():
@@ -170,34 +306,41 @@ def lambda_handler(event, context):
             {"error": f"Query exceeds {SETTINGS.max_query_chars} characters."},
         )
 
-    # STEP 2 - the guardrail screen.
-    blocked_text = apply_input_guardrail(query)
-    if blocked_text is not None:
-        return _response(
-            200,
-            {
-                "conversationalText": blocked_text,
-                "trailingText": None,
-                "statementBatches": None,
-                "safetyHandoff": None,
-                "talkToPersonAvailable": True,
-            },
-        )
-
-    # STEP 3 - the agent loop, under both caps (iterations and wall clock).
+    # The body, reduced to the two things a client is allowed to say. Anything else it sent
+    # - a `history` array, a `messages` array, a user id - is an unknown key and pydantic
+    # drops it here, which is the last point at which it exists.
     try:
-        request = ChatRequest(
-            query=query,
-            followup=bool((data or {}).get("followup", False)),
-            sessionId=(data or {}).get("sessionId"),
-            history=(data or {}).get("history"),
-        )
+        request = ChatRequest.model_validate(data)
     except Exception:
         logger.exception("Invalid chat request body")
         return _response(400, {"error": "Invalid request body."})
 
+    # STEP 2 - identity. The route is authorizer-gated, so a request arriving without a
+    # `sub` is a misconfigured stack or a direct invoke, not a student. Failing closed
+    # rather than answering anonymously: every partition key is built from this claim, so
+    # there is nowhere to put the turn and no one to attribute it to.
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A /chat request carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    # STEP 3 - the guardrail screen. NOTHING IS WRITTEN ON A BLOCK, and that is deliberate:
+    # a blocked message never became a turn, and storing it would smuggle the attack text
+    # into the history the model reads on the NEXT turn - past the screen that just caught
+    # it. The conversation id is echoed unchanged, because no turn was recorded under it.
+    blocked_text = apply_input_guardrail(query)
+    if blocked_text is not None:
+        return _chat_response(
+            ChatResponse(
+                conversationId=request.conversation_id,
+                conversationalText=blocked_text,
+            )
+        )
+
+    # STEP 4 - the turn: write, read, model, write. Under both loop caps (iterations and
+    # wall clock).
     try:
-        response = run_chat(request, SETTINGS, deadline=loop_deadline(context))
+        response = run_turn(request, user_id, deadline=loop_deadline(context))
     except Exception:
         # The student gets a plain failure, never a partial or invented answer. The
         # exception itself is logged, not returned: a botocore message can quote the
@@ -214,3 +357,144 @@ def lambda_handler(event, context):
         response.safety_handoff is not None,
     )
     return _chat_response(response)
+
+
+def _display_cards(stored):
+    """Stored cards, re-validated through the live card contract.
+
+    A card that no longer matches is DROPPED rather than failing the read, and the reason is
+    the same as history.py's unreadable-item skip: the only way one gets here is a shape a
+    previous version of this code wrote, and refusing to open a conversation because one old
+    card lost a field would be a worse outcome than opening it without that card. The
+    WARNING is the alarm.
+    """
+    cards = []
+    for raw in stored or []:
+        try:
+            cards.append(StatementCard.model_validate(raw))
+        except Exception:
+            logger.warning("Skipping a stored card that no longer fits the card contract")
+    return cards
+
+
+def get_conversations(event):
+    """GET /conversations - the caller's own conversations, most recently active first.
+
+    NO REQUEST BODY AND NO PARAMETERS, deliberately: there is nothing to ask for. The only
+    input is the JWT `sub`, so this route cannot be pointed at another student even by a
+    caller who wants to.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A /conversations request carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    try:
+        summaries = STORE.list_conversations(
+            user_id=user_id, limit=SETTINGS.max_conversations_listed
+        )
+    except Exception:
+        # A read failure IS the whole response here - unlike a turn, where the answer
+        # matters more than the record - so it is a 502 rather than a silent empty list. An
+        # empty list would say "you have no conversations", which is a different and worse
+        # lie than "this did not load".
+        logger.exception("Could not list conversations")
+        return _response(502, {"error": "Could not load your conversations."})
+
+    payload = ConversationListResponse(
+        conversations=[
+            ConversationSummary(
+                conversationId=summary.conversation_id,
+                title=summary.title,
+                createdAt=summary.created_at,
+                lastActivityAt=summary.last_activity_at,
+                messageCount=summary.message_count,
+            )
+            for summary in summaries
+        ]
+    )
+    return _response(200, payload.model_dump(by_alias=True))
+
+
+def get_conversation(event):
+    """GET /conversations/{conversationId} - one conversation, in the DISPLAY projection.
+
+    The id is validated against the same pattern POST /chat validates, for the same reason:
+    it goes into a sort-key prefix, so an id carrying a `#` would compose a key prefix the
+    server did not intend. That is a 400 rather than a security boundary - the boundary is
+    the partition key, which comes from the JWT.
+
+    A WELL-FORMED ID THAT IS NOT THE CALLER'S RETURNS 200 WITH AN EMPTY LIST. Not a 404,
+    which would confirm to a prober which ids exist somewhere, and not a 403, which would
+    imply this server checked an owner and could have got that check wrong. It reads empty
+    because the only partition it can address is the caller's own.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A /conversations request carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
+    if not isinstance(conversation_id, str) or not re.match(
+        CONVERSATION_ID_PATTERN, conversation_id
+    ):
+        return _response(400, {"error": "Malformed conversation id."})
+
+    try:
+        messages = STORE.conversation_messages(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=SETTINGS.max_conversation_messages,
+        )
+    except Exception:
+        logger.exception("Could not read a conversation")
+        return _response(502, {"error": "Could not load that conversation."})
+
+    payload = ConversationResponse(
+        conversationId=conversation_id,
+        messages=[
+            ConversationMessage(
+                role=message.role,
+                text=message.text,
+                cards=_display_cards(message.cards),
+                createdAt=message.created_at,
+            )
+            for message in messages
+        ],
+    )
+    return _response(200, payload.model_dump(by_alias=True))
+
+
+# The routes this function serves, spelled as HTTP API payload-2.0 route keys. The stack
+# creates exactly these three (infra/infra_stack.py, section 5) and points all of them at
+# this function.
+_CHAT_ROUTE = "POST /chat"
+_CONVERSATIONS_ROUTE = "GET /conversations"
+_CONVERSATION_ROUTE = "GET /conversations/{conversationId}"
+
+
+def lambda_handler(event, context):
+    """Dispatch on the route key API Gateway puts in the event.
+
+    An UNKNOWN route key is a 404 rather than falling through to the chat turn. The stack
+    only creates the three routes above, so an unknown one means somebody added a fourth and
+    pointed it here - and having that quietly run a billable Bedrock turn on, say, a GET is
+    the kind of default that is discovered from an invoice.
+
+    A MISSING route key runs the chat turn: that is a direct invoke (the console, a test
+    harness), which is what this function did before it had more than one route.
+    """
+    route = (event or {}).get("routeKey")
+    if not isinstance(route, str) or not route.strip():
+        return post_chat(event, context)
+
+    route = route.strip()
+    if route == _CHAT_ROUTE:
+        return post_chat(event, context)
+    if route == _CONVERSATIONS_ROUTE:
+        return get_conversations(event)
+    if route == _CONVERSATION_ROUTE:
+        return get_conversation(event)
+
+    logger.error("No handler for route %r", route)
+    return _response(404, {"error": "Not found."})

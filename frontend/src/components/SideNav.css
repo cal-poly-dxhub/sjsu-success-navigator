@@ -204,12 +204,27 @@
 	font-size: 0.78rem;
 }
 
-.side-nav__mock-note {
+.side-nav__history-note {
 	margin: 0.75rem 0.45rem 0;
 	padding-top: 0;
 	color: var(--text-muted);
 	font-size: 0.67rem;
 	line-height: 1.35;
+}
+
+.side-nav__history-note--error {
+	color: var(--accent-red, #a3282f);
+}
+
+/* Sits at the right end of the row it belongs to, so a title that is being fetched does not
+   reflow the list. */
+.side-nav__chat-status {
+	flex: none;
+	margin-left: auto;
+	padding-left: 0.5rem;
+	color: var(--text-muted);
+	font-size: 0.7rem;
+	font-weight: 600;
 }
 
 .chat-app__nav-toggle {
