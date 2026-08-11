@@ -277,7 +277,18 @@ export default function ChatApp() {
 				setChats((current) =>
 					current.map((chat) =>
 						chat.id === activeChatId && !chat.conversationId
-							? { ...chat, conversationId: next.conversationId }
+							? {
+									...chat,
+									conversationId: next.conversationId,
+									// THE SERVER'S NAME FOR THIS CONVERSATION, present only on the
+									// turn that created it. It replaces the placeholder this
+									// component wrote from the same message a moment ago, so the
+									// row says what a reload would say. Absent when the server's
+									// titling produced nothing usable, in which case the
+									// placeholder and the stored fallback title are the same
+									// truncation of the same sentence.
+									title: next.title ?? chat.title,
+								}
 							: chat,
 					),
 				);

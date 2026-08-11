@@ -61,6 +61,7 @@ from models import (
 )
 from orchestrator import run_chat
 from settings import load_settings
+from titles import generate_title
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -71,8 +72,11 @@ logger.setLevel(logging.INFO)
 SETTINGS = load_settings()
 
 # The conversation store. Named here, connected lazily: a cold start that never reaches a
-# turn should not pay for a client it does not use.
-STORE = ConversationStore(SETTINGS.chat_history_table_name)
+# turn should not pay for a client it does not use. The title cap travels with it so the
+# fallback title and the model's are held to one number.
+STORE = ConversationStore(
+    SETTINGS.chat_history_table_name, title_max_chars=SETTINGS.title_max_chars
+)
 
 _BEDROCK_CLIENT = None
 
@@ -125,6 +129,38 @@ def loop_deadline(context):
         except Exception:
             logger.exception(
                 "Could not read Lambda remaining time; using the configured budget"
+            )
+
+    return time.monotonic() + budget
+
+
+# Seconds held back from Lambda's remaining time when deriving the TITLING deadline: the
+# response still has to be serialised after the title call returns. Smaller than the loop's
+# reserve because by this point the only work left is json.dumps.
+_POST_TITLE_RESERVE_SECONDS = 1
+
+
+def title_deadline(context):
+    """A `time.monotonic()` timestamp the titling call must not start after.
+
+    The same minimum-of-two-budgets shape as loop_deadline, and it exists for a stronger
+    reason: the student's answer is already written and about to be returned, so a title
+    that overran would turn a finished turn into a gateway 504. Taking Lambda's real
+    remaining time means a slow answer simply costs the title, which is what the fallback
+    is for. A deadline already in the past is not an error - titles.generate_title checks
+    it first and does nothing.
+    """
+    budget = float(SETTINGS.title_deadline_seconds)
+
+    remaining_ms = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(remaining_ms):
+        try:
+            budget = min(
+                budget, (remaining_ms() / 1000.0) - _POST_TITLE_RESERVE_SECONDS
+            )
+        except Exception:
+            logger.exception(
+                "Could not read Lambda remaining time; using the configured title budget"
             )
 
     return time.monotonic() + budget
@@ -226,7 +262,39 @@ def _stored_cards(response):
     ]
 
 
-def run_turn(request, user_id, deadline):
+def name_new_conversation(*, user_id, conversation_id, question, answer, deadline):
+    """Name a conversation the model just created. Returns the title, or None.
+
+    THE FALLBACK IS ALREADY WRITTEN when this runs. The first user message put a truncated
+    title on the header on its way past (app/history.py), so every path out of here that is
+    not a good title - the deadline, a Bedrock error, an unusable reply, a failed write -
+    leaves the conversation named rather than nameless. That is why this whole function can
+    swallow its failures at INFO instead of failing the turn: there is no state in which
+    doing nothing is worse than what was already there.
+
+    Runs AFTER the assistant's reply is written and the answer is in hand, so the title can
+    reflect what the conversation turned out to be about rather than only what was asked.
+    """
+    try:
+        title = generate_title(
+            question=question, answer=answer, settings=SETTINGS, deadline=deadline
+        )
+        if title is None:
+            return None
+        if not STORE.set_generated_title(
+            user_id=user_id, conversation_id=conversation_id, title=title
+        ):
+            return None
+    except Exception:
+        logger.warning(
+            "Could not name a new conversation; it keeps its first-message title.",
+            exc_info=True,
+        )
+        return None
+    return title
+
+
+def run_turn(request, user_id, deadline, context=None):
     """One turn against the store, in the order docs/accounts-and-storage.md fixes.
 
       1. write the student's message. BEFORE the model call, so a disclosure that then
@@ -237,6 +305,9 @@ def run_turn(request, user_id, deadline):
          memory, so reading it back would say it twice).
       3. call the model.
       4. write the reply.
+      5. on a NEW conversation only, name it (app/titles.py). Last, after the answer
+         exists, and on its own short budget: a label can never be allowed to delay or
+         fail a turn, and by this point the fallback title is already on the header.
 
     A STORAGE FAILURE DOES NOT DENY THE STUDENT AN ANSWER. Each step is guarded on its own
     and logs at ERROR: a write that fails costs the record of one message, and a read that
@@ -244,6 +315,9 @@ def run_turn(request, user_id, deadline):
     screen the answer itself. Same posture as the guardrail outage above, for the same
     reason - and like that one, the log line is the alarm.
     """
+    # A conversation the CLIENT could not name is one that did not exist a moment ago, and
+    # that - not a lookup, not a message count - is what makes this the turn that titles it.
+    is_new_conversation = request.conversation_id is None
     conversation_id = request.conversation_id or new_conversation_id()
 
     user_sort_key = None
@@ -289,6 +363,18 @@ def run_turn(request, user_id, deadline):
         logger.exception("Could not record the assistant's reply; returning it anyway")
 
     response.conversation_id = conversation_id
+    # THE TITLE DEADLINE IS DERIVED HERE, not alongside the loop's. Both are
+    # `time.monotonic()` timestamps, so one computed before a twenty-second model call would
+    # already be in the past by the time the title needed it, and every new conversation
+    # would silently keep its fallback name. A deadline means "from now", and now is here.
+    if is_new_conversation:
+        response.title = name_new_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            question=request.query,
+            answer=join_prose(response.conversational_text, response.trailing_text),
+            deadline=title_deadline(context),
+        )
     return response
 
 
@@ -340,7 +426,9 @@ def post_chat(event, context):
     # STEP 4 - the turn: write, read, model, write. Under both loop caps (iterations and
     # wall clock).
     try:
-        response = run_turn(request, user_id, deadline=loop_deadline(context))
+        response = run_turn(
+            request, user_id, deadline=loop_deadline(context), context=context
+        )
     except Exception:
         # The student gets a plain failure, never a partial or invented answer. The
         # exception itself is logged, not returned: a botocore message can quote the

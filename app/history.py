@@ -41,8 +41,14 @@ logger = logging.getLogger(__name__)
 # be confused with 1, 0 or V.
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-# How much of the first user message becomes the header's title. A label for the
-# conversation list, not content: the message itself is stored whole, one item along.
+# How much of the first user message becomes the header's title, when nothing better has
+# named it. A label for the conversation list, not content: the message itself is stored
+# whole, one item along.
+#
+# This is the FALLBACK title, and it is written on the first turn precisely so that the
+# model titling that follows (app/titles.py) can fail without leaving the conversation
+# nameless. The number is settings.title_max_chars, passed to the store; the constant here
+# is what a ConversationStore built without one uses.
 _TITLE_MAX_CHARS = 80
 
 # Shown for a header that carries no title. See list_conversations for the one way that
@@ -96,6 +102,24 @@ def new_conversation_id() -> str:
     without a lookup: there is no id the client can supply that resolves to somebody else.
     """
     return new_ulid()
+
+
+def _is_conditional_check_failure(exc: Exception) -> bool:
+    """Is this the exception DynamoDB raises when a ConditionExpression was not met?
+
+    Read off the error CODE rather than caught as botocore's ClientError class, and that is
+    deliberate twice over. The code is the contract - botocore's exception classes are
+    generated and their identity has changed shape before - and catching a narrow, named
+    condition means every OTHER failure (throttling, a network fault) is re-raised into the
+    handler's 502 instead of being quietly reported as "no such conversation". A throttled
+    rename that told the student their chat did not exist would be a lie the logs would not
+    even record.
+    """
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    code = (response.get("Error") or {}).get("Code")
+    return code == "ConditionalCheckFailedException"
 
 
 def _now_iso() -> str:
@@ -154,8 +178,9 @@ class ConversationStore:
     should not pay for a connection it does not use.
     """
 
-    def __init__(self, table_name: str):
+    def __init__(self, table_name: str, title_max_chars: int = _TITLE_MAX_CHARS):
         self._table_name = table_name
+        self._title_max_chars = title_max_chars
         self._table = None
 
     def _table_resource(self):
@@ -219,7 +244,9 @@ class ConversationStore:
         self._touch_header(
             user_id=user_id,
             conversation_id=conversation_id,
-            title=_title_from(text) if role == "user" else None,
+            title=(
+                _title_from(text, self._title_max_chars) if role == "user" else None
+            ),
         )
         return sort_key
 
@@ -274,6 +301,52 @@ class ConversationStore:
             logger.exception(
                 "Could not update the conversation header; the message itself is stored"
             )
+
+    def set_generated_title(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        title: str,
+    ) -> bool:
+        """Replace the header's title with the model's, unless a student has named it.
+
+        TWO CONDITIONS, and they guard different things.
+
+        `attribute_exists(sk)` keeps this from CREATING a header. An UpdateItem with no
+        condition is an upsert, so a titling call for a conversation whose writes all failed
+        would otherwise mint a header with a title and no messages under it - a row in the
+        sidebar that opens empty.
+
+        `attribute_not_exists(#userTitled)` is the promise this feature makes to a student
+        who renamed a chat: no automatic titling can ever overwrite a name they chose.
+        Today the ordering alone would do it - titling runs on the first turn, renaming
+        cannot have happened yet - but that is an accident of when things run, and this is
+        the property. If a later change ever titles a conversation again, it still cannot
+        take a student's name away.
+
+        Returns True if the title was written. A conditional failure is NOT an error and is
+        not logged as one: it is the guard doing its job.
+        """
+        try:
+            self._table_resource().update_item(
+                Key={"pk": f"USER#{user_id}", "sk": f"CONV#{conversation_id}"},
+                UpdateExpression="SET #title = :title",
+                ConditionExpression=(
+                    "attribute_exists(sk) AND attribute_not_exists(#userTitled)"
+                ),
+                ExpressionAttributeNames={"#title": "title", "#userTitled": "userTitled"},
+                ExpressionAttributeValues={":title": title},
+            )
+        except Exception as exc:
+            if _is_conditional_check_failure(exc):
+                logger.info(
+                    "Not applying a generated title: the conversation is gone or the "
+                    "student named it themselves."
+                )
+                return False
+            raise
+        return True
 
     # --- reads ----------------------------------------------------------------
 
@@ -482,8 +555,8 @@ class ConversationStore:
         return messages
 
 
-def _title_from(text: str) -> str:
+def _title_from(text: str, cap: int = _TITLE_MAX_CHARS) -> str:
     title = " ".join((text or "").split())
-    if len(title) <= _TITLE_MAX_CHARS:
+    if len(title) <= cap:
         return title
-    return title[: _TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return title[: cap - 1].rstrip() + "…"

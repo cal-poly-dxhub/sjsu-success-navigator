@@ -117,6 +117,13 @@ _NUMBER_OF_RESULTS_MAX = 100
 # Floors for the card field caps. Not design minimums - they are dropped-digit detectors,
 # set low enough that any deliberate value clears them and high enough that 60-for-600,
 # 9-for-90 or 12-for-120 does not. See resolve_cards.
+# The floor on chat.title_max_chars, and the same dropped-digit guard the card caps carry:
+# 8 is a plausible typo for 80 and would fail silently, truncating every conversation name
+# in the sidebar to a fragment while rejecting every title the model wrote for being too
+# long. Twenty characters is roughly three words, which is the shortest a title can be and
+# still name anything.
+_CONVERSATION_TITLE_MIN_CHARS = 20
+
 _CARD_TITLE_MIN_CHARS = 20
 _CARD_DESC_MIN_CHARS = 100
 _CARD_FOLLOWUP_MIN_CHARS = 20
@@ -568,9 +575,21 @@ def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     generation_cfg = _require_mapping(config, "generation")
     model_id = _non_empty_str(generation_cfg, "generation", "model_id")
+    title_model_id = _non_empty_str(generation_cfg, "generation", "title_model_id")
 
     head = model_id.split(".", 1)[0]
     is_inference_profile = "." in model_id and head in _INFERENCE_PROFILE_PREFIXES
+
+    # The titling model gets the SAME resolution rather than a copy of the answer: it is
+    # invoked the same way (Converse) so it needs the same IAM shape, and a second rule for
+    # deciding profile-versus-bare-id would be a second thing to get wrong. Getting it wrong
+    # here is quieter than for the generation model - a denied titling call is swallowed and
+    # every conversation keeps its fallback title - which is exactly why it is resolved
+    # here, where the branch is visible, rather than left to be discovered from a log.
+    title_head = title_model_id.split(".", 1)[0]
+    title_is_profile = (
+        "." in title_model_id and title_head in _INFERENCE_PROFILE_PREFIXES
+    )
 
     temperature = generation_cfg.get("temperature")
     if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
@@ -588,6 +607,11 @@ def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
         # None for a bare id, where the model id already IS the foundation model.
         "base_model_id": model_id.split(".", 1)[1] if is_inference_profile else None,
         "is_inference_profile": is_inference_profile,
+        "title_model_id": title_model_id,
+        "title_base_model_id": (
+            title_model_id.split(".", 1)[1] if title_is_profile else None
+        ),
+        "title_is_inference_profile": title_is_profile,
         "max_tokens": _positive_int(generation_cfg, "generation", "max_tokens"),
         "temperature": float(temperature),
     }
@@ -651,6 +675,18 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     chat_cfg = _require_mapping(config, "chat")
     deadline = _positive_int(chat_cfg, "chat", "converse_deadline_seconds")
+    title_deadline = _positive_int(chat_cfg, "chat", "title_deadline_seconds")
+    title_max_chars = _positive_int(chat_cfg, "chat", "title_max_chars")
+
+    if title_max_chars < _CONVERSATION_TITLE_MIN_CHARS:
+        raise ValueError(
+            f"chat.title_max_chars ({title_max_chars}) is below "
+            f"{_CONVERSATION_TITLE_MIN_CHARS}, which is too short to hold a conversation "
+            "name. This is the shape of a dropped digit and it fails silently: every "
+            "sidebar row would be truncated to a fragment and every generated title would "
+            "be rejected for running past the cap."
+        )
+
     if deadline >= CHAT_LAMBDA_TIMEOUT_SECONDS:
         raise ValueError(
             f"chat.converse_deadline_seconds ({deadline}) must be less than the chat "
@@ -658,6 +694,21 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
             "the timeout never fires: the function is killed mid-Converse instead, which "
             "bills the invocation and returns a gateway 504 with no answer at all. Leave "
             "room for the card shaping and serialisation that run after the loop."
+        )
+
+    # The two budgets are SEQUENTIAL inside one invocation - the loop runs, then the title
+    # call - so they have to fit under the function's timeout together. Checked here rather
+    # than left to runtime because the runtime degradation is invisible: the handler takes
+    # the minimum with Lambda's remaining time, so an oversized pair does not fail, it just
+    # means titling never gets a turn and every conversation quietly keeps its fallback
+    # name. That reads as a bad titling model rather than a config error.
+    if deadline + title_deadline >= CHAT_LAMBDA_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"chat.converse_deadline_seconds ({deadline}) plus "
+            f"chat.title_deadline_seconds ({title_deadline}) must be less than the chat "
+            f"Lambda's own timeout ({CHAT_LAMBDA_TIMEOUT_SECONDS}s). The two budgets run "
+            "one after the other in a single invocation, and they still have to leave room "
+            "for the card shaping and serialisation that follow."
         )
     return {
         "max_converse_iterations": _positive_int(
@@ -675,6 +726,14 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
             chat_cfg, "chat", "max_conversation_messages"
         ),
         "converse_deadline_seconds": deadline,
+        # The conversation title's length cap and the titling call's own wall-clock budget.
+        # Positive-checked for the same reason as everything above: neither can fail a
+        # deploy, and a zero or negative in either is a feature that silently never works -
+        # a cap of zero rejects every title the model writes AND truncates the fallback to
+        # nothing, and a deadline of zero means the call is never attempted at all. Both
+        # would look exactly like "the model is bad at titles".
+        "title_max_chars": title_max_chars,
+        "title_deadline_seconds": title_deadline,
     }
 
 

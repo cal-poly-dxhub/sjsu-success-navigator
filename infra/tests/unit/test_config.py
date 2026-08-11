@@ -899,3 +899,67 @@ def test_the_committed_cost_model_prices_a_question_in_a_plausible_range():
         + measured["output_tokens_avg"] / 1e6 * rates["generation_output_per_1m"]
     )
     assert 0.005 < per_question < 0.25, f"a question priced at ${per_question:.4f}"
+
+
+def test_the_titling_model_gets_the_same_profile_resolution(config):
+    """One rule for deciding profile-versus-bare-id, not two. The titling model is invoked
+    the same way as the generation model, so it needs the same IAM shape, and getting it
+    wrong here is QUIETER than for the generation model: a denied titling call is swallowed
+    and every conversation keeps its fallback title, which reads as a bad titling model
+    rather than a missing grant."""
+    generation = resolve_generation(config)
+    assert generation["title_model_id"] == "us.anthropic.claude-haiku-4-5"
+    assert generation["title_is_inference_profile"] is True
+    assert generation["title_base_model_id"] == "anthropic.claude-haiku-4-5"
+
+
+def test_a_bare_titling_model_id_is_not_treated_as_a_profile(config):
+    config["generation"]["title_model_id"] = "anthropic.claude-haiku-4-5"
+    generation = resolve_generation(config)
+    assert generation["title_is_inference_profile"] is False
+    assert generation["title_base_model_id"] is None
+
+
+def test_a_missing_titling_model_fails_at_synth(config):
+    """Identity, like every other model id here: a default would mean a misconfigured deploy
+    quietly billing a model nobody chose."""
+    del config["generation"]["title_model_id"]
+    with pytest.raises(ValueError, match="title_model_id"):
+        resolve_generation(config)
+
+
+def test_the_title_cap_and_budget_resolve_from_config(config):
+    chat = resolve_chat(config)
+    assert chat["title_max_chars"] == 80
+    assert chat["title_deadline_seconds"] == 3
+
+
+def test_a_dropped_digit_in_the_title_cap_fails_at_synth(config):
+    """8 is a plausible typo for 80 and would fail silently in the worst way: every sidebar
+    row truncated to a fragment AND every generated title rejected for running past the cap,
+    which together look exactly like a model that cannot write titles."""
+    config["chat"]["title_max_chars"] = 8
+    with pytest.raises(ValueError, match="title_max_chars"):
+        resolve_chat(config)
+
+
+def test_the_two_deadlines_must_fit_under_the_lambda_timeout_together(config):
+    """They run one after the other in a single invocation. An oversized pair does not fail
+    at runtime - the handler takes the minimum with Lambda's remaining time - it just means
+    titling never gets a turn and every conversation quietly keeps its fallback name."""
+    from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
+
+    config["chat"]["converse_deadline_seconds"] = CHAT_LAMBDA_TIMEOUT_SECONDS - 2
+    config["chat"]["title_deadline_seconds"] = 2
+    with pytest.raises(ValueError, match="title_deadline_seconds"):
+        resolve_chat(config)
+
+
+def test_the_configured_pair_leaves_room_after_both(config):
+    from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
+
+    chat = resolve_chat(config)
+    assert (
+        chat["converse_deadline_seconds"] + chat["title_deadline_seconds"]
+        <= CHAT_LAMBDA_TIMEOUT_SECONDS - 2
+    )

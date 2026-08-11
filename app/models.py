@@ -68,6 +68,12 @@ class ChatResponse(BaseModel):
     # one (docs/accounts-and-storage.md, Turn lifecycle). None when no turn was recorded -
     # a guardrail block, which never became a turn.
     conversation_id: str | None = Field(default=None, alias="conversationId")
+    # The name this conversation was just given, present ONLY on the turn that created it
+    # (app/titles.py). Additive and one-directional: the sidebar can show the real title
+    # immediately instead of its own placeholder, and no other turn carries the field.
+    # The server is still the authority - this is the same value a later GET /conversations
+    # returns, arriving sooner.
+    title: str | None = None
     conversational_text: str = Field(alias="conversationalText")
     # Prose the model wrote AFTER its cards, which renders below the card group rather than
     # above it. None for the ordinary reply that ends with its cards, and always None on a

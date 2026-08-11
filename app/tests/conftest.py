@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 for _name, _value in {
     "KNOWLEDGE_BASE_ID": "KB-TEST",
     "GENERATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
+    "TITLE_MODEL_ID": "us.anthropic.claude-haiku-4-5",
     "BEDROCK_REGION": "us-west-2",
     "INPUT_GUARDRAIL_ID": "gr-test",
     "INPUT_GUARDRAIL_VERSION": "1",
@@ -115,11 +116,21 @@ class FakeConversationStore:
     BEFORE the model is called, so a disclosure that then times out is still on record.
     """
 
-    def __init__(self, history=(), fail_on=(), conversations=(), messages=()):
+    def __init__(
+        self,
+        history=(),
+        fail_on=(),
+        conversations=(),
+        messages=(),
+        titled=True,
+    ):
         self.history = list(history)
         self.fail_on = set(fail_on)
         self.conversations = list(conversations)
         self.messages = list(messages)
+        # What the CONDITIONAL title write reports back. False is not an error: it is the
+        # condition holding - no such header, or one the student named themselves.
+        self.titled = titled
         self.calls = []
         self.appended = []
 
@@ -148,6 +159,12 @@ class FakeConversationStore:
         if "display" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (display read)")
         return list(self.messages)
+
+    def set_generated_title(self, **kwargs):
+        self.calls.append(("title", kwargs))
+        if "title" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (title write)")
+        return self.titled
 
     @property
     def call_names(self):

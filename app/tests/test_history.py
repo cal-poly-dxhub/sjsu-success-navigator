@@ -18,6 +18,19 @@ _SUB = "11111111-2222-3333-4444-555555555555"
 _CONV = "01J0000000000000000000000A"
 
 
+class _ClientError(Exception):
+    """Shaped like botocore's ClientError, because the error CODE is what the store reads.
+
+    The suite stubs boto3 out entirely (tests/conftest.py), so botocore.exceptions does not
+    exist here - and that is the same reason history.py matches on the code rather than
+    importing the class. This stand-in is that contract written down: an exception carrying
+    `response["Error"]["Code"]`."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
 class _FakeTable:
     """Records calls and hands back canned Items. `raises_on` fails one operation."""
 
@@ -38,6 +51,8 @@ class _FakeTable:
         self.updates.append(kwargs)
         if self.raises_on == "update_item":
             raise RuntimeError("ProvisionedThroughputExceeded")
+        if self.raises_on == "condition":
+            raise _ClientError("ConditionalCheckFailedException")
         return {}
 
     def query(self, **kwargs):
@@ -460,3 +475,73 @@ def test_a_zero_display_window_asks_dynamodb_nothing(table):
         == []
     )
     assert table.queries == []
+
+
+# --- titling -------------------------------------------------------
+
+
+def test_a_generated_title_replaces_the_first_message_one(table):
+    table.store.set_generated_title(
+        user_id=_SUB, conversation_id=_CONV, title="Financial aid appeal deadline"
+    )
+
+    update = table.updates[0]
+    assert update["Key"] == {"pk": f"USER#{_SUB}", "sk": f"CONV#{_CONV}"}
+    assert update["ExpressionAttributeValues"][":title"] == "Financial aid appeal deadline"
+    assert "if_not_exists" not in update["UpdateExpression"], (
+        "the whole point is to overwrite the fallback title the first message wrote"
+    )
+
+
+def test_a_generated_title_cannot_create_a_header(table):
+    """An UpdateItem with no condition is an upsert. Without this, titling a conversation
+    whose writes all failed would mint a header with a title and no messages under it - a
+    row in the sidebar that opens empty."""
+    table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
+    assert "attribute_exists(sk)" in table.updates[0]["ConditionExpression"]
+
+
+def test_a_generated_title_never_overwrites_a_student_chosen_name(table):
+    """The promise this feature makes to a student who renamed a chat, written as a
+    condition rather than as an ordering: no automatic titling can take their name away.
+
+    Today the ordering alone would do it (titling runs on the first turn, a rename cannot
+    have happened yet), but that is an accident of when things run and this is the
+    property."""
+    table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
+    condition = table.updates[0]["ConditionExpression"]
+    assert "attribute_not_exists(#userTitled)" in condition
+    assert table.updates[0]["ExpressionAttributeNames"]["#userTitled"] == "userTitled"
+
+
+def test_a_failed_condition_is_a_false_not_an_exception(monkeypatch):
+    fake = _FakeTable(raises_on="condition")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    assert store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="x") is False
+
+
+def test_any_other_dynamodb_failure_still_raises(monkeypatch):
+    """A throttled write must not be mistaken for the condition holding. Only the one named
+    condition is swallowed; everything else reaches the caller."""
+    fake = _FakeTable(raises_on="update_item")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    with pytest.raises(RuntimeError):
+        store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="x")
+
+
+def test_the_title_cap_travels_with_the_store(monkeypatch):
+    """One number for both things that can name a conversation. A store built with the
+    configured cap truncates the fallback title to it; the model title is held to the same
+    value in app/titles.py."""
+    fake = _FakeTable()
+    store = history.ConversationStore("chat-history-test", title_max_chars=20)
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    store.append_message(user_id=_SUB, conversation_id=_CONV, role="user", text="x" * 50)
+
+    title = fake.updates[0]["ExpressionAttributeValues"][":title"]
+    assert len(title) == 20 and title.endswith("…")

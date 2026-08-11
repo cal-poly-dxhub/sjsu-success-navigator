@@ -48,6 +48,14 @@ export type ChatResponse = {
 	 * Absent when no turn was recorded, which is the guardrail block.
 	 */
 	conversationId?: string;
+	/**
+	 * The name the server gave this conversation, present ONLY on the turn that created it.
+	 * The sidebar shows it instead of the placeholder it wrote itself, so a student sees the
+	 * real title without waiting for a reload. Absent on every later turn, and absent when
+	 * the server's titling produced nothing usable - in which case the conversation already
+	 * has its first-message title and the row's placeholder is close enough to it.
+	 */
+	title?: string;
 	conversationalText: string;
 	/**
 	 * Prose the model wrote after its cards. Renders BELOW the card group, which is what

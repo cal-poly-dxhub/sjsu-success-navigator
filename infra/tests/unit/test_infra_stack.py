@@ -1024,6 +1024,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "retrieve.py",
         "safety.py",
         "settings.py",
+        "titles.py",
         "tools.py",
     ]
     assert "requirements.txt" not in listing
@@ -1855,4 +1856,40 @@ def test_each_deps_layer_ships_its_own_packages():
     scraper_packages = _packages("ScraperDepsLayer")
     assert not any(p.startswith("pydantic") for p in scraper_packages), (
         "the scraper layer should not carry the chat Lambda's deps"
+    )
+
+
+def test_the_chat_role_can_invoke_the_titling_model():
+    """A SEPARATE grant, because it is a separate model id: the generation statement names
+    one model, so a titling call against another is AccessDenied - and unlike a denied
+    generation, that failure is swallowed by design (every conversation keeps its
+    first-message title), so it would be discovered from a sidebar that never improves
+    rather than from an error."""
+    from infra.config import resolve_generation
+
+    generation = resolve_generation(load_config())
+    assert generation["title_model_id"] != generation["model_id"], (
+        "this test covers the two-models case"
+    )
+    policy = _resource_named(_template(), "AWS::IAM::Policy", "ChatFunctionRole")
+    rendered = json.dumps(policy["Properties"]["PolicyDocument"]["Statement"])
+
+    assert f":inference-profile/{generation['title_model_id']}" in rendered
+    assert f"::foundation-model/{generation['title_base_model_id']}" in rendered
+
+
+def test_the_chat_function_is_told_which_model_names_a_conversation():
+    """By reference to the same resolved config the IAM grant is built from, so the id the
+    function invokes is by construction the id it is allowed to invoke."""
+    from infra.config import resolve_chat, resolve_generation
+
+    config = load_config()
+    env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")[
+        "Properties"
+    ]["Environment"]["Variables"]
+
+    assert env["TITLE_MODEL_ID"] == resolve_generation(config)["title_model_id"]
+    assert env["TITLE_MAX_CHARS"] == str(resolve_chat(config)["title_max_chars"])
+    assert env["TITLE_DEADLINE_SECONDS"] == str(
+        resolve_chat(config)["title_deadline_seconds"]
     )
