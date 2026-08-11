@@ -290,11 +290,13 @@ export default function ChatApp() {
 	};
 
 	const handleSignOut = () => {
-		// The token lives in a module variable only, so dropping it IS the sign-out; a
-		// reload then returns to the gate. Nothing to clear from storage - camp kept its
-		// tokens in sessionStorage, this deliberately keeps none.
-		signOut();
-		window.location.reload();
+		// Dropping the in-memory token is NOT the whole sign-out, which is why this
+		// redirects instead of reloading. Cognito keeps its own session cookie on the
+		// managed login domain, so a reload would bounce through /oauth2/authorize and
+		// come back signed in as the same person without ever asking - on a shared campus
+		// machine, handing the next student the previous one's account. signOut() goes to
+		// /logout, which clears that cookie and returns the browser here.
+		void signOut();
 	};
 
 	const handleNewChat = () => {

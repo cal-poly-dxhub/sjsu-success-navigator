@@ -26,7 +26,7 @@ to do with SJSU; answering the question is the failure, declining is the pass).
 ## Running it
 
 `run_eval.py` sends the questions to the real deployed endpoint (API Gateway +
-Cognito, the frontend's exact path) and records every wire response verbatim in
+Cognito, the same gated route the browser uses) and records every wire response verbatim in
 `results/eval-<stamp>.json`, then renders `results/eval-<stamp>.html` - golden
 expectation beside the system's actual answer, one block per question. NO
 SCORING lives in either script; accuracy is judged by humans (or by Claude
@@ -35,12 +35,16 @@ reading the transcript), and judgments recorded in
 
 ```
 python3 -m pip install boto3 httpx PyYAML     # eval-only deps, not pinned by the app
-export EVAL_PASSWORD=<shared pilot password>  # or --password-file OUTSIDE the repo
+export EVAL_PASSWORD=<eval-runner password>   # or --password-file OUTSIDE the repo
 python3 eval/run_eval.py                      # all 77, ~5 min, needs the gavilan AWS profile
 python3 eval/run_eval.py --ids 'safety-*'     # subset
 python3 eval/render_results.py                # re-render newest transcript (after judging)
 ```
 
 Endpoint and Cognito client id are discovered from the SjsuNavigatorStack
-outputs; nothing is hardcoded. Transcripts are kept - they are the before/after
+outputs; nothing is hardcoded. The client id comes from `ChatEvalClientId`, the
+pool's MACHINE app client - the browser signs in by redirecting to Cognito
+managed login, which needs a human, so the harness has its own password-auth
+client and its own `eval-runner` account (`ChatCreateEvalUserCommand` in the
+stack outputs creates it). Transcripts are kept - they are the before/after
 record across corpus and prompt changes.

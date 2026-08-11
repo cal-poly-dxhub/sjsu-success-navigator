@@ -195,6 +195,26 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       reinstall. Two standing test assertions were NARROWED, not dropped - "no DynamoDB table
       at all" became "exactly one, and it is this one", and the chat role's blanket "no
       dynamodb:" ban became a scoped-to-this-ARN, no-Scan, no-table-management assertion.
+- [x] per-user Cognito accounts behind managed login, shared credential retired in the same
+      commit (docs/accounts-and-storage.md, Auth). Sign-in is a REDIRECT - authorization code
+      with PKCE, public client - not the form the shared login had. Forced by federation, not
+      preferred: SJSU's IdP lands in this same pool later, and a federated user cannot
+      authenticate through InitiateAuth or any SDK call, only through the hosted endpoints, so
+      a form written now would be deleted on the day Okta arrives rather than extended. Okta
+      then costs an identity provider plus attribute mapping and no application change.
+      TWO APP CLIENTS on one pool, because a client is the unit Cognito applies auth flows to:
+      the web client has NO sign-in flow of its own (ExplicitAuthFlows is exactly
+      ALLOW_REFRESH_TOKEN_AUTH - left absent, Cognito falls back to legacy defaults that
+      include SRP, which is the trap the assertions pin), and a machine client keeps password
+      auth for the headless eval runner, which now signs in as `eval-runner` against
+      ChatEvalClientId. Both client ids are in the authorizer's audience or one caller 401s
+      with no CORS headers. No custom pool attributes - a federated profile refreshes from
+      provider claims, so app data belongs in DynamoDB keyed by `sub`. Self-signup stays off;
+      accounts are issued per person. Callback and logout URLs come from the same
+      cors.allow_origins list the API uses, with the distribution appended at deploy as a
+      token; the frontend derives redirect_uri from window.location.origin so one config.json
+      is correct on localhost and on CloudFront. Storage and the server-authoritative turn
+      lifecycle in that doc are NOT in this commit.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

@@ -15,7 +15,18 @@
 export type RuntimeConfig = {
 	chatApiUrl: string;
 	userPoolId: string;
+	/** The WEB app client - authorization code + PKCE. Never the eval client. */
 	userPoolClientId: string;
+	/**
+	 * Base URL of the Cognito managed login domain, e.g.
+	 * https://sjsu-navigator-abc123.auth.us-west-2.amazoncognito.com - the origin the
+	 * browser is redirected to for /oauth2/authorize, /oauth2/token and /logout.
+	 *
+	 * There is no redirect URI here on purpose: auth.ts derives it from
+	 * window.location.origin, so this one file is correct on localhost and on the
+	 * distribution, and the two can never disagree about the exact string Cognito matches.
+	 */
+	loginDomain: string;
 	region: string;
 };
 
@@ -35,12 +46,17 @@ export function loadRuntimeConfig(): Promise<RuntimeConfig> {
 		})
 		.then((config) => {
 			const missing = (
-				['chatApiUrl', 'userPoolId', 'userPoolClientId', 'region'] as const
+				['chatApiUrl', 'userPoolId', 'userPoolClientId', 'loginDomain', 'region'] as const
 			).filter((key) => !config[key]);
 			if (missing.length > 0) {
 				throw new Error(`config.json is missing: ${missing.join(', ')}`);
 			}
-			return { ...config, chatApiUrl: config.chatApiUrl.replace(/\/$/, '') };
+			// Trailing slashes stripped on both URLs because every use appends a path.
+			return {
+				...config,
+				chatApiUrl: config.chatApiUrl.replace(/\/$/, ''),
+				loginDomain: config.loginDomain.replace(/\/$/, ''),
+			};
 		})
 		.catch((error: unknown) => {
 			// Do not cache a failure: a transient network error at page load would

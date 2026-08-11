@@ -69,8 +69,14 @@ its config.yaml and stack.
 - scraper cadence: daily, single schedule, no tiers. Cost-checked in
   build-plan.md (~$0.15/mo all-in).
 - billing alarm: v2.
-- cognito: v1 ships gav's shared username/password pilot login exactly;
-  campus-affiliated accounts are v2.
+- cognito: PER-USER accounts, signed in by redirect to managed login
+  (authorization code + PKCE). SUPERSEDES the original "v1 ships gav's shared
+  username/password pilot login; campus-affiliated accounts are v2" - brought
+  forward because SJSU's IdP federates into this same pool, and a federated user
+  cannot authenticate through InitiateAuth at all, so any form written for the
+  shared login would be thrown away rather than extended. Okta is then
+  config-only. Local accounts are admin-created scaffolding; self-signup stays
+  off. A second, machine-only app client carries the eval harness.
 - crawl list: url-list.csv is authoritative over the brief; three hosts
   (www / careercenter / library .sjsu.edu), 203 pages.
 
