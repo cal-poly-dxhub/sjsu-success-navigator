@@ -417,9 +417,18 @@ def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str
 
     trafilatura extracts the prose body: nav/header/footer boilerplate stripped, tables kept
     (office hours and eligibility criteria are often tabular) then flattened to prose because the
-    KB wants flat text. The supplement pass (see the comment block above) then appends what its
+    KB wants flat text. The supplement pass (see the comment block above) recovers what its
     article model wrongly drops on this corpus - the www.sjsu.edu contact band and the link-tile
     text of landing pages - deduplicated against the body so nothing appears twice.
+
+    Assembly order is band, body, recovered tiles: the page introduces itself. The band used to
+    be APPENDED, which put every office's phone and email in the document's tail chunk under
+    FIXED_SIZE chunking - a chunk with contact digits but often no office name, exactly the
+    shape a "what is X's phone number" query has to embed-match (2026-08-10 eval: retrieval
+    found the right pages while the band chunk for AEC never ranked). Leading with the band
+    puts identity and contacts in chunk 1 next to the title scrape_page prepends. Dedup
+    precedence is unchanged - a band block the body already carries is dropped, so the fact
+    stays in the body where it already was.
 
     Both passes scrub replacement-char garbage baked into the page's own source (see
     `_scrub_replacement_chars`). Returns (title, None) only when BOTH passes find nothing
@@ -454,7 +463,7 @@ def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str
             url,
         )
 
-    sections = [part for part in (body, "\n".join(recovered), "\n".join(band)) if part]
+    sections = [part for part in ("\n".join(band), body, "\n".join(recovered)) if part]
     markdown = "\n\n".join(sections).strip() or None
     return _scrub_replacement_chars(_extract_title(html)), markdown
 
@@ -500,6 +509,13 @@ def scrape_page(page: Dict[str, str], client: httpx.Client) -> ScrapeResult:
     # net, so a page whose <title> trafilatura cannot read still cites as something a student
     # recognizes instead of as a null.
     title = title or page.get("title") or None
+    # The page introduces itself: the title leads the document as a heading. Bedrock embeds
+    # only the chunk text, never the metadata sidecar, so without this a FIXED_SIZE chunk can
+    # carry an office's facts with nothing naming the office. Prepended here rather than in
+    # extract_markdown because only this frame knows the curated-title fallback. A body that
+    # repeats the title in its own first heading costs a duplicate line, not a wrong fact.
+    if title:
+        markdown = f"# {title}\n\n{markdown}"
     metadata = build_metadata(url, str(response.url), title, section, markdown)
     return ScrapeResult(
         url=url,

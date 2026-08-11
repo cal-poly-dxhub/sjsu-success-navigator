@@ -147,6 +147,37 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       its cards, because a closing question in every example teaches a habit where the rule
       offers an option. Everything else is unchanged, prose-is-never-empty included, and the caps
       are still interpolated from Settings rather than typed.
+- [x] the model sees whole retrieved chunks (2026-08-10 eval rerun, 60/14/8 of 82).
+      cards.py sliced every retrieval result to 500 chars while real chunks run 800-3200
+      and the recovered contact band sits at the document tail, so the model cited the
+      right page while honestly reporting it could not see the number retrieval had
+      already fetched: Bursar's line was in six of the eight retrieved chunks, every
+      occurrence past the cut; CAPS's at char 612 of the top hit. Nine of the run's
+      fourteen fails were this shape. The chunk is bounded upstream by the chunking
+      config, so a second blind cap in the tool-result layer had no job to do; the
+      slice and its constant are gone, not resized.
+- [x] retrieval primed on every turn, the tool as the escape hatch (docs/cards-v2.md,
+      Retrieval contract), plus the prompt pass the eval demanded. The first search runs
+      server-side on the student's message and lands as a completed tool exchange; the
+      model answers in one Converse call in the common case and searches again only when
+      the results miss but the corpus plausibly has it. Evidence-driven: of eval turns
+      that logged, 20/30 made exactly one search, 2 made two, and the single wrong SKIP
+      was a scored fail - retrieval need is a property of the product, not a per-turn
+      decision. The prompt rewrite fixes what the transcript showed: examples now mark
+      annotations as [bracketed] stage directions (the bare "Results:" format taught the
+      model to narrate its routing decisions into prose, five answers), third-party worry
+      routes to BIT with cards instead of tripping the panel, asked-for facts go in the
+      card outright, and a result's silence is never asserted as "no rule exists" (the
+      pantry-eligibility fail). Priming degrades honestly: past-deadline skips it,
+      retrieval failure logs and falls back to the model searching itself.
+- [x] every page introduces itself (2026-08-10 eval rerun): the scraper leads each
+      document with the title as an H1 and assembles the contact band FIRST, body and
+      link tiles after. Appended, the band put every office's phone in the tail chunk
+      with often nothing naming the office - the AEC probe found its contact chunk
+      unrankable - and Bedrock embeds only chunk text, never the metadata sidecar.
+      Dedup precedence is unchanged, so a band block the body already carries stays in
+      the body. Every fingerprint changes; the next deploy re-uploads and re-ingests
+      the corpus, the same deliberate move as the extraction fix.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

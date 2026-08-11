@@ -61,10 +61,6 @@ SOURCE_ACTION_LABEL = "Open source"
 # behind it (<followup>), which is what actually varies per card.
 FOLLOWUP_ACTION_LABEL = "Tell me more"
 
-# How much of a retrieved chunk the model is shown per result. Enough to write an honest
-# description from; not the whole page.
-SOURCE_EXCERPT_CHARS = 500
-
 _WHITESPACE_RE = re.compile(r"\s+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
@@ -488,12 +484,19 @@ def source_options_for_tool(options: list[SourceOption]) -> list[dict[str, objec
 
     `id`, `title`, `text`. No URL, deliberately - see the module docstring. Nothing the model
     can write consumes a URL, so sending one would only give it a string to copy into prose.
+
+    `text` is the WHOLE retrieved chunk, untruncated. It used to be sliced to 500 chars
+    here, which silently hid whatever sat past the cut - in practice the contact band at
+    the tail of every scraped page, so the model kept citing the right page while saying
+    it could not see a phone number that retrieval had already fetched (eval 2026-08-10).
+    The chunk is already bounded upstream by the ingestion chunking config; a second cap
+    in this layer has no job to do.
     """
     return [
         {
             "id": option.ref_id,
             "title": option.title,
-            "text": option.text[:SOURCE_EXCERPT_CHARS],
+            "text": option.text,
         }
         for option in options
     ]

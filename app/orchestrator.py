@@ -1,4 +1,4 @@
-"""The Converse tool-use loop. One tool (retrieval), one exit (the model's text reply).
+"""The Converse loop: retrieval primed on every turn, the tool as escape hatch, one exit.
 
 WHAT CHANGED FROM v1. The loop used to have two exits and two card builders. The model could
 end by calling `submit_chat_response` with a JSON cards array, or by just talking, and every
@@ -53,6 +53,11 @@ _NO_OUTPUT_TEXT = (
     "I ran out of time putting that together. Ask me again and I'll take another run at it."
 )
 
+# The toolUseId on the primed retrieval exchange. Server-authored and constant: it never
+# reaches the student, and a fixed id keeps the primed turn byte-identical for a given
+# query, which is what makes the followup-parity guarantee testable.
+_PRIMED_TOOL_USE_ID = "tooluse_primed_first_search"
+
 # Module scope: built once per container and reused, where camp built one per request
 # (which on Lambda discards the warm container's connection pool every invocation).
 # read_timeout is 25s, not camp's 120: the function's own budget is 29s, so a socket
@@ -104,6 +109,9 @@ def run_chat(
     messages = _build_converse_messages(request, settings)
     system_prompt = build_system_prompt(settings)
     last_text = ""
+
+    _prime_first_search(messages, sources=sources, request=request,
+                        settings=settings, deadline=deadline)
 
     for iteration in range(settings.max_converse_iterations):
         # Checked BEFORE the call, not after: the point is never to start a Converse
@@ -172,6 +180,74 @@ def run_chat(
         request.query[:80],
     )
     return _response_from_text(last_text, sources, request.query, settings)
+
+
+def _prime_first_search(
+    messages: list[dict[str, Any]],
+    *,
+    sources: TurnSources,
+    request: ChatRequest,
+    settings: Settings,
+    deadline: float,
+) -> None:
+    """Run the first retrieval server-side and append it as a completed tool exchange.
+
+    Every substantive question needs retrieval exactly once (the 2026-08-10 eval: of the
+    turns that logged, 20 of 30 made exactly one search, 2 made two, and the one wrong
+    SKIP was a scored failure), so the first search is not the model's decision any more.
+    It runs here, on the student's own words, and lands in the transcript as a synthetic
+    assistant toolUse plus its toolResult - the exact wire shape a real call produces, so
+    the model wakes up holding results and answers in ONE Converse call in the common
+    case. The tool stays declared as the escape hatch: a vague follow-up or a missed
+    phrasing is the model's cue to search again with a sharper query.
+
+    Two deliberate degradations. Past the deadline nothing runs (the deadline exists so
+    no network call starts that cannot finish), and a retrieval failure logs and returns
+    rather than failing the turn - the model then simply searches itself, which is the
+    pre-priming behaviour. An EMPTY result set is appended, not skipped: results that
+    found nothing are the honest-gap signal the prompt teaches from.
+    """
+    if time.monotonic() >= deadline:
+        return
+    query = request.query.strip()
+    try:
+        chunks = retrieve_chunks(query, settings)
+        options = sources.add_chunks(chunks, limit=settings.card_max_retrieval_results)
+    except Exception:
+        logger.warning(
+            "Primed retrieval failed; the model will search itself. query=%r",
+            query[:80],
+            exc_info=True,
+        )
+        return
+    messages.append(
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "toolUse": {
+                        "toolUseId": _PRIMED_TOOL_USE_ID,
+                        "name": "retrieve_campus_resources",
+                        "input": {"query": query},
+                    }
+                }
+            ],
+        }
+    )
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                _tool_result_block(
+                    _PRIMED_TOOL_USE_ID,
+                    {
+                        "resultCount": len(options),
+                        "results": source_options_for_tool(options),
+                    },
+                )
+            ],
+        }
+    )
 
 
 def _run_tool(
@@ -256,13 +332,18 @@ def _build_user_message(request: ChatRequest) -> str:
     turn. What an answer needs (a destination, a source, neither) is a property of the
     question, not of the widget that sent it.
 
+    It also no longer says "retrieve if you need them": the first search is primed
+    server-side after this message (see _prime_first_search), and on the rare priming
+    failure that sentence would be a false promise. The system prompt owns the
+    search-again rule; this turn stays instruction-light so it is true on both paths.
+
     `followup` stays on the wire contract (models.ChatRequest, and the frontend still sets
     it) but no longer reaches the prompt from here.
     """
     return (
         f"Student message:\n{request.query.strip()}"
         "\n\n"
-        "Retrieve campus resources if you need them, then write your reply."
+        "Write your reply."
     )
 
 

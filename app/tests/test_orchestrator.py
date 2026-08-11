@@ -426,9 +426,9 @@ def test_history_is_trimmed_server_side_to_the_configured_window(monkeypatch, no
     )
     orchestrator.run_chat(request, settings)
 
-    # 2 trimmed history turns + the current user message.
+    # 2 trimmed history turns + the current user message + the primed search exchange.
     sent = str(fake.kwargs["messages"])
-    assert len(fake.kwargs["messages"]) == 3
+    assert len(fake.kwargs["messages"]) == 5
     assert "one" not in sent and "two" not in sent, "older turns must be dropped"
     assert "three" in sent and "four" in sent, "the window's turns must survive"
 
@@ -457,6 +457,81 @@ def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypat
     typed, clicked = sent
     assert clicked == typed
     assert "follow-up" not in str(clicked) and "no cards" not in str(clicked)
+
+
+def test_the_first_search_is_primed_before_the_model_speaks(monkeypatch):
+    """The first retrieval is the server's move, not the model's (design 2026-08-10): the
+    eval's one wrong-skip was a scored failure, and the decide-then-search round trip was
+    half the latency of every substantive answer. The primed exchange lands in the exact
+    wire shape a real tool call produces, so a model that answers immediately - ONE
+    Converse call - still resolves its refs against the primed sources."""
+    monkeypatch.setattr(
+        orchestrator,
+        "retrieve_chunks",
+        lambda query, settings: [
+            RetrievedChunk(
+                text="Drop-in tutoring for math.",
+                score=0.9,
+                source_url="https://www.sjsu.edu/tutoring/index.php",
+                title="Peer Connections",
+                section="tutoring",
+                s3_uri=None,
+            )
+        ],
+    )
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                'Tutoring is free.\n\n<card ref="1"><title>Free tutoring</title>'
+                "<desc>Drop-in help, no appointment.</desc></card>"
+            )
+        ]
+    )
+    response = _run(monkeypatch, fake)
+
+    assert fake.calls == 1, "primed results must let the model answer in one call"
+    primed_use, primed_result = fake.kwargs["messages"][-2:]
+    tool_use = primed_use["content"][0]["toolUse"]
+    assert primed_use["role"] == "assistant"
+    assert tool_use["name"] == "retrieve_campus_resources"
+    assert tool_use["input"] == {"query": "where do I get tutoring?"}, (
+        "priming searches the student's own words"
+    )
+    assert '"id": 1' in str(primed_result), "primed sources are numbered like any others"
+    card = response.statement_batches[0].cards[0]
+    assert card.source_url == "https://www.sjsu.edu/tutoring/index.php"
+
+
+def test_an_empty_primed_search_is_still_shown_to_the_model(monkeypatch, no_retrieval):
+    """Zero results are appended, not skipped: a search that found nothing is the
+    honest-gap signal the prompt teaches from, and a missing exchange would instead read
+    as 'no search has happened' and invite a redundant one."""
+    fake = _FakeBedrock([_text_turn("I don't have a page for that.")])
+    _run(monkeypatch, fake)
+
+    primed_result = fake.kwargs["messages"][-1]
+    assert '"resultCount": 0' in str(primed_result)
+
+
+def test_a_priming_failure_degrades_to_the_model_searching_itself(monkeypatch, caplog):
+    """Retrieval being down must not fail the turn: no primed exchange is appended (a
+    half-built one would be a lie about what ran) and the loop proceeds with the tool
+    still declared - the pre-priming shape, logged as the degradation it is."""
+
+    def _broken(query, settings):
+        raise RuntimeError("bedrock unavailable")
+
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", _broken)
+    fake = _FakeBedrock([_text_turn("hi")])
+
+    with caplog.at_level("WARNING"):
+        response = _run(monkeypatch, fake)
+
+    assert "Primed retrieval failed" in caplog.text
+    assert response.conversational_text == "hi"
+    assert not any("toolUse" in str(m) for m in fake.kwargs["messages"]), (
+        "no synthetic exchange may claim a search that never ran"
+    )
 
 
 def test_the_response_serialises_to_camps_camelcase_wire_contract(monkeypatch, no_retrieval):
