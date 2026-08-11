@@ -1567,6 +1567,7 @@ def test_config_json_names_the_history_endpoint_the_frontend_reads():
         "conversationsApiUrl",
         "userPoolId",
         "userPoolClientId",
+        "loginDomain",
         "region",
     }, "these are exactly the keys frontend/src/lib/runtimeConfig.ts requires"
 
