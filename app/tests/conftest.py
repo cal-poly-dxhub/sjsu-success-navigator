@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 for _name, _value in {
     "KNOWLEDGE_BASE_ID": "KB-TEST",
     "GENERATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
-    "TITLE_MODEL_ID": "us.anthropic.claude-haiku-4-5",
+    "TITLE_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "BEDROCK_REGION": "us-west-2",
     "INPUT_GUARDRAIL_ID": "gr-test",
     "INPUT_GUARDRAIL_VERSION": "1",
