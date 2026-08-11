@@ -381,6 +381,78 @@ class ConversationStore:
             raise
         return True
 
+    # --- deletes --------------------------------------------------------------
+
+    def delete_conversation(self, *, user_id: str, conversation_id: str) -> int:
+        """Delete one conversation: every message, then the header. Returns the count.
+
+        A HARD DELETE. There is no tombstone attribute and nothing left behind to filter
+        out later: a student who deletes a conversation has said what they want, and a
+        record that is invisible but present is a promise this code would be making on
+        their behalf and could not keep. `expiresAt` is unset on these items, so nothing
+        would ever come along and finish the job either.
+
+        MESSAGES FIRST, HEADER LAST, and the ordering is the only part of this that is
+        subtle. A failure partway through leaves either:
+
+          - some messages gone, header still there: an empty but VISIBLE conversation. The
+            student can see it and delete it again, and the retry finishes the job.
+          - header gone, messages still there: invisible orphaned transcript. Nothing lists
+            it, nothing can address it, and no TTL will collect it - a student's own words
+            left on a table with no way to reach them.
+
+        The first is recoverable and the second is not, so the header is deleted last.
+
+        PAGINATED, because Query returns at most 1 MB and a long conversation exceeds that:
+        stopping at the first page would silently leave the tail behind, which is the same
+        orphaned-data failure arriving quietly.
+
+        The partition comes from the JWT claim like every other operation here, so a forged
+        conversation id addresses a prefix inside the caller's own partition that holds
+        nothing. It deletes zero messages and a header that does not exist.
+        """
+        table = self._table_resource()
+        prefix = f"MSG#{conversation_id}#"
+        deleted = 0
+        start_key = None
+
+        while True:
+            query: dict[str, Any] = {
+                "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+                "ExpressionAttributeValues": {
+                    ":pk": f"USER#{user_id}",
+                    ":prefix": prefix,
+                },
+                # The sort key is all a delete needs. Not reading the text back is also the
+                # cheaper read and keeps a transcript out of this function's memory.
+                "ProjectionExpression": "sk",
+                # Strongly consistent, so a message written seconds ago by the turn the
+                # student is deleting cannot be missed and left orphaned.
+                "ConsistentRead": True,
+            }
+            if start_key:
+                query["ExclusiveStartKey"] = start_key
+
+            result = table.query(**query)
+            items = result.get("Items") or []
+            if items:
+                with table.batch_writer() as batch:
+                    for item in items:
+                        batch.delete_item(
+                            Key={"pk": f"USER#{user_id}", "sk": item["sk"]}
+                        )
+                deleted += len(items)
+
+            start_key = result.get("LastEvaluatedKey")
+            if not start_key:
+                break
+
+        table.delete_item(
+            Key={"pk": f"USER#{user_id}", "sk": f"CONV#{conversation_id}"}
+        )
+        logger.info("Deleted a conversation and its %s message(s).", deleted)
+        return deleted
+
     # --- reads ----------------------------------------------------------------
 
     def list_conversations(self, *, user_id: str, limit: int) -> list[ConversationSummary]:

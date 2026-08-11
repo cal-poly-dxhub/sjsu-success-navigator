@@ -3,20 +3,21 @@
 Camp's main.py and its routers are replaced by this file; the service modules alongside it
 (settings, models, prompts, tools, retrieve, cards, safety, orchestrator) move in as files.
 
-FOUR ROUTES, one function (see lambda_handler):
+FIVE ROUTES, one function (see lambda_handler):
 
-    POST  /chat                              one turn
-    GET   /conversations                     the caller's own conversations
-    GET   /conversations/{conversationId}    one conversation, for display
-    PATCH /conversations/{conversationId}    rename it
+    POST   /chat                              one turn
+    GET    /conversations                     the caller's own conversations
+    GET    /conversations/{conversationId}    one conversation, for display
+    PATCH  /conversations/{conversationId}    rename it
+    DELETE /conversations/{conversationId}    delete it, and every message under it
 
 Every route is the same identity story as the write and shares it literally: `sub` comes
 out of the JWT the authorizer validated, the DynamoDB partition is built from it, and a
 conversation id belonging to somebody else addresses nothing inside the caller's partition.
-That is what makes the WRITE route safe on the same terms as the reads: a forged
-conversation id renames nothing, because the only partition it can reach is the caller's
-own. Each user managing their OWN history is the whole feature; there is no staff view
-here, and no request field that could ask for one.
+That is what makes the two WRITE routes safe on the same terms as the reads: a forged
+conversation id renames nothing and deletes nothing, because the only partition either can
+reach is the caller's own. Each user managing their OWN history is the whole feature; there
+is no staff view here, and no request field that could ask for one.
 
 Request order on POST /chat:
 
@@ -56,6 +57,7 @@ from models import (
     CONVERSATION_ID_PATTERN,
     ChatRequest,
     ChatResponse,
+    ConversationDeleteResponse,
     ConversationListResponse,
     ConversationMessage,
     ConversationRenameRequest,
@@ -628,13 +630,52 @@ def patch_conversation(event):
     return _response(200, payload.model_dump(by_alias=True))
 
 
+def delete_conversation(event):
+    """DELETE /conversations/{conversationId} - hard delete, messages first.
+
+    IDEMPOTENT, and deliberately not a 404 on a conversation that is not there. A delete
+    says what the caller wants the world to look like afterwards, and afterwards is the same
+    either way; a second click, a retried request, or a forged id all leave nothing to
+    delete and nothing to report. It also means this route cannot be used to ask which ids
+    exist.
+
+    A FAILURE PARTWAY THROUGH IS A 502 WITH THE HEADER STILL PRESENT. The store deletes
+    messages before the header exactly so the recoverable half is the one that survives: the
+    conversation is still in the student's list, still deletable, and the retry finishes it.
+    """
+    user_id = user_id_from(event)
+    if user_id is None:
+        logger.error("A conversation delete carried no JWT sub claim; refusing it")
+        return _response(401, {"error": "Unauthenticated."})
+
+    conversation_id = _conversation_id_from(event)
+    if conversation_id is None:
+        return _response(400, {"error": "Malformed conversation id."})
+
+    try:
+        deleted = STORE.delete_conversation(
+            user_id=user_id, conversation_id=conversation_id
+        )
+    except Exception:
+        # The header is still there, because it is deleted last. What the student sees is
+        # the conversation they tried to remove, which is the recoverable failure.
+        logger.exception("Could not delete a conversation")
+        return _response(502, {"error": "Could not delete that conversation."})
+
+    payload = ConversationDeleteResponse(
+        conversationId=conversation_id, deletedMessages=deleted
+    )
+    return _response(200, payload.model_dump(by_alias=True))
+
+
 # The routes this function serves, spelled as HTTP API payload-2.0 route keys. The stack
-# creates exactly these four (infra/infra_stack.py, section 5) and points all of them at
+# creates exactly these five (infra/infra_stack.py, section 5) and points all of them at
 # this function.
 _CHAT_ROUTE = "POST /chat"
 _CONVERSATIONS_ROUTE = "GET /conversations"
 _CONVERSATION_ROUTE = "GET /conversations/{conversationId}"
 _CONVERSATION_RENAME_ROUTE = "PATCH /conversations/{conversationId}"
+_CONVERSATION_DELETE_ROUTE = "DELETE /conversations/{conversationId}"
 
 
 def lambda_handler(event, context):
@@ -661,6 +702,8 @@ def lambda_handler(event, context):
         return get_conversation(event)
     if route == _CONVERSATION_RENAME_ROUTE:
         return patch_conversation(event)
+    if route == _CONVERSATION_DELETE_ROUTE:
+        return delete_conversation(event)
 
     logger.error("No handler for route %r", route)
     return _response(404, {"error": "Not found."})

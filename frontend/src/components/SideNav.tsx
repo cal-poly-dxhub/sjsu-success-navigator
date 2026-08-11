@@ -35,12 +35,13 @@ type SideNavProps = {
 	onNewChat: () => void;
 	onSelectChat: (id: string) => void;
 	/**
-	 * Rename, resolving only once the SERVER has agreed. It is async because the row stays
-	 * disabled until then: a title that appeared instantly and then reverted would be the
-	 * sidebar lying about what is stored, which is the one thing this component is not
-	 * allowed to do.
+	 * Rename and delete, both resolving only once the SERVER has agreed. They are async
+	 * because the row stays disabled until then: a title that appeared instantly and then
+	 * reverted, or a row that vanished and came back, would be the sidebar lying about what
+	 * is stored - which is the one thing this component is not allowed to do.
 	 */
 	onRenameChat: (id: string, title: string) => Promise<void>;
+	onDeleteChat: (id: string) => Promise<void>;
 };
 
 function NavContent({
@@ -56,22 +57,26 @@ function NavContent({
 	onNewChat,
 	onSelectChat,
 	onRenameChat,
+	onDeleteChat,
 }: Omit<SideNavProps, 'open' | 'onClose'>) {
 	// Which row is mid-rename, mid-delete-confirm, or waiting on the server. Local to the
 	// sidebar because none of it is data: it is what this panel is currently showing, and it
 	// is thrown away the moment the server answers.
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const [draft, setDraft] = useState('');
+	const [confirmingId, setConfirmingId] = useState<string | null>(null);
 	const [pendingId, setPendingId] = useState<string | null>(null);
 	const [rowError, setRowError] = useState<string | null>(null);
 
 	const closeRowUi = () => {
 		setEditingId(null);
+		setConfirmingId(null);
 		setDraft('');
 	};
 
 	const startRename = (chat: ChatSession) => {
 		setRowError(null);
+		setConfirmingId(null);
 		setEditingId(chat.id);
 		setDraft(chat.title);
 	};
@@ -93,12 +98,20 @@ function NavContent({
 			.finally(() => setPendingId(null));
 	};
 
+	const confirmDelete = (chat: ChatSession) => {
+		setPendingId(chat.id);
+		void onDeleteChat(chat.id)
+			.then(closeRowUi)
+			.catch((error: unknown) => {
+				setRowError(error instanceof Error ? error.message : 'Could not delete that chat.');
+			})
+			.finally(() => setPendingId(null));
+	};
 
 	// A chat with no conversation id is one started in this tab that has not been sent yet,
 	// so it is not "history" - it is the only thing in the list on a first visit, and saying
 	// "no past chats" beneath it would be wrong the moment the student presses send.
 	const stored = chats.filter((chat) => chat.conversationId);
-
 	return (
 		<>
 			<div className="side-nav__header">
@@ -173,6 +186,39 @@ function NavContent({
 							);
 						}
 
+						if (chat.id === confirmingId) {
+							return (
+								<li key={chat.id} className="side-nav__row">
+									<div className="side-nav__confirm" role="group" aria-label={`Delete ${chat.title}`}>
+										{/* Named, and named as permanent. The server hard deletes the
+										    conversation and every message under it, so this sentence is
+										    the last point at which that is still a choice. */}
+										<p className="side-nav__confirm-copy">
+											Delete “{chat.title}”? This cannot be undone.
+										</p>
+										<div className="side-nav__confirm-actions">
+											<button
+												type="button"
+												className="side-nav__row-action side-nav__row-action--danger"
+												disabled={pending}
+												onClick={() => confirmDelete(chat)}
+											>
+												{pending ? 'Deleting…' : 'Delete'}
+											</button>
+											<button
+												type="button"
+												className="side-nav__row-action"
+												disabled={pending}
+												onClick={closeRowUi}
+											>
+												Cancel
+											</button>
+										</div>
+									</div>
+								</li>
+							);
+						}
+
 						return (
 							<li key={chat.id} className="side-nav__row">
 								<button
@@ -188,10 +234,10 @@ function NavContent({
 								</button>
 
 								{stored && !opening ? (
-									// Revealed on hover and on FOCUS-WITHIN, so the control is reachable
-									// by keyboard rather than only by mouse. It sits over the end of the
-									// title rather than beside it: a column reserved for it would narrow
-									// every row for the sake of a button most rows never show.
+									// Revealed on hover and on FOCUS-WITHIN, so both controls are reachable
+									// by keyboard rather than only by mouse. They sit over the end of the
+									// title rather than beside it: a column reserved for them would narrow
+									// every row for the sake of two buttons most rows never show.
 									<div className="side-nav__row-actions">
 										<button
 											type="button"
@@ -203,6 +249,24 @@ function NavContent({
 											<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
 												<path
 													d="M4 20h4L18 10l-4-4L4 16v4zm13.7-13.3 1.6-1.6a1.4 1.4 0 0 0 0-2l-2-2a1.4 1.4 0 0 0-2 0l-1.6 1.6 4 4z"
+													fill="currentColor"
+												/>
+											</svg>
+										</button>
+										<button
+											type="button"
+											className="side-nav__row-icon side-nav__row-icon--danger"
+											aria-label={`Delete ${chat.title}`}
+											disabled={busy || pendingId !== null}
+											onClick={() => {
+												setRowError(null);
+												setEditingId(null);
+												setConfirmingId(chat.id);
+											}}
+										>
+											<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+												<path
+													d="M7 21h10a1 1 0 0 0 1-1V7H6v13a1 1 0 0 0 1 1zM9 4V3h6v1h5v2H4V4h5z"
 													fill="currentColor"
 												/>
 											</svg>
@@ -230,9 +294,9 @@ function NavContent({
 					</p>
 				) : null}
 
-				{/* A failed rename, said where it happened. The row is left as it was rather
-				    than optimistically changed and reverted, so this note is the only thing
-				    that changes: what is on screen still matches what is stored. */}
+				{/* A failed rename or delete, said where it happened. The row is left as it
+				    was rather than optimistically changed and reverted, so this note is the
+				    only thing that changes: what is on screen still matches what is stored. */}
 				{rowError ? (
 					<p className="side-nav__history-note side-nav__history-note--error" role="status">
 						{rowError}

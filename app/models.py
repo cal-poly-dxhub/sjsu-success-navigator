@@ -212,6 +212,17 @@ class ConversationTitleResponse(BaseModel):
     title: str
 
 
+class ConversationDeleteResponse(BaseModel):
+    """The result of a delete. `deletedMessages` is the count actually removed, which the
+    browser ignores and a log line does not: it is how "delete removed every message" stops
+    being a claim and becomes a number."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    deleted_messages: int = Field(alias="deletedMessages")
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     kb_id: str = Field(alias="kbId")

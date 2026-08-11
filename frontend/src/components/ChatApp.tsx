@@ -3,6 +3,7 @@ import { LayoutGroup, motion } from 'motion/react';
 import type { ChatResponse, ChatSession, ConversationTurn, RagPhase } from '../types/chat';
 import {
 	ChatApiError,
+	deleteConversation,
 	fetchConversation,
 	fetchConversations,
 	incomingBatchFromResponse,
@@ -474,6 +475,27 @@ export default function ChatApp() {
 		);
 	};
 
+	/**
+	 * Delete one conversation, server first.
+	 *
+	 * If the deleted chat was the one on screen there is nothing left to show, so this lands
+	 * on a fresh welcome chat rather than an emptied one. The transition is skipped
+	 * deliberately: the row the animation would slide away from no longer exists.
+	 */
+	const handleDeleteChat = async (id: string) => {
+		const chat = chats.find((item) => item.id === id);
+		if (!chat?.conversationId) return;
+
+		await deleteConversation(chat.conversationId);
+
+		const replacement = chat.id === activeChatId ? newChatSession() : null;
+		setChats((current) => {
+			const remaining = current.filter((item) => item.id !== id);
+			return replacement ? [replacement, ...remaining] : remaining;
+		});
+		if (replacement) showChat(replacement);
+	};
+
 	const handleNewChat = () => {
 		if (openingChatId) return;
 		const chat = newChatSession();
@@ -527,6 +549,7 @@ export default function ChatApp() {
 				onNewChat={handleNewChat}
 				onSelectChat={handleSelectChat}
 				onRenameChat={handleRenameChat}
+				onDeleteChat={handleDeleteChat}
 			/>
 
 			{/* Mobile only (display:none above the breakpoint): the two header controls are

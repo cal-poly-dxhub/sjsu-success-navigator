@@ -18,6 +18,7 @@ from conftest import (
     chat_event,
     conversation_event,
     conversations_event,
+    delete_event,
     rename_event,
 )
 from models import ChatResponse
@@ -726,7 +727,7 @@ def test_the_title_budget_never_outlives_the_invocation(bedrock, loop, store, ti
     )
 
 
-# --- renaming ----------------------------------------------------------------
+# --- renaming and deleting ----------------------------------------------------------------
 
 
 _CONV = "01J0000000000000000000000A"
@@ -806,3 +807,59 @@ def test_a_rename_that_fails_in_dynamodb_is_a_502_not_a_404(monkeypatch):
     monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["rename"]))
 
     assert handler.lambda_handler(rename_event(_CONV, {"title": "x"}), None)["statusCode"] == 502
+
+
+def test_a_delete_removes_the_conversation_and_reports_the_count(monkeypatch):
+    from conftest import FakeConversationStore
+
+    fake = FakeConversationStore(deleted_messages=4)
+    monkeypatch.setattr(handler, "STORE", fake)
+
+    response = handler.lambda_handler(delete_event(_CONV), None)
+
+    assert response["statusCode"] == 200
+    assert _body(response) == {"conversationId": _CONV, "deletedMessages": 4}
+    assert [kwargs for name, kwargs in fake.calls if name == "delete"][0] == {
+        "user_id": TEST_SUB,
+        "conversation_id": _CONV,
+    }
+
+
+def test_a_delete_takes_its_partition_from_the_claim_and_never_the_body(store):
+    """The forged-id case: the body cannot name a user and the path cannot name a partition,
+    so a delete addressed at somebody else's conversation deletes inside the caller's own
+    partition, where it is not."""
+    event = delete_event(_CONV)
+    event["body"] = json.dumps({"userId": "somebody-else"})
+
+    handler.lambda_handler(event, None)
+
+    assert [kwargs for name, kwargs in store.calls if name == "delete"][0]["user_id"] == TEST_SUB
+
+
+def test_deleting_a_conversation_that_is_not_there_is_still_a_200(store):
+    """Idempotent: a second click, a retry, and a forged id all leave nothing to delete and
+    nothing to report. It also means this route cannot be asked which ids exist."""
+    response = handler.lambda_handler(delete_event(_CONV), None)
+    assert response["statusCode"] == 200
+    assert _body(response)["deletedMessages"] == 0
+
+
+def test_a_delete_with_a_malformed_id_is_a_400_before_the_table(store):
+    assert handler.lambda_handler(delete_event("nope"), None)["statusCode"] == 400
+    assert store.calls == []
+
+
+def test_a_delete_without_a_sub_claim_is_a_401(store):
+    assert handler.lambda_handler(delete_event(_CONV, sub=None), None)["statusCode"] == 401
+    assert store.calls == []
+
+
+def test_a_delete_that_fails_is_a_502(monkeypatch):
+    """The header is deleted last, so what the student sees after this is the conversation
+    they tried to remove - still listed, still deletable, and the retry finishes the job."""
+    from conftest import FakeConversationStore
+
+    monkeypatch.setattr(handler, "STORE", FakeConversationStore(fail_on=["delete"]))
+
+    assert handler.lambda_handler(delete_event(_CONV), None)["statusCode"] == 502

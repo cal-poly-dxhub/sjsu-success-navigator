@@ -121,6 +121,17 @@ def rename_event(conversation_id, body, sub=TEST_SUB):
     )
 
 
+def delete_event(conversation_id, sub=TEST_SUB):
+    """DELETE /conversations/{conversationId}. No body at all."""
+    return _authorized(
+        {
+            "routeKey": "DELETE /conversations/{conversationId}",
+            "pathParameters": {"conversationId": conversation_id},
+        },
+        sub,
+    )
+
+
 class FakeConversationStore:
     """A ConversationStore stand-in that records the turn's table access in order.
 
@@ -136,6 +147,7 @@ class FakeConversationStore:
         messages=(),
         renamed=True,
         titled=True,
+        deleted_messages=0,
     ):
         self.history = list(history)
         self.fail_on = set(fail_on)
@@ -145,6 +157,7 @@ class FakeConversationStore:
         # condition holding - no such header, or one the student named themselves.
         self.renamed = renamed
         self.titled = titled
+        self.deleted_messages = deleted_messages
         self.calls = []
         self.appended = []
 
@@ -185,6 +198,12 @@ class FakeConversationStore:
         if "rename" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (rename)")
         return self.renamed
+
+    def delete_conversation(self, **kwargs):
+        self.calls.append(("delete", kwargs))
+        if "delete" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (delete)")
+        return self.deleted_messages
 
     @property
     def call_names(self):

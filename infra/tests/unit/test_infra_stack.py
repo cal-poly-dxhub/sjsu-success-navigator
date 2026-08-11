@@ -1101,19 +1101,20 @@ def _logical_id(template: Template, type_name: str) -> str:
     return next(iter(found))
 
 
-def test_the_api_serves_exactly_the_four_routes_the_handler_implements():
+def test_the_api_serves_exactly_the_five_routes_the_handler_implements():
     """NARROWED, not relaxed. This used to read "only the billable route exists"; the history
-    reads and the conversation rename (docs/accounts-and-storage.md, Storage access patterns)
-    are additions to that list, so the assertion is the exact set - which still fails on a
-    route nobody meant to add, and additionally fails if one of these is dropped or renamed.
-    The strings are the route keys app/handler.lambda_handler dispatches on, so a rename on
-    either side breaks here rather than at runtime as a 404."""
+    reads and the two conversation WRITES (docs/accounts-and-storage.md, Storage access
+    patterns) are additions to that list, so the assertion is the exact set - which still
+    fails on a route nobody meant to add, and additionally fails if one of these is dropped
+    or renamed. The strings are the route keys app/handler.lambda_handler dispatches on, so a
+    rename on either side breaks here rather than at runtime as a 404."""
     routes = _template().find_resources("AWS::ApiGatewayV2::Route")
     assert {route["Properties"]["RouteKey"] for route in routes.values()} == {
         "POST /chat",
         "GET /conversations",
         "GET /conversations/{conversationId}",
         "PATCH /conversations/{conversationId}",
+        "DELETE /conversations/{conversationId}",
     }
 
 
@@ -1639,13 +1640,14 @@ def test_the_amended_cors_block_keeps_the_authorization_header():
     problem rather than the auth problem it would be."""
     api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
     assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
-    # PATCH is the rename route: cross-origin and carrying Authorization, so preflighted.
-    # Dropping it here fails the OPTIONS and surfaces as a CORS error rather than as the
-    # missing method it is.
+    # PATCH and DELETE are the rename and delete routes. Both are cross-origin and both
+    # carry Authorization, so both are preflighted: dropping either here fails the OPTIONS
+    # and surfaces as a CORS error rather than as the missing method it is.
     assert set(api["CorsConfiguration"]["AllowMethods"]) == {
         "POST",
         "GET",
         "PATCH",
+        "DELETE",
         "OPTIONS",
     }
 
@@ -1904,9 +1906,9 @@ def test_the_chat_function_is_told_which_model_names_a_conversation():
     )
 
 
-def test_the_conversation_write_is_served_by_the_chat_function_and_gated():
+def test_the_two_conversation_writes_are_served_by_the_chat_function_and_gated():
     """Covered by test_every_route_is_jwt_gated too, and stated again here because the reason
-    is stronger for this one: it CHANGES stored data, and the only thing that decides whose
+    is stronger for these two: they CHANGE stored data, and the only thing that decides whose
     data is the `sub` claim the partition key is built from."""
     template = _template()
     writes = [
@@ -1914,7 +1916,7 @@ def test_the_conversation_write_is_served_by_the_chat_function_and_gated():
         for route in template.find_resources("AWS::ApiGatewayV2::Route").values()
         if route["Properties"]["RouteKey"].startswith(("PATCH ", "DELETE "))
     ]
-    assert len(writes) == 1
+    assert len(writes) == 2
     integration_id = next(iter(template.find_resources("AWS::ApiGatewayV2::Integration")))
     for route in writes:
         assert route["Properties"]["AuthorizationType"] == "JWT"
