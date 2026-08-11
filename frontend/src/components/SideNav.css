@@ -175,21 +175,31 @@
 
 .side-nav__row-actions {
 	position: absolute;
-	inset: 0 0.3rem 0 auto;
+	/* INSIDE the button's border box, never across it. The insets are the chat button's own
+	   border widths - 2px, and 4px at the bottom edge - and the radii are its 15px radius
+	   minus those, so the panel stops where the pill's inner curve does.
+	   `inset: 0` put it over the border instead: the outline vanished along the panel's
+	   whole span and the rounded right cap was squared off, which is what made the controls
+	   read as a hard block wedged into the end of the row rather than as part of it. */
+	inset: 2px 2px 4px auto;
+	border-radius: 0 13px 11px 0;
 	display: flex;
 	align-items: center;
 	gap: 0.15rem;
-	padding-left: 1.4rem;
+	padding-left: 0.9rem;
 	/* The fade is what keeps a truncated title from colliding with the icons: the text runs
-	   under a gradient rather than being cut at a hard edge. */
-	background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 1.4rem);
+	   under a gradient rather than being cut at a hard edge. SHORT on purpose - at 1.4rem
+	   the ramp reached into the middle of the button and read as a smudge laid over the
+	   title rather than as its last characters dissolving. The solid end matches the
+	   button's own surface, so nothing but the icons and that dissolve is visible. */
+	background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 0.9rem);
 	opacity: 0;
 	pointer-events: none;
 	transition: opacity 120ms ease;
 }
 
 .side-nav__chat--active + .side-nav__row-actions {
-	background: linear-gradient(to right, rgba(238, 247, 255, 0), #eef7ff 1.4rem);
+	background: linear-gradient(to right, rgba(238, 247, 255, 0), #eef7ff 0.9rem);
 }
 
 /* focus-within, not hover alone: the controls have to be reachable by keyboard. */
