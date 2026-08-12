@@ -100,6 +100,20 @@ export const tl: Strings = {
 		},
 	},
 
+	escalationAria: 'Draft ng email para sa isang tao',
+	escalationHeadline: 'Ipadala ito sa isang tao',
+	escalationNote:
+		'Bubuksan ito sa sarili mong email app, kaya diretso sa iyo babalik ang sagot. Tiyaking galing ito sa email address mo sa paaralan.',
+	escalationTo: 'Para kay',
+	escalationSubject: 'Paksa',
+	escalationOpen: 'Buksan sa aking email app',
+	escalationCopied: 'Nakopya',
+	escalationCopy: 'Kopyahin ang mensahe',
+	escalationClipboardBlocked:
+		'Hindi kami pinayagan ng browser mo na gamitin ang clipboard, kaya naka-select na ang mensahe: kopyahin ito at i-paste sa bagong email.',
+	escalationTooLong:
+		'Masyadong mahaba ang draft na ito para kusang buksan ang email app mo. Kopyahin ito at i-paste sa bagong email.',
+
 	settingsClose: 'Isara ang mga setting',
 	close: 'Isara',
 	languageLabel: 'Wika',

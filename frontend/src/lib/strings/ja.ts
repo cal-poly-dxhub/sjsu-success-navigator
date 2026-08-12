@@ -98,6 +98,20 @@ export const ja: Strings = {
 		},
 	},
 
+	escalationAria: '担当者へ送るメールの下書き',
+	escalationHeadline: 'これを担当者に送りましょう',
+	escalationNote:
+		'ご自身のメールアプリで開くので、返信は直接あなたに届きます。学校のメールアドレスから送信されるか確認してください。',
+	escalationTo: '宛先',
+	escalationSubject: '件名',
+	escalationOpen: '自分のメールアプリで開く',
+	escalationCopied: 'コピーしました',
+	escalationCopy: 'メッセージをコピー',
+	escalationClipboardBlocked:
+		'ブラウザがクリップボードの使用を許可しなかったため、代わりにメッセージを選択しました。コピーして新しいメールに貼り付けてください。',
+	escalationTooLong:
+		'この下書きは長すぎるため、メールアプリを自動で開けません。コピーして新しいメールに貼り付けてください。',
+
 	settingsClose: '設定を閉じる',
 	close: '閉じる',
 	languageLabel: '言語',

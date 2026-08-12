@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EmailDraft } from '../types/chat';
 import { PressableButton } from './PressableButton';
+import { useStrings } from '../lib/i18n';
 import { logEscalationIntent, mailtoDraft } from '../lib/mailtoDraft';
 import './EscalationDraft.css';
 
@@ -28,6 +29,14 @@ import './EscalationDraft.css';
  * NOBODY HERE SENDS ANYTHING. There is no request in this component. The student presses
  * send in their own mail client, having read and edited the message, which is the whole
  * reason this design needs no verified sending identity and why a reply comes back to them.
+ *
+ * TWO LANGUAGES ON ONE PANEL, AND THE SPLIT IS THE CONTRACT (lib/i18n.ts). The chrome - the
+ * heading, the note, the two field labels, the buttons, the two fallback hints - is page
+ * chrome and comes from the catalogues, so it follows the student's chosen language. The
+ * three values do NOT: the address, the subject and the body are the draft the server
+ * assembled and stored with the turn, and they are shown exactly as stored. Translating
+ * those here would put a message on screen that differs from the one the mailto carries,
+ * which is the one thing this component promises never to do.
  */
 
 type EscalationDraftProps = {
@@ -38,6 +47,7 @@ type EscalationDraftProps = {
 const COPIED_FEEDBACK_MS = 2200;
 
 export function EscalationDraft({ draft }: EscalationDraftProps) {
+	const t = useStrings();
 	const [copied, setCopied] = useState(false);
 	const [copyFailed, setCopyFailed] = useState(false);
 	const bodyRef = useRef<HTMLPreElement>(null);
@@ -54,7 +64,9 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 	}, []);
 
 	const handleCopy = useCallback(() => {
-		const text = `To: ${draft.to}\nSubject: ${draft.subject}\n\n${draft.body}`;
+		// The same two labels the panel shows above, so a copy from the button reads as the
+		// copy from the page - and the three values between them stay the server's bytes.
+		const text = `${t.escalationTo}: ${draft.to}\n${t.escalationSubject}: ${draft.subject}\n\n${draft.body}`;
 
 		const settle = (ok: boolean) => {
 			setCopied(ok);
@@ -86,27 +98,24 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 			() => settle(true),
 			() => settle(false),
 		);
-	}, [draft]);
+	}, [draft, t.escalationTo, t.escalationSubject]);
 
 	return (
-		<section className="escalation-draft" aria-label="Email draft for a person">
+		<section className="escalation-draft" aria-label={t.escalationAria}>
 			<header className="escalation-draft__head">
-				<h2 className="escalation-draft__headline">Send this to a person</h2>
-				<p className="escalation-draft__note">
-					This opens in your own email app, so a reply comes straight back to you.
-					Double check it's being sent from your school address.
-				</p>
+				<h2 className="escalation-draft__headline">{t.escalationHeadline}</h2>
+				<p className="escalation-draft__note">{t.escalationNote}</p>
 			</header>
 
 			<dl className="escalation-draft__fields">
 				<div className="escalation-draft__field">
-					<dt className="escalation-draft__label">To</dt>
+					<dt className="escalation-draft__label">{t.escalationTo}</dt>
 					{/* The address as the server addressed it, selectable: somebody whose mail
 					    lives in a tab needs to be able to take it from here. */}
 					<dd className="escalation-draft__value">{draft.to}</dd>
 				</div>
 				<div className="escalation-draft__field">
-					<dt className="escalation-draft__label">Subject</dt>
+					<dt className="escalation-draft__label">{t.escalationSubject}</dt>
 					<dd className="escalation-draft__value">{draft.subject}</dd>
 				</div>
 			</dl>
@@ -127,7 +136,7 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 						className="escalation-draft__open"
 						onClick={() => logEscalationIntent({ encodedLength })}
 					>
-						Open in my email app
+						{t.escalationOpen}
 					</PressableButton>
 				) : null}
 
@@ -136,7 +145,7 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 					className="escalation-draft__copy"
 					onClick={handleCopy}
 				>
-					{copied ? 'Copied' : 'Copy the message'}
+					{copied ? t.escalationCopied : t.escalationCopy}
 				</PressableButton>
 			</div>
 
@@ -144,12 +153,8 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 			    rather than what went wrong. `aria-live` because the first one appears in
 			    response to a press and the reader is looking at the button, not at this. */}
 			<p className="escalation-draft__hint" aria-live="polite">
-				{copyFailed
-					? 'Your browser would not let us use the clipboard, so the message is selected instead: copy it and paste it into a new email.'
-					: null}
-				{!href && !copyFailed
-					? 'This draft is too long to open your email app automatically. Copy it and paste it into a new email instead.'
-					: null}
+				{copyFailed ? t.escalationClipboardBlocked : null}
+				{!href && !copyFailed ? t.escalationTooLong : null}
 			</p>
 		</section>
 	);
