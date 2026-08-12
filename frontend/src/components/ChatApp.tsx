@@ -10,6 +10,7 @@ import {
 	postChat,
 	renameConversation,
 } from '../lib/chatApi';
+import { StreamUnavailable, streamChat } from '../lib/chatStream';
 import {
 	appendConversationTurn,
 	archiveActiveTurns,
@@ -103,6 +104,20 @@ export default function ChatApp() {
 	const [panelSwappedHidden, setPanelSwappedHidden] = useState(false);
 	const [isLoading, setIsLoading] = useState(false);
 	const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+	/**
+	 * The reply as it arrives over the socket, and what the server says it is doing while
+	 * none has yet. Both are PREVIEW state: they live only for the length of one pending
+	 * exchange and are cleared the moment the authoritative payload lands, which is what
+	 * builds the turn. Nothing is ever rendered from them after that.
+	 */
+	const [pendingPreview, setPendingPreview] = useState('');
+	const [pendingStage, setPendingStage] = useState<string | null>(null);
+	/**
+	 * Whether this deployment has a socket at all - i.e. whether the stack stamped
+	 * `streamingApiUrl` into config.json. False until config.json has been read, so the
+	 * first turn on a cold page uses POST /chat rather than waiting on a fetch to find out.
+	 */
+	const [streamingReady, setStreamingReady] = useState(false);
 	const [showSjsuCaresModal, setShowSjsuCaresModal] = useState(false);
 	const [showCostPanel, setShowCostPanel] = useState(false);
 	/**
@@ -120,10 +135,14 @@ export default function ChatApp() {
 		let cancelled = false;
 		void loadRuntimeConfig()
 			.then((config) => {
-				if (!cancelled) setCostModel(config.costModel ?? null);
+				if (cancelled) return;
+				setCostModel(config.costModel ?? null);
+				// THE ABSENCE OF THE URL IS THE GATE. With streaming off the stack stamps no
+				// key, so there is nothing here to open and every turn takes POST /chat.
+				setStreamingReady(Boolean(config.streamingApiUrl));
 			})
 			.catch(() => {
-				/* No cost panel. The chat itself surfaces its own config failures. */
+				/* No cost panel and no socket. The chat surfaces its own config failures. */
 			});
 		return () => {
 			cancelled = true;
@@ -261,13 +280,18 @@ export default function ChatApp() {
 	);
 
 	const applyChatResponse = useCallback(
-		(next: ChatResponse, query: string) => {
+		(next: ChatResponse, query: string, revealedChars?: number) => {
 			const incomingCards = incomingBatchFromResponse(next);
 			const turn = createConversationTurn(next.conversationalText, {
 				cards: incomingCards,
 				trailingText: next.trailingText,
 				safetyHandoff: next.safetyHandoff,
 				query,
+				// What a streamed preview already typed out, so the finished turn picks up
+				// where it stopped instead of replaying prose the student has read. This is
+				// the ONLY thing the preview leaves behind: the turn itself is built from the
+				// authoritative payload, exactly as it is on the buffered path.
+				revealedChars,
 			});
 
 			// THE ID THE SERVER MINTED, kept so the NEXT turn can say which conversation it
@@ -375,6 +399,13 @@ export default function ChatApp() {
 	 * THE SERVER GAVE US - and nothing else. No transcript: the server holds that
 	 * (docs/accounts-and-storage.md, Turn lifecycle), and a client-supplied one would be a
 	 * way to put words in a previous turn's mouth rather than a memory shortcut.
+	 *
+	 * TWO TRANSPORTS, ONE OUTCOME. When the stack stamped a WebSocket URL into config.json
+	 * the turn goes over a socket and the prose arrives as it is written; otherwise, and on
+	 * any socket failure the server had not yet taken responsibility for, it goes over
+	 * POST /chat exactly as it always has. What gets RENDERED is the same object either
+	 * way - the streamed turn ends in one final payload that is byte-for-byte what
+	 * POST /chat would have returned - so nothing below this function knows which ran.
 	 */
 	const sendTurn = (query: string, options?: { followup?: boolean }) => {
 		if (isLoading || isTransitioning || openingChatId) return;
@@ -383,21 +414,63 @@ export default function ChatApp() {
 		const conversationId = activeChat?.conversationId;
 		beginPendingExchange(query);
 		setIsLoading(true);
-		void postChat({ query, followup: options?.followup, conversationId })
-			.then((next) => applyChatResponse(next, query))
+
+		const failWith = (error: unknown) => {
+			const message =
+				error instanceof ChatApiError
+					? error.message
+					: 'Something went wrong reaching Sammy. Is the chat API running?';
+			setPendingPrompt(null);
+			setPendingPreview('');
+			setPendingStage(null);
+			const turn = createConversationTurn(message, { query });
+			setTurns((current) => {
+				const nextTurns = appendConversationTurn(current, turn);
+				updateChat(activeChatId, nextTurns);
+				return nextTurns;
+			});
+		};
+
+		const buffered = () =>
+			postChat({ query, followup: options?.followup, conversationId }).then((next) =>
+				applyChatResponse(next, query),
+			);
+
+		const streamed = () => {
+			// Held in a local rather than read back out of state: the final payload arrives
+			// in the same tick as the last delta, and a state read there would be stale.
+			let previewed = 0;
+			return streamChat(
+				{ query, followup: options?.followup, conversationId },
+				{
+					onStatus: (stage) => setPendingStage(stage),
+					onPreview: (preview) => {
+						previewed = preview.length;
+						setPendingStage(null);
+						setPendingPreview(preview);
+					},
+				},
+			).then((next) => {
+				setPendingPreview('');
+				setPendingStage(null);
+				applyChatResponse(next, query, previewed || undefined);
+			});
+		};
+
+		void (streamingReady ? streamed() : buffered())
 			.catch((error: unknown) => {
-				const message =
-					error instanceof ChatApiError
-						? error.message
-						: 'Something went wrong reaching Sammy. Is the chat API running?';
-				setPendingPrompt(null);
-				const turn = createConversationTurn(message, { query });
-				setTurns((current) => {
-					const nextTurns = appendConversationTurn(current, turn);
-					updateChat(activeChatId, nextTurns);
-					return nextTurns;
-				});
+				// FALLING BACK IS NOT UNCONDITIONAL. StreamUnavailable means the socket
+				// failed BEFORE the server took the turn on - nothing written, nothing
+				// billed - which is what a blocked WebSocket port on campus wifi looks like,
+				// and asking the same question over HTTP is free of consequence. Anything
+				// else is the server having said something definite, or having already
+				// started work; retrying that would ask a question twice and bill it twice.
+				if (!(error instanceof StreamUnavailable)) throw error;
+				setPendingPreview('');
+				setPendingStage(null);
+				return buffered();
 			})
+			.catch(failWith)
 			.finally(() => setIsLoading(false));
 	};
 
@@ -610,6 +683,8 @@ export default function ChatApp() {
 								<ConversationFeed
 									turns={turns}
 									pendingPrompt={pendingPrompt}
+									pendingPreview={pendingPreview}
+									pendingStage={pendingStage}
 									introDelayMs={speechUsesIntro ? SPEECH_INTRO_DELAY_MS : 0}
 									onTypingChange={setIsTalking}
 									onPhaseChange={handlePhaseChange}

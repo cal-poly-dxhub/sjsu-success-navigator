@@ -10,6 +10,10 @@ import './ConversationFeed.css';
 type ConversationFeedProps = {
 	turns: ConversationTurn[];
 	pendingPrompt?: string | null;
+	/** Streamed prose for the pending exchange. A preview; the finished turn replaces it. */
+	pendingPreview?: string;
+	/** What the server says it is doing while the pending exchange has no prose yet. */
+	pendingStage?: string | null;
 	introDelayMs?: number;
 	onTypingChange?: (typing: boolean) => void;
 	onPhaseChange: (turnId: string, phase: RagPhase | 'done') => void;
@@ -19,6 +23,8 @@ type ConversationFeedProps = {
 export function ConversationFeed({
 	turns,
 	pendingPrompt = null,
+	pendingPreview = '',
+	pendingStage = null,
 	introDelayMs = 0,
 	onTypingChange,
 	onPhaseChange,
@@ -53,7 +59,13 @@ export function ConversationFeed({
 						onFollowup={onFollowup}
 					/>
 				))}
-				{pendingPrompt ? <PendingExchange prompt={pendingPrompt} /> : null}
+				{pendingPrompt ? (
+					<PendingExchange
+						prompt={pendingPrompt}
+						preview={pendingPreview}
+						stage={pendingStage}
+					/>
+				) : null}
 			</div>
 		</LayoutGroup>
 	);

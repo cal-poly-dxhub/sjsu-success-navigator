@@ -300,6 +300,26 @@ export async function signOut(): Promise<void> {
  * missing or expired. Called before every /chat fetch - see the expiry note above.
  */
 export function authorizationHeader(): Record<string, string> {
+	return { Authorization: `Bearer ${currentAccessToken()}` };
+}
+
+/**
+ * The access token itself, checked for expiry exactly as the header is.
+ *
+ * FOR THE WEBSOCKET, WHICH CANNOT SEND A HEADER. A browser gives no way to set
+ * `Authorization` on a WebSocket handshake, so the token goes in the query string, where
+ * API Gateway's $connect authorizer reads it as its identity source. The nicer-looking
+ * option - carrying it in `Sec-WebSocket-Protocol` - is not available: API Gateway accepts
+ * it as an identity source but never echoes the subprotocol back in its 101, and RFC 6455
+ * says a client whose requested subprotocol is not echoed must fail the connection.
+ * Measured against a deployed API, not assumed: Chrome fired `error` and never opened.
+ *
+ * The expiry check matters MORE here than on a fetch, not less. A rejected handshake gives
+ * JavaScript nothing to read - no status, no body, just an error event and a 1006 close -
+ * so a doomed connection is indistinguishable from a blocked port. Not opening it is the
+ * only way to tell the student something true.
+ */
+export function currentAccessToken(): string {
 	if (!session) {
 		throw new AuthError('Not signed in.');
 	}
@@ -307,5 +327,5 @@ export function authorizationHeader(): Record<string, string> {
 		session = null;
 		throw new AuthError('Your session expired. Please sign in again.');
 	}
-	return { Authorization: `Bearer ${session.accessToken}` };
+	return session.accessToken;
 }

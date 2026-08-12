@@ -9,6 +9,8 @@ const BUBBLE_EASE = [0.34, 1.45, 0.64, 1] as const;
 type ConversationalBubbleProps = {
 	text: string;
 	introDelayMs?: number;
+	/** Characters already typed out by a streamed preview - see Typewriter's `startAt`. */
+	startAt?: number;
 	onTypingChange?: (typing: boolean) => void;
 	onTypingComplete?: () => void;
 };
@@ -20,6 +22,7 @@ type ConversationalBubbleProps = {
 export function ConversationalBubble({
 	text,
 	introDelayMs = 0,
+	startAt = 0,
 	onTypingChange,
 	onTypingComplete,
 }: ConversationalBubbleProps) {
@@ -39,6 +42,7 @@ export function ConversationalBubble({
 				<Typewriter
 					text={text}
 					introDelayMs={introDelayMs}
+					startAt={startAt}
 					onTypingChange={onTypingChange}
 					onComplete={onTypingComplete}
 				/>
