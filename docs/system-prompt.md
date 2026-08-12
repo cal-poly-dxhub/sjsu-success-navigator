@@ -20,6 +20,21 @@ Per message guidelines
   cards reaches the student ahead of the answer it asks about. Ending on the cards is fine
 - use these <xml> formats
 
+Formatting
+- exactly two marks, bold and unordered bullets, available in the prose and
+  inside a card description alike
+- the ban is the load-bearing half: no headings, numbered lists, tables, images
+  or typed links, because nothing else renders and a typed link is a destination
+  nobody resolved, which is the one failure the ref contract exists to prevent
+- modelled, not only stated: a routing card ends its description with the
+  office's contacts as bullets, which is the half of the answer the 2026-08-10
+  eval kept dropping. The example carries an email and a location rather than a
+  phone number, because a digit typed into the prompt is a hardcoded number and
+  this file has none; the rule invites the phone all the same
+- KNOWN GAP: cards._first_field collapses whitespace, so newlines inside a
+  <desc> do not survive the parser and bullets there arrive as one line. Bold is
+  unaffected, and prose keeps its newlines. See docs/cards-v2.md, The two marks
+
 When to use a card
 - one card for every place you are sending them, and no destination lives only
   in the prose

@@ -159,6 +159,29 @@ the weighting does not change is a turn with no cards, where the prose is
 necessarily the whole answer; the prompt says so explicitly, because a teaser
 bubble above an empty space is this balance's failure mode.
 
+## The two marks
+
+The model may write **bold** and unordered bullet lists, in the prose and inside
+a `<desc>` alike, and nothing else: no headings, no ordered lists, no tables, no
+images, no typed links. The permission and the ban both live in the system
+prompt and are modelled in its examples.
+
+The ban is the half that matters. Only these two render, so anything else
+reaches the student as the literal characters the model typed, and a typed link
+is the sharper case: it is a destination nobody resolved, which is exactly what
+`ref` exists to make unrepresentable. Bullets earn their place on a routing card,
+where the office's email and phone go at the foot of the description, because a
+card that names the right office and leaves its number to be hunted down is the
+partial answer the 2026-08-10 eval kept scoring.
+
+**Newlines do not survive a `<desc>`.** `_first_field` collapses all whitespace
+to single spaces (so does `_capped`), which is what makes the caps measure the
+string the student reads. Bold is unaffected. A bulleted list is not: written
+inside a description it arrives at the frontend on one line, where a renderer
+keyed on line starts sees no list. Prose keeps its newlines and renders bullets
+correctly. Closing that gap is a change to this module's field reader, which the
+prompt cannot do from its side.
+
 ## Length caps
 
 Under v1 roughly a third of every card description was lost to silent clipping:

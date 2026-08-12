@@ -39,6 +39,8 @@ def _settings(**overrides):
 
 
 _EXAMPLE_BLOCK_RE = re.compile(r"<example>(.*?)</example>", re.DOTALL)
+# Mirrors cards._CARD_BLOCK_RE, kept local so this module imports nothing that reaches boto3.
+_CARD_BLOCK_RE = re.compile(r"<card\b[^>]*>.*?</card\s*>", re.DOTALL)
 
 
 def _examples(prompt: str, field: str) -> list[str]:
@@ -106,6 +108,74 @@ def test_the_card_descriptions_in_the_examples_carry_real_substance():
 
     for desc in descs:
         assert len(desc) >= 150, f"a thin <desc> example undercuts the weighting: {desc!r}"
+
+
+def test_the_prompt_permits_bold_and_bulleted_lists_in_both_places():
+    """Two marks, prose and <desc> alike. The permission has to be explicit in both places:
+    a model told only that the prose renders markup writes plain descriptions, and the
+    descriptions are where most of the reply lives."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "Formatting:" in prompt
+    assert "in the prose and inside a <desc> alike" in prompt
+    assert "**Bold**" in prompt
+    assert 'each line starting with "- "' in prompt
+
+
+def test_the_prompt_bans_the_constructs_nothing_renders():
+    """The load-bearing half. Only bold and unordered bullets reach the student as anything
+    other than the literal characters typed, and a typed link is worse than unrendered: it is
+    a destination nobody resolved, which is the failure the card ref contract exists to make
+    unrepresentable."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    for banned in ("no headings", "no numbered lists", "no tables", "no images"):
+        assert banned in prompt, f"the formatting ban dropped {banned!r}"
+    assert "no links written as bracketed text with a URL after it" in prompt
+
+
+_BANNED_MARKUP = (
+    ("a heading", re.compile(r"^\s{0,3}#{1,6}\s", re.MULTILINE)),
+    ("an ordered list", re.compile(r"^\s{0,3}\d+[.)]\s", re.MULTILINE)),
+    ("a table row", re.compile(r"^\s*\|.*\|", re.MULTILINE)),
+    ("an image", re.compile(r"!\[[^\]]*\]\(")),
+    ("a typed link", re.compile(r"\[[^\]]+\]\([^)]*\)")),
+)
+
+
+def test_no_worked_example_uses_a_construct_the_prompt_bans():
+    """Examples steer harder than instructions, so a ban contradicted by an example is a ban
+    the model will break. Scoped to the <example> blocks: the prose OUTSIDE them describes
+    the contract to the model and is not text it copies."""
+    for block in _EXAMPLE_BLOCK_RE.findall(build_system_prompt(_SETTINGS)):
+        for name, pattern in _BANNED_MARKUP:
+            match = pattern.search(block)
+            assert match is None, f"a worked example models {name}: {match.group(0)!r}"
+
+
+def test_the_examples_model_both_marks_rather_than_only_permitting_them():
+    """A construct that appears in no example is one the model uses at whatever rate its
+    training suggests. Bullets are modelled where they earn their place - the contact band of
+    a routing card, which is the half of the answer the 2026-08-10 eval kept losing."""
+    prompt = build_system_prompt(_SETTINGS)
+    descs = _examples(prompt, "desc")
+
+    assert any("**" in desc for desc in descs), "no example description models bold"
+    bulleted = [desc for desc in descs if "\n- " in desc]
+    assert bulleted, "no example description models a bulleted list"
+    assert any("@" in desc for desc in bulleted), (
+        "no example carries a contact in its bullets, which is what they are there for"
+    )
+
+    # And in the prose, which is the other half of "in both places".
+    prose = [
+        block.split("[your reply]", 1)[1]
+        for block in _EXAMPLE_BLOCK_RE.findall(prompt)
+        if "[your reply]" in block
+    ]
+    assert any("**" in _CARD_BLOCK_RE.sub("", part) for part in prose), (
+        "no example models bold in the prose"
+    )
 
 
 def test_the_prompt_never_withholds_cards_because_a_turn_is_a_follow_up():
