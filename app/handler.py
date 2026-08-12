@@ -25,15 +25,18 @@ Request order on POST /chat:
                    anything is billed.
   2. identity    - the Cognito `sub` from the JWT the API Gateway authorizer already
                    validated. Never from the body.
-  3. guardrail   - ApplyGuardrail(source=INPUT) on the BARE query, PROMPT_ATTACK only. A block
+  3. rate limit  - one atomic conditional write against this user's daily allowance
+                   (app/ratelimit.py). BEFORE the guardrail, so a refused turn spends one
+                   DynamoDB write and nothing billable - not even a guardrail text unit.
+  4. guardrail   - ApplyGuardrail(source=INPUT) on the BARE query, PROMPT_ATTACK only. A block
                    returns the configured message with no retrieval, no generation and
                    nothing written.
-  4. the turn    - write the student's message, read the previous N back, call the model,
+  5. the turn    - write the student's message, read the previous N back, call the model,
                    write the reply. HISTORY IS SERVER-AUTHORITATIVE (docs/accounts-and-storage.md,
                    Turn lifecycle): the client sends a conversation id and a message, and
                    nothing it sends can put words in a previous turn's mouth.
 
-Step 4 is the Bedrock Converse tool-use loop under Sammy's system prompt. Safety is the
+Step 5 is the Bedrock Converse tool-use loop under Sammy's system prompt. Safety is the
 model's triage call (decision, 2026-08-10): the prompt carries the emergency instruction and
 a keyed resource roster, the model emits a <safety> block, and app/safety.py resolves the
 keys into the fixed contact panel. There is no pre-model phrase gate.
@@ -67,6 +70,7 @@ from models import (
     StatementCard,
 )
 from orchestrator import run_chat
+from ratelimit import claim_turn
 from settings import load_settings
 from titles import generate_title
 from usage import TurnUsage
@@ -189,10 +193,10 @@ def _parse_body(event):
     return data if isinstance(data, dict) else None
 
 
-def _response(status_code, payload):
+def _response(status_code, payload, headers=None):
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", **(headers or {})},
         "body": json.dumps(payload),
     }
 
@@ -210,12 +214,42 @@ def user_id_from(event):
     exactly why ChatRequest has no user field: the convenience and the vulnerability are the
     same line of code.
     """
+    return _claim(event, "sub")
+
+
+def client_id_from(event):
+    """The `client_id` claim - WHICH APP CLIENT the caller signed in through. Or None.
+
+    Read from the same validated claim set as `sub` above, and it is there for the same
+    reason that set is trustworthy at all: a Cognito ACCESS token carries `client_id` rather
+    than `aud`, and API Gateway validates it against the authorizer's audience allowlist
+    before this function runs. That list is exactly two entries - the browser's client and
+    the eval harness's - so this claim is a validated statement about which of the two
+    callers this is, not a self-description.
+
+    Its ONE use is the rate limit's exemption list (app/ratelimit.py). It is never an
+    identity: `sub` is the identity, and a client id is shared by everybody who signs in
+    through that client. Nothing keys storage on this.
+
+    An ID token would carry `aud` and no `client_id`, so this reads None and the caller falls
+    under the limit. That is the safe direction.
+    """
+    return _claim(event, "client_id")
+
+
+def _claim(event, name):
+    """One claim from the JWT the authorizer validated, or None if it is missing or blank.
+
+    HTTP API payload 2.0 puts them at requestContext.authorizer.jwt.claims. Reading them
+    through one function keeps the "this came from the validated token, not the body" story
+    in a single place rather than repeated per claim.
+    """
     request_context = (event or {}).get("requestContext") or {}
     authorizer = request_context.get("authorizer") or {}
     claims = (authorizer.get("jwt") or {}).get("claims") or {}
-    sub = claims.get("sub")
-    if isinstance(sub, str) and sub.strip():
-        return sub.strip()
+    value = claims.get(name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
@@ -410,9 +444,9 @@ def run_turn(request, user_id, deadline, context=None, usage=None):
 
 
 def post_chat(event, context):
-    """POST /chat, in the order the module docstring fixes: validate, identity, guardrail,
-    turn. Safety handoffs come out of the loop - the model triages and emits keys, the
-    server resolves them into the fixed panel (app/safety.py)."""
+    """POST /chat, in the order the module docstring fixes: validate, identity, rate limit,
+    guardrail, turn. Safety handoffs come out of the loop - the model triages and emits keys,
+    the server resolves them into the fixed panel (app/safety.py)."""
     data = _parse_body(event)
     query = (data or {}).get("query")
     if not isinstance(query, str) or not query.strip():
@@ -441,13 +475,48 @@ def post_chat(event, context):
         logger.error("A /chat request carried no JWT sub claim; refusing it")
         return _response(401, {"error": "Unauthenticated."})
 
+    # STEP 3 - the per-user daily cap, BEFORE the guardrail screen and before the loop. That
+    # ordering is what makes this a spend guard: a refused turn costs one conditional
+    # DynamoDB write and nothing else, where a check after the guardrail would still bill a
+    # content-filter text unit for every message an over-limit account sent.
+    #
+    # NOTHING IS WRITTEN AND NO USAGE IS RETURNED. A refused turn is not a turn - it made no
+    # model call, screened nothing, and left no message - so unlike a guardrail block, which
+    # billed a screen and reports it, there is genuinely nothing to meter. The conversation
+    # id is not echoed either: no turn was recorded under it.
+    refusal = claim_turn(
+        store=STORE,
+        user_id=user_id,
+        # The app client the token was issued to, from the same validated claims as `sub`.
+        # The eval harness's machine client is exempt; a browser cannot claim that.
+        client_id=client_id_from(event),
+        settings=SETTINGS,
+    )
+    if refusal is not None:
+        return _response(
+            429,
+            {
+                "error": refusal.message,
+                "limit": refusal.limit,
+                # The reset INSTANT, not a duration and not a local time. The browser turns
+                # this into the student's own clock (frontend/src/lib/chatApi.ts), which is
+                # the only place that knows what timezone they are in.
+                "resetAt": refusal.reset_at_iso,
+                "retryAfterSeconds": refusal.retry_after_seconds,
+            },
+            # The standard header, for the clients that are not the browser: eval/run_eval.py
+            # and anything else driving this endpoint programmatically already understand it,
+            # and it costs nothing to be correct for them.
+            headers={"Retry-After": str(refusal.retry_after_seconds)},
+        )
+
     # The turn's billable tally, opened before the first thing that spends anything and
     # mutated in place from here down (app/usage.py). It rides out on the response so the
     # cost panel can price the conversation in front of the student from what this
     # conversation actually used, rather than from the sample average in config.yaml.
     usage = TurnUsage()
 
-    # STEP 3 - the guardrail screen. NOTHING IS WRITTEN ON A BLOCK, and that is deliberate:
+    # STEP 4 - the guardrail screen. NOTHING IS WRITTEN ON A BLOCK, and that is deliberate:
     # a blocked message never became a turn, and storing it would smuggle the attack text
     # into the history the model reads on the NEXT turn - past the screen that just caught
     # it. The conversation id is echoed unchanged, because no turn was recorded under it.
@@ -463,7 +532,7 @@ def post_chat(event, context):
             )
         )
 
-    # STEP 4 - the turn: write, read, model, write. Under both loop caps (iterations and
+    # STEP 5 - the turn: write, read, model, write. Under both loop caps (iterations and
     # wall clock).
     try:
         response = run_turn(

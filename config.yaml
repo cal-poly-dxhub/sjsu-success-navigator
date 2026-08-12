@@ -169,6 +169,33 @@ chat:
   # time, so a slow answer costs the title rather than the response.
   title_deadline_seconds: 3
 
+rate_limit:
+  # THE PER-USER COST FENCE. Everything else in http_api above bounds the SERVICE - a rate
+  # limit on the stage, a concurrency ceiling on the function - and none of it bounds one
+  # account: a single signed-in user can sit inside a 10 rps stage throttle all day and run
+  # up an unbounded bill on their own. An answered message costs roughly $0.026, so this
+  # number times that is the most any one person can spend in a day (~$1.56 at 60).
+  #
+  # Counted against the Cognito `sub` from the validated JWT, in the chat-history table's
+  # own user partition, expired by the table's existing TTL attribute. No new table and no
+  # new AWS resource (docs/accounts-and-storage.md, Storage).
+  #
+  # ATTEMPTS, NOT ANSWERS. The check and the increment happen BEFORE the guardrail screen
+  # and before the model loop, so a refused turn costs nothing - which is the only ordering
+  # that makes this a spend guard rather than a spend report. A turn that fails inside
+  # Bedrock still consumed its allowance, because it still cost money.
+  #
+  # THE GATE, and it is the cost panel's shape: absent or 0 means DISABLED. The stack then
+  # omits the environment variable entirely rather than passing a zero, so "off" is a
+  # config edit rather than a code change and there is no second value that means off.
+  #
+  # FIXED CALENDAR DAY IN UTC, not a sliding window. A sliding window needs a read before
+  # the write and buys precision that a spend guard has no use for. UTC rather than Pacific
+  # because a local-midnight boundary needs a timezone database inside the Lambda; the 429
+  # carries the reset INSTANT and the browser renders it in the student's own time, so what
+  # a student reads is local either way.
+  daily_message_limit: 60
+
 chat_history:
   # ONE DynamoDB table for conversation headers and messages, partitioned on the Cognito
   # `sub` (docs/accounts-and-storage.md, Storage). The name is the only knob: the key

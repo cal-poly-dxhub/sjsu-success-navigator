@@ -47,6 +47,16 @@ def _int(name: str, default: int) -> int:
         raise SettingsError(f"{name} must be an integer (got {raw!r}).") from exc
 
 
+def _id_set(name: str) -> frozenset[str]:
+    """A comma-separated list of ids from the environment, as a set. Empty when unset.
+
+    Empty is the SAFE direction here: the one thing this reads is the rate limit's exemption
+    list, so a missing or malformed value exempts nobody rather than everybody.
+    """
+    raw = os.environ.get(name) or ""
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
 def _float(name: str, default: float) -> float:
     raw = (os.environ.get(name) or "").strip()
     if not raw:
@@ -116,6 +126,22 @@ class Settings:
     # config.yaml, where each number is explained - the length caps are guards against a
     # runaway response, set far above the length the prompt steers toward, so a truncation
     # is a bug worth a WARNING rather than a daily event.
+    # THE PER-USER DAILY MESSAGE CAP (app/ratelimit.py). Zero means DISABLED, and that is
+    # the one behavioural default in this file that does NOT match config.yaml's value.
+    # It is deliberate: the stack omits the variable entirely when the cap is off, so an
+    # unset variable has to mean off. A default of 60 here would mean a wiring mistake
+    # silently invented a limit nobody configured, and every student would start being
+    # refused on their 61st message of the day with nothing in config.yaml to explain it.
+    #
+    # The opposite mistake - a dropped variable silently disabling the cap - is the one the
+    # infra test pins instead (test_the_chat_function_carries_the_daily_message_limit).
+    daily_message_limit: int = 0
+    # App client ids whose callers the cap does not apply to, from the JWT's `client_id`
+    # claim. Exactly one today: the eval harness's machine client, which fires the whole
+    # ground-truth set as one account. Empty by default, so a missing variable means
+    # "nobody is exempt" rather than a hole.
+    rate_limit_exempt_client_ids: frozenset[str] = frozenset()
+
     card_max_cards: int = 4
     card_max_retrieval_results: int = 6
     card_title_max_chars: int = 90
@@ -147,6 +173,9 @@ def load_settings() -> Settings:
         converse_deadline_seconds=_int("CONVERSE_DEADLINE_SECONDS", 22),
         title_max_chars=_int("TITLE_MAX_CHARS", 80),
         title_deadline_seconds=_int("TITLE_DEADLINE_SECONDS", 3),
+        # Absent means disabled, which is why the default is 0 and not config.yaml's 60.
+        daily_message_limit=_int("DAILY_MESSAGE_LIMIT", 0),
+        rate_limit_exempt_client_ids=_id_set("RATE_LIMIT_EXEMPT_CLIENT_IDS"),
         card_max_cards=_int("CARD_MAX_CARDS", 4),
         card_max_retrieval_results=_int("CARD_MAX_RETRIEVAL_RESULTS", 6),
         card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 90),

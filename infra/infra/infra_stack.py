@@ -77,6 +77,7 @@ from infra.config import (
     resolve_guardrail,
     resolve_http_api,
     resolve_knowledge_base,
+    resolve_rate_limit,
     resolve_request,
     resolve_retrieval,
     resolve_scraper,
@@ -307,6 +308,9 @@ class NavigatorStack(Stack):
         chat_cfg = resolve_chat(config)
         chat_history_cfg = resolve_chat_history(config)
         cards_cfg = resolve_cards(config)
+        # None when the per-user daily cap is off. The env var below is then omitted rather
+        # than set to zero, which is the same gate the cost panel uses on config.json.
+        daily_message_limit = resolve_rate_limit(config)
         cors_allow_origins = resolve_cors_allow_origins(config)
 
         # The embedding model, region-scoped. Titan v2 at 1024 dimensions is inherited from
@@ -1128,6 +1132,7 @@ class NavigatorStack(Stack):
                     "!history.py",
                     "!titles.py",
                     "!usage.py",
+                    "!ratelimit.py",
                 ],
             ),
             layers=[chat_deps_layer],
@@ -1211,6 +1216,20 @@ class NavigatorStack(Stack):
                 # second place the name is spelled, and the two would drift the moment
                 # either changed.
                 "CHAT_HISTORY_TABLE_NAME": chat_history_table.table_name,
+                # The PER-USER daily message cap, counted in that same table under the
+                # caller's own partition (app/ratelimit.py). Nothing else in this stack
+                # bounds what ONE account spends: the stage throttle and the reserved
+                # concurrency below both bound the service as a whole and cannot tell two
+                # students apart.
+                #
+                # PRESENT ONLY WHEN THE CAP IS ON. A disabled cap omits the variable rather
+                # than setting it to "0", so there is one spelling of off and the function
+                # reads an unset value as disabled without a second default to keep in step.
+                **(
+                    {"DAILY_MESSAGE_LIMIT": str(daily_message_limit)}
+                    if daily_message_limit is not None
+                    else {}
+                ),
             },
         )
         # The function retrieves from the KB at runtime, so it must not exist before the KB.
@@ -1412,6 +1431,34 @@ class NavigatorStack(Stack):
             id_token_validity=Duration.days(1),
             prevent_user_existence_errors=True,
             disable_o_auth=True,
+        )
+
+        # THE EVAL CLIENT IS EXEMPT FROM THE PER-USER DAILY MESSAGE CAP, and this is the
+        # wiring that says so. eval/run_eval.py fires all 82 ground-truth questions as ONE
+        # account at concurrency 3, so any per-user cap worth having is a cap the harness
+        # trips - and a tripped harness does not fail loudly, it records refusals as answers
+        # and the eval reads as a regression in the model.
+        #
+        # KEYED ON THE APP CLIENT, NOT THE USERNAME. A Cognito ACCESS token carries
+        # `client_id` (see the authorizer note below - it is why the audience list works at
+        # all), API Gateway has already validated that claim against the audience allowlist
+        # by the time the function runs, and the two clients are exactly the two callers.
+        # So the exemption rides on the same validated claim set as `sub` rather than on a
+        # name, and a browser cannot claim it: the web client is not in this list and the
+        # harness's client id is useless without the password flow only it enables.
+        #
+        # EXEMPT rather than "a far higher limit", deliberately. A number here would have to
+        # be kept above whatever eval/ground-truth.yaml grows to, and the failure of getting
+        # that wrong is silent in the same way. This is a machine account a human starts by
+        # hand with a password nobody else has; it is not the thing the cap exists to bound.
+        #
+        # Set AFTER the fact rather than in the environment block above, because the client
+        # is created here in section 5 and the function in section 4. add_environment keeps
+        # this a token reference to the real client id, so nothing is spelled twice.
+        #
+        # PLURAL, so a second machine client is a config edit rather than a code change.
+        chat_lambda.add_environment(
+            "RATE_LIMIT_EXEMPT_CLIENT_IDS", eval_client.user_pool_client_id
         )
 
         # CORS is locked to the origins in config.yaml, never "*" (rejected at synth).

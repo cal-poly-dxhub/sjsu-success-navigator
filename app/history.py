@@ -18,6 +18,12 @@ The item shapes are the doc's, not this module's invention:
     message               pk=USER#<sub>   sk=MSG#<convId>#<ulid>
                           role, text, cards (URLs already resolved), createdAt
 
+plus one item that is not history at all and shares the partition because the partition is
+already the user (app/ratelimit.py, and claim_message_allowance below):
+
+    rate counter          pk=USER#<sub>   sk=RATE#DAY#<YYYY-MM-DD>
+                          count, expiresAt
+
 `USER#<sub>` is built HERE from the JWT claim the handler read, never from anything in the
 request body. That is the whole isolation story for this table: a request cannot address
 another student's partition, because the partition is not something a request can name.
@@ -301,6 +307,77 @@ class ConversationStore:
             logger.exception(
                 "Could not update the conversation header; the message itself is stored"
             )
+
+    def claim_message_allowance(
+        self,
+        *,
+        user_id: str,
+        window_key: str,
+        limit: int,
+        expires_at: int,
+    ) -> bool:
+        """Take one message off this user's allowance for `window_key`. True if there was one.
+
+        ONE ATOMIC CONDITIONAL WRITE, and no read before it. The read-then-write shape - load
+        the count, compare it, write it back - is exactly the race this has to survive: two
+        turns in flight both read 59, both decide they are under the limit, and both write
+        60. DynamoDB serialises updates to a single item and evaluates the condition against
+        the value it holds at that moment, so the increment and the decision are the same
+        operation and the second of two concurrent requests at the limit sees the first one's
+        write.
+
+        The item lives in the CALLER'S OWN PARTITION under a third sort-key prefix:
+
+            rate counter   pk=USER#<sub>   sk=RATE#DAY#<window>   count, expiresAt
+
+        which is invisible to every read in this module - the conversation list is
+        begins_with('CONV#') and both message reads are begins_with('MSG#<convId>#') - so
+        nothing has to learn to skip it. `USER#<sub>` is built from the JWT claim like every
+        other key here, and the window key comes from the server clock, so THERE IS NOTHING
+        IN A REQUEST BODY THAT CAN REACH EITHER HALF of this item's identity.
+
+        `expiresAt` is the table's TTL attribute (epoch seconds), written with if_not_exists
+        so the value is fixed by the request that opened the window rather than rewritten on
+        every message. This is the first thing in the app to set it: a counter for a day that
+        has passed is meaningless, which makes it the one item kind whose retention is not
+        the open policy question the transcripts are (docs/accounts-and-storage.md, Open).
+
+        A conditional failure is NOT an error - it is the guard doing its job - so it comes
+        back as False. Every other failure is re-raised for the caller to decide about; see
+        app/ratelimit.py, which fails OPEN on them.
+        """
+        try:
+            self._table_resource().update_item(
+                Key={"pk": f"USER#{user_id}", "sk": f"RATE#DAY#{window_key}"},
+                UpdateExpression=(
+                    "SET #expiresAt = if_not_exists(#expiresAt, :expiresAt) "
+                    "ADD #count :one"
+                ),
+                # attribute_not_exists covers the first message of a window, where there is
+                # no count to compare. `<` and not `<=`: the count is how many have already
+                # been taken, so at limit-1 this is the last one allowed through and the
+                # write that follows makes it equal to the limit.
+                ConditionExpression=(
+                    "attribute_not_exists(#count) OR #count < :limit"
+                ),
+                # Both names go through ExpressionAttributeNames for the reason _touch_header
+                # gives: `count` is a DynamoDB reserved word, and a reserved word used bare
+                # fails the call at runtime rather than at synth.
+                ExpressionAttributeNames={
+                    "#count": "count",
+                    "#expiresAt": "expiresAt",
+                },
+                ExpressionAttributeValues={
+                    ":one": 1,
+                    ":limit": limit,
+                    ":expiresAt": expires_at,
+                },
+            )
+        except Exception as exc:
+            if _is_conditional_check_failure(exc):
+                return False
+            raise
+        return True
 
     def set_generated_title(
         self,

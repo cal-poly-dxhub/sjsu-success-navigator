@@ -965,3 +965,88 @@ def test_the_configured_pair_leaves_room_after_both(config):
         chat["converse_deadline_seconds"] + chat["title_deadline_seconds"]
         <= CHAT_LAMBDA_TIMEOUT_SECONDS - 2
     )
+
+
+# --- rate_limit ------------------------------------------------------------------------
+
+
+def test_the_committed_config_caps_a_user_at_a_defensible_daily_spend():
+    """The real config.yaml's per-user cap, priced against the real cost model.
+
+    THIS IS THE NUMBER THE FEATURE EXISTS TO MAKE TRUE, so it is checked against what a
+    question actually costs rather than asserted as a literal. The bound it guards is a
+    dropped or added digit: 600 messages a day is not a stricter reading of "60", it is a
+    ten-fold different promise about what one account can spend, and nothing else in this
+    repo would notice.
+    """
+    from infra.config import resolve_cost_model, resolve_rate_limit
+
+    config = load_config()
+    limit = resolve_rate_limit(config)
+    assert limit == 60
+
+    cost = resolve_cost_model(config)
+    measured, rates = cost["measured"], cost["rates"]
+    # Input tokens dominate: the retrieved passages ride in them and the loop resends the
+    # whole context on a second call.
+    per_question = (
+        measured["model_calls_avg"]
+        * measured["context_tokens_per_call_base"]
+        * rates["generation_input_per_1m"]
+        / 1_000_000
+        + measured["output_tokens_avg"] * rates["generation_output_per_1m"] / 1_000_000
+    )
+    assert 0.5 < limit * per_question < 5.0, (
+        f"one user can now spend ${limit * per_question:.2f} a day on generation alone"
+    )
+
+
+def test_a_zero_limit_is_off_rather_than_a_cap_of_zero():
+    """The gate: 0 resolves to None, the stack omits the variable, and the function reads an
+    absent variable as disabled. A literal 0 reaching the function would be a cap nobody can
+    send a message under."""
+    from infra.config import resolve_rate_limit
+
+    config = copy.deepcopy(load_config())
+    config["rate_limit"]["daily_message_limit"] = 0
+    assert resolve_rate_limit(config) is None
+    validate_config(config)
+
+
+def test_an_absent_rate_limit_block_is_also_off():
+    """A config.yaml with no rate_limit at all is a valid config - a closed pilot where every
+    account is known is a decision, not a missing section."""
+    from infra.config import resolve_rate_limit
+
+    config = copy.deepcopy(load_config())
+    del config["rate_limit"]
+    assert resolve_rate_limit(config) is None
+    validate_config(config)
+
+
+def test_a_negative_limit_is_rejected_rather_than_read_as_off():
+    """A negative limit is not another spelling of disabled. `count < :limit` is false on the
+    first message of the day, so every student is refused their first question - and it reads
+    in config.yaml like a feature that is switched off rather than the outage it is."""
+    from infra.config import resolve_rate_limit
+
+    config = copy.deepcopy(load_config())
+    config["rate_limit"]["daily_message_limit"] = -1
+    with pytest.raises(ValueError, match="must not be negative"):
+        resolve_rate_limit(config)
+
+
+@pytest.mark.parametrize("bad", ["60", 60.5, True, None])
+def test_a_non_integer_limit_is_rejected(bad):
+    """`true` is the one worth naming: booleans are ints in Python, so a flag pasted here
+    would sail through an isinstance check and resolve to a cap of exactly one message a
+    day."""
+    from infra.config import resolve_rate_limit
+
+    config = copy.deepcopy(load_config())
+    config["rate_limit"]["daily_message_limit"] = bad
+    if bad is None:
+        assert resolve_rate_limit(config) is None
+    else:
+        with pytest.raises(ValueError, match="must be an integer"):
+            resolve_rate_limit(config)
