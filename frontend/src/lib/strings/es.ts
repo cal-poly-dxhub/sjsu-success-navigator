@@ -27,6 +27,11 @@ export const es: Strings = {
 	welcome:
 		'¡Hola! Soy Sammy. Pregúntame lo que quieras sobre los recursos del campus de SJSU: tutorías, asesoría académica, bienestar, ayuda con la vivienda y más.',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Sammy, la mascota de los SJSU Spartans',
+	expandSidebar: 'Expandir la barra lateral',
+	collapseSidebar: 'Contraer la barra lateral',
+
 	newChat: 'Chat nuevo',
 	chatHistory: 'Historial de chats',
 	recentChats: 'Chats recientes',
@@ -109,7 +114,6 @@ export const es: Strings = {
 	languageUnreviewed: 'Traducción automática. SJSU aún no ha revisado esta redacción.',
 
 	costSection: 'Cuánto cuesta funcionar',
-	costEstimateTag: 'Estimación',
 	costThisConversation: 'Esta conversación',
 	costMessagesSoFar: (messages: string, plural: boolean) =>
 		`${messages} ${plural ? 'mensajes' : 'mensaje'} hasta ahora, con precio calculado a partir de los tokens que realmente usaron.`,

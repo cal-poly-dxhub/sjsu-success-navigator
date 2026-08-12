@@ -21,6 +21,11 @@ export const zhHans: Strings = {
 	welcome:
 		'你好！我是 Sammy。关于 SJSU 校园资源，你可以随便问我：辅导、学业咨询、身心健康、住房帮助等等。',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Sammy，SJSU Spartans 的吉祥物',
+	expandSidebar: '展开侧边栏',
+	collapseSidebar: '收起侧边栏',
+
 	newChat: '新对话',
 	chatHistory: '对话记录',
 	recentChats: '最近的对话',
@@ -100,7 +105,6 @@ export const zhHans: Strings = {
 	languageUnreviewed: '机器翻译。SJSU 尚未审校此措辞。',
 
 	costSection: '运行成本',
-	costEstimateTag: '估算',
 	costThisConversation: '本次对话',
 	costMessagesSoFar: (messages: string) =>
 		`目前 ${messages} 条消息，按实际使用的 token 计价。`,

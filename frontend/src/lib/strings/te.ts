@@ -21,6 +21,11 @@ export const te: Strings = {
 	welcome:
 		'నమస్కారం! నేను Sammy. SJSU క్యాంపస్ వనరుల గురించి నన్ను ఏదైనా అడగండి: ట్యూటరింగ్, అడ్వైజింగ్, ఆరోగ్యం, వసతి సహాయం, ఇంకా చాలా.',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Sammy, SJSU Spartans శుభంకరం',
+	expandSidebar: 'సైడ్‌బార్‌ను విస్తరించండి',
+	collapseSidebar: 'సైడ్‌బార్‌ను కుదించండి',
+
 	newChat: 'కొత్త చాట్',
 	chatHistory: 'చాట్ చరిత్ర',
 	recentChats: 'ఇటీవలి చాట్‌లు',
@@ -101,7 +106,6 @@ export const te: Strings = {
 	languageUnreviewed: 'యంత్ర అనువాదం. SJSU ఇంకా ఈ పదజాలాన్ని సమీక్షించలేదు.',
 
 	costSection: 'దీన్ని నడపడానికి అయ్యే ఖర్చు',
-	costEstimateTag: 'అంచనా',
 	costThisConversation: 'ఈ సంభాషణ',
 	costMessagesSoFar: (messages: string) =>
 		`ఇప్పటివరకు ${messages} సందేశాలు, నిజంగా వాడిన టోకెన్ల ఆధారంగా.`,

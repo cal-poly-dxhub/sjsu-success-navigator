@@ -21,6 +21,11 @@ export const ja: Strings = {
 	welcome:
 		'こんにちは！Sammy です。SJSU のキャンパスリソースについて何でも聞いてください。チュータリング、履修相談、健康サポート、住まいの支援など、いろいろ案内できます。',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'SJSU Spartans のマスコット、Sammy',
+	expandSidebar: 'サイドバーを展開する',
+	collapseSidebar: 'サイドバーを折りたたむ',
+
 	newChat: '新しいチャット',
 	chatHistory: 'チャット履歴',
 	recentChats: '最近のチャット',
@@ -101,7 +106,6 @@ export const ja: Strings = {
 	languageUnreviewed: '機械翻訳です。SJSU はまだこの表現を確認していません。',
 
 	costSection: '運用にかかる費用',
-	costEstimateTag: '概算',
 	costThisConversation: 'この会話',
 	costMessagesSoFar: (messages: string) =>
 		`これまでに ${messages} 件のメッセージ。実際に使われたトークンから算出しています。`,

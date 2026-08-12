@@ -21,6 +21,11 @@ export const pa: Strings = {
 	welcome:
 		'ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ Sammy ਹਾਂ। SJSU ਕੈਂਪਸ ਦੇ ਸਰੋਤਾਂ ਬਾਰੇ ਮੈਨੂੰ ਕੁਝ ਵੀ ਪੁੱਛੋ: ਟਿਊਟਰਿੰਗ, ਸਲਾਹ, ਸਿਹਤ, ਰਿਹਾਇਸ਼ ਵਿੱਚ ਮਦਦ, ਅਤੇ ਹੋਰ ਬਹੁਤ ਕੁਝ।',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Sammy, SJSU Spartans ਦਾ ਸ਼ੁਭੰਕਰ',
+	expandSidebar: 'ਸਾਈਡਬਾਰ ਫੈਲਾਓ',
+	collapseSidebar: 'ਸਾਈਡਬਾਰ ਸਮੇਟੋ',
+
 	newChat: 'ਨਵੀਂ ਗੱਲਬਾਤ',
 	chatHistory: 'ਗੱਲਬਾਤ ਦਾ ਇਤਿਹਾਸ',
 	recentChats: 'ਹਾਲੀਆ ਗੱਲਬਾਤਾਂ',
@@ -101,7 +106,6 @@ export const pa: Strings = {
 	languageUnreviewed: 'ਮਸ਼ੀਨੀ ਅਨੁਵਾਦ। SJSU ਨੇ ਅਜੇ ਇਸ ਸ਼ਬਦਾਵਲੀ ਦੀ ਜਾਂਚ ਨਹੀਂ ਕੀਤੀ।',
 
 	costSection: 'ਇਸਨੂੰ ਚਲਾਉਣ ਦੀ ਲਾਗਤ',
-	costEstimateTag: 'ਅੰਦਾਜ਼ਾ',
 	costThisConversation: 'ਇਹ ਗੱਲਬਾਤ',
 	costMessagesSoFar: (messages: string) =>
 		`ਹੁਣ ਤੱਕ ${messages} ਸੁਨੇਹੇ, ਅਸਲ ਵਿੱਚ ਵਰਤੇ ਗਏ ਟੋਕਨਾਂ ਦੇ ਹਿਸਾਬ ਨਾਲ।`,

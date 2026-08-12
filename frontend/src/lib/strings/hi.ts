@@ -22,6 +22,11 @@ export const hi: Strings = {
 	welcome:
 		'नमस्ते! मैं Sammy हूँ। SJSU कैंपस के संसाधनों के बारे में मुझसे कुछ भी पूछें: ट्यूटरिंग, एडवाइजिंग, स्वास्थ्य, आवास सहायता, और भी बहुत कुछ।',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Sammy, SJSU Spartans का शुभंकर',
+	expandSidebar: 'साइडबार विस्तृत करें',
+	collapseSidebar: 'साइडबार संक्षिप्त करें',
+
 	newChat: 'नई चैट',
 	chatHistory: 'चैट इतिहास',
 	recentChats: 'हाल की चैट',
@@ -102,7 +107,6 @@ export const hi: Strings = {
 	languageUnreviewed: 'मशीन से अनुवादित। SJSU ने अभी इस भाषा की जाँच नहीं की है।',
 
 	costSection: 'इसे चलाने की लागत',
-	costEstimateTag: 'अनुमान',
 	costThisConversation: 'यह बातचीत',
 	costMessagesSoFar: (messages: string) =>
 		`अब तक ${messages} संदेश, उनके वास्तव में उपयोग किए गए टोकन के आधार पर।`,

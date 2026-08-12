@@ -32,6 +32,21 @@ export const en = {
 	welcome:
 		"Hi! I'm Sammy. Ask me anything about SJSU campus resources: tutoring, advising, wellness, housing help, and more.",
 
+	// Sidebar chrome: the header, and the rail it collapses to.
+	//
+	// `brandName` is the product's name and stays in English in every file, the same way
+	// `appName` above does. It is a key rather than a literal in the component so that
+	// staying English is a decision a reviewer can see and reverse per language, which is
+	// not true of a string baked into the JSX.
+	brandName: 'SJSU Student Success',
+	// Read aloud in place of his face, so it says who he is rather than naming a file. The
+	// two proper nouns stay as SJSU publishes them; the sentence around them does not.
+	sammyAlt: 'Sammy, the SJSU Spartans mascot',
+	// Both the accessible name and the tooltip on the one control, which is why each of
+	// these is used twice. They name what the click DOES, not what the sidebar is now.
+	expandSidebar: 'Expand sidebar',
+	collapseSidebar: 'Collapse sidebar',
+
 	// Sidebar.
 	newChat: 'New chat',
 	chatHistory: 'Chat history',
@@ -119,7 +134,6 @@ export const en = {
 
 	// The cost breakdown, nested inside settings.
 	costSection: 'What this costs to run',
-	costEstimateTag: 'Estimate',
 	costThisConversation: 'This conversation',
 	costMessagesSoFar: (messages: string, plural: boolean) =>
 		`${messages} ${plural ? 'messages' : 'message'} so far, priced from the tokens they actually used.`,

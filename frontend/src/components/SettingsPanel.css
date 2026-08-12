@@ -195,18 +195,6 @@
 	background: #f7f8f9;
 }
 
-.settings-section__tag {
-	font-size: 0.62rem;
-	font-weight: 700;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: #7a6410;
-	background: rgba(249, 194, 11, 0.22);
-	border: 1px solid rgba(201, 151, 0, 0.45);
-	border-radius: 999px;
-	padding: 0.16rem 0.5rem;
-}
-
 .settings-section__body {
 	padding: 0 1rem 1rem;
 	border-top: 1px solid #eef0f3;

@@ -21,6 +21,11 @@ export const ko: Strings = {
 	welcome:
 		'안녕하세요! 저는 Sammy예요. SJSU 캠퍼스 자원에 대해 무엇이든 물어보세요. 튜터링, 학업 상담, 건강, 주거 지원 등 다양하게 도와드릴게요.',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'SJSU Spartans 마스코트 Sammy',
+	expandSidebar: '사이드바 펼치기',
+	collapseSidebar: '사이드바 접기',
+
 	newChat: '새 대화',
 	chatHistory: '대화 기록',
 	recentChats: '최근 대화',
@@ -100,7 +105,6 @@ export const ko: Strings = {
 	languageUnreviewed: '기계 번역이에요. SJSU가 아직 이 표현을 검토하지 않았어요.',
 
 	costSection: '운영 비용',
-	costEstimateTag: '추정치',
 	costThisConversation: '이 대화',
 	costMessagesSoFar: (messages: string) =>
 		`지금까지 ${messages}개의 메시지, 실제 사용된 토큰 기준으로 계산했어요.`,

@@ -175,9 +175,13 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 									// toggle is a real focusable control, and there is no state
 									// here to get out of step with what is on screen.
 									<details className="settings-section">
+										{/* The title alone. An amber "ESTIMATE" pill used to sit beside it;
+										    the caveat is already made properly at the foot of the
+										    breakdown ("These are estimates, not a bill"), and a warning
+										    badge on a closed row read as something being wrong rather
+										    than as a note about precision. */}
 										<summary className="settings-section__summary">
 											<span>{t.costSection}</span>
-											<span className="settings-section__tag">{t.costEstimateTag}</span>
 										</summary>
 										<div className="settings-section__body">
 											<CostBreakdown model={costModel} usage={usage} />

@@ -21,6 +21,11 @@ export const tl: Strings = {
 	welcome:
 		'Kumusta! Ako si Sammy. Itanong mo sa akin ang kahit ano tungkol sa mga campus resource ng SJSU: tutoring, advising, wellness, tulong sa tirahan, at marami pang iba.',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Si Sammy, ang mascot ng SJSU Spartans',
+	expandSidebar: 'Palawakin ang sidebar',
+	collapseSidebar: 'Itiklop ang sidebar',
+
 	newChat: 'Bagong chat',
 	chatHistory: 'Kasaysayan ng chat',
 	recentChats: 'Mga kamakailang chat',
@@ -103,7 +108,6 @@ export const tl: Strings = {
 	languageUnreviewed: 'Isinalin ng makina. Hindi pa nasusuri ng SJSU ang pananalitang ito.',
 
 	costSection: 'Gastos sa pagpapatakbo nito',
-	costEstimateTag: 'Tantiya',
 	costThisConversation: 'Ang usapang ito',
 	costMessagesSoFar: (messages: string, plural: boolean) =>
 		`${messages} ${plural ? 'na mensahe' : 'na mensahe'} sa ngayon, presyong batay sa mga token na talagang nagamit.`,

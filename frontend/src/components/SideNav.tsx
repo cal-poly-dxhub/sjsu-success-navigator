@@ -28,13 +28,16 @@ const TITLE_MAX_CHARS = 80;
  * it used to be.
  */
 function SammyMark({ className }: { className: string }) {
+	// Above the early return, or the second render of a failed image would call one hook
+	// fewer than the first.
+	const t = useStrings();
 	const [failed, setFailed] = useState(false);
 	if (failed) return null;
 	return (
 		<img
 			className={className}
 			src="/sammy-head.png"
-			alt="Sammy, the SJSU Spartans mascot"
+			alt={t.sammyAlt}
 			// The intrinsic size, so the box is reserved from the first frame and the title
 			// does not jump sideways when the picture arrives.
 			width={234}
@@ -214,9 +217,9 @@ function NavContent({
 					type="button"
 					className="side-nav__rail-brand"
 					onClick={onExpand}
-					aria-label="Expand sidebar"
+					aria-label={t.expandSidebar}
 					aria-expanded={false}
-					title="Expand sidebar"
+					title={t.expandSidebar}
 				>
 					{/* Both live in one grid cell and cross-fade: hovering ANYWHERE on the rail
 					    turns his face into the control (see SideNav.css), which is the whole
@@ -251,7 +254,7 @@ function NavContent({
 					    name is one string, so there is nothing left to fix into a single reading. */}
 					<SammyMark className="side-nav__mark" />
 					<span className="side-nav__brand-copy">
-						<strong>SJSU Student Success</strong>
+						<strong>{t.brandName}</strong>
 					</span>
 				</div>
 
@@ -260,9 +263,9 @@ function NavContent({
 						type="button"
 						className="side-nav__collapse"
 						onClick={onCollapse}
-						aria-label="Collapse sidebar"
+						aria-label={t.collapseSidebar}
 						aria-expanded
-						title="Collapse sidebar"
+						title={t.collapseSidebar}
 					>
 						<PanelIcon />
 					</button>

@@ -22,6 +22,11 @@ export const vi: Strings = {
 	welcome:
 		'Xin chào! Mình là Sammy. Bạn có thể hỏi mình bất cứ điều gì về các nguồn hỗ trợ trong khuôn viên SJSU: dạy kèm, cố vấn học tập, sức khỏe tinh thần, hỗ trợ chỗ ở và nhiều hơn nữa.',
 
+	brandName: 'SJSU Student Success',
+	sammyAlt: 'Sammy, linh vật của SJSU Spartans',
+	expandSidebar: 'Mở rộng thanh bên',
+	collapseSidebar: 'Thu gọn thanh bên',
+
 	newChat: 'Cuộc trò chuyện mới',
 	chatHistory: 'Lịch sử trò chuyện',
 	recentChats: 'Trò chuyện gần đây',
@@ -105,7 +110,6 @@ export const vi: Strings = {
 	languageUnreviewed: 'Dịch tự động. SJSU chưa duyệt lại cách diễn đạt này.',
 
 	costSection: 'Chi phí vận hành',
-	costEstimateTag: 'Ước tính',
 	costThisConversation: 'Cuộc trò chuyện này',
 	costMessagesSoFar: (messages: string) =>
 		`${messages} tin nhắn cho đến nay, được tính theo số token thực sự đã dùng.`,
