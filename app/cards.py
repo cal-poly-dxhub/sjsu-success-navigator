@@ -118,6 +118,56 @@ _ANY_KNOWN_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The same vocabulary again, as literals rather than a pattern, for preview_safe_prefix
+# below. Derived from one tuple so the two can never come to disagree about what one of
+# this contract's tags looks like.
+_TAG_NAMES = ("card", "title", "desc", "followup", "safety")
+_TAG_OPENINGS = tuple(
+    f"<{slash}{name}" for name in _TAG_NAMES for slash in ("", "/")
+)
+
+
+def preview_safe_prefix(text: str) -> str:
+    """The leading run of a PARTIAL reply that is certainly outside this contract's tags.
+
+    THIS IS NOT A PARSER AND MUST NEVER BECOME ONE. It answers one question - "where does
+    the part I can safely show a student end?" - and it answers it by stopping, never by
+    interpreting. Nothing it returns is used to build a card, resolve a ref, decide a safety
+    handoff or apply a cap; all of that comes off the COMPLETE reply in parse_model_response,
+    which is the only thing in this file that reads a tag for meaning.
+
+    It exists because the model writes its whole turn as one text stream - lead-in prose,
+    then `<card>` blocks, then any closing prose - so a streaming preview that pushed raw
+    deltas would type `<card ref="2">` onto the screen. Stopping at the first tag makes the
+    preview exactly the lead-in, which is the half of the reply the student reads first and
+    the half the final payload calls `conversationalText`.
+
+    APPEND-ONLY, which is what makes it safe to stream. The text only ever grows, and this
+    only ever stops earlier or later in it, so the returned prefix never shrinks and never
+    rewrites what was already sent. A caller emits `preview_safe_prefix(accumulated)` minus
+    what it has already pushed.
+
+    A `<` that is not one of ours does NOT stop the preview - "under <15 units" streams
+    intact - because the guarantee needed is only that OUR tags never surface, exactly as
+    _ANY_KNOWN_TAG_RE's note says. A trailing partial (`...see <ca`) DOES stop it, because
+    the rest of that tag has not arrived yet and might.
+
+    Deliberately no dash normalisation and no capping. Those belong to the finished reply
+    and are applied there, once; doing them here would be the duplication this contract's
+    whole streaming design exists to avoid, and a substitution near the end of a partial
+    string could rewrite text already on screen.
+    """
+    for index, character in enumerate(text):
+        if character != "<":
+            continue
+        rest = text[index:].lower()
+        for opening in _TAG_OPENINGS:
+            # Either a tag starts here, or `rest` is a partial that could still become one
+            # once more of the stream arrives.
+            if rest.startswith(opening) or opening.startswith(rest):
+                return text[:index]
+    return text
+
 
 @dataclass(frozen=True)
 class SourceOption:

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 
 import boto3
 from botocore.config import Config
@@ -82,12 +82,33 @@ def _bedrock_client(region: str):
     return _BEDROCK_CLIENT
 
 
+class StreamSink(Protocol):
+    """Where a streaming turn's PREVIEW goes. Implemented by app/streaming.py.
+
+    Two methods and neither of them returns anything the loop reads back, which is the
+    point: streaming is an output side effect bolted to the side of this loop, never an
+    input to it. Remove the sink and the turn produces the identical ChatResponse.
+
+    `text` receives the WHOLE accumulated reply so far, every time, rather than the newest
+    fragment - so the sink owns the question of how much of it is safe to show and how much
+    has already been sent, and this module never has to hold a second idea of either.
+    """
+
+    def status(self, stage: str) -> None:
+        """Something is happening that is not text arriving - a retrieval, say."""
+
+    def text(self, accumulated: str) -> None:
+        """The reply as far as the model has written it."""
+
+
 def run_chat(
     request: ChatRequest,
     settings: Settings,
     history: Sequence[StoredMessage] = (),
     deadline: float | None = None,
     usage: TurnUsage | None = None,
+    stream: "StreamSink | None" = None,
+    guardrail_config: dict[str, Any] | None = None,
 ) -> ChatResponse:
     """Run the Converse tool-use loop under TWO independent caps.
 
@@ -114,6 +135,21 @@ def run_chat(
     cap: a turn that hits the deadline on its third call still billed three, and a tally
     riding on the response would be lost on exactly the paths worth counting. Passing None
     counts nothing, which is what the loop's own tests do.
+
+    `stream` IS THE ONLY DIFFERENCE BETWEEN THE TWO TRANSPORTS, and it is deliberately the
+    smallest one that could work. Passing None runs `Converse` exactly as it always has -
+    POST /chat's path is byte-identical and is under a hard "keeps working unchanged"
+    constraint. Passing a sink runs `ConverseStream` instead and pushes the reply out as it
+    is written; everything after the model call - the tool loop, the deadline, the iteration
+    cap, the exit through _response_from_text and therefore every card, cap, dash and safety
+    decision - is the same code reading the same complete text. There is no second parser
+    and no second exit, which is what makes "the streamed turn renders identically to the
+    buffered one" a property of the structure rather than a thing to keep testing.
+
+    `guardrail_config` attaches this stack's guardrail to the model call. None is the
+    default and the deployed setting; when it is set it is always `sync` mode (the caller
+    cannot spell `async` - see app/streaming.py), because async releases text to the student
+    before it has been scanned, which is not a screen.
     """
     client = _bedrock_client(settings.bedrock_region)
 
@@ -128,7 +164,7 @@ def run_chat(
     last_text = ""
 
     _prime_first_search(messages, sources=sources, request=request,
-                        settings=settings, deadline=deadline, usage=usage)
+                        settings=settings, deadline=deadline, usage=usage, stream=stream)
 
     for iteration in range(settings.max_converse_iterations):
         # Checked BEFORE the call, not after: the point is never to start a Converse
@@ -147,18 +183,32 @@ def run_chat(
 
         logger.info("Converse iteration %s for query=%r", iteration + 1, request.query[:80])
 
-        response = client.converse(
-            modelId=settings.generation_model_id,
-            system=[{"text": system_prompt}],
-            messages=messages,
-            toolConfig=TOOL_CONFIG,
-            inferenceConfig={
+        call = {
+            "modelId": settings.generation_model_id,
+            "system": [{"text": system_prompt}],
+            "messages": messages,
+            "toolConfig": TOOL_CONFIG,
+            "inferenceConfig": {
                 "maxTokens": settings.generation_max_tokens,
                 "temperature": settings.generation_temperature,
             },
-        )
+        }
+        if guardrail_config is not None:
+            call["guardrailConfig"] = guardrail_config
+
+        # ONE SHAPE OUT OF BOTH CALLS. _converse_streaming reassembles the event stream into
+        # the same {"output": {"message": ...}, "stopReason": ..., "usage": ...} dict that
+        # Converse returns, so nothing below this line knows which transport ran.
+        if stream is None:
+            response = client.converse(**call)
+        else:
+            response = _converse_streaming(client, call, stream)
 
         if usage is not None:
+            # TAKEN FROM THE STREAM'S OWN METADATA rather than recounted, which is what keeps
+            # the cost panel honest across both paths: ConverseStream reports usage in a
+            # `metadata` event carrying the same inputTokens/outputTokens Converse returns,
+            # and _converse_streaming puts it where record_model_call already looks.
             usage.record_model_call(response)
 
         assistant_message = response["output"]["message"]
@@ -189,6 +239,7 @@ def run_chat(
                     request=request,
                     settings=settings,
                     usage=usage,
+                    stream=stream,
                 )
             )
 
@@ -208,6 +259,132 @@ def run_chat(
     return _response_from_text(last_text, sources, request.query, settings)
 
 
+def _converse_streaming(
+    client,
+    call: dict[str, Any],
+    stream: StreamSink,
+) -> dict[str, Any]:
+    """Run ConverseStream and hand back what Converse would have returned.
+
+    THE WHOLE JOB IS TO MAKE STREAMING INVISIBLE UPSTAIRS. The caller gets the same dict
+    shape - output.message, stopReason, usage - so the tool loop, the card parser and the
+    response builder are shared rather than mirrored. The only thing that leaks out is the
+    preview, and it leaves through `stream`, which nothing reads back.
+
+    THE PREVIEW IS PROSE AND ONLY PROSE. Text deltas accumulate and go to the sink; toolUse
+    input deltas do not, and neither would anything else - the sink is handed the accumulated
+    TEXT and decides for itself how much of it is safe to show (cards.preview_safe_prefix).
+    A tool call therefore streams nothing at all, which is right: a search is not an answer,
+    and the status event above it is what tells the student something is happening.
+
+    A SINK FAILURE MUST NOT COST THE ANSWER. Every push is wrapped, because the sink pushes
+    to a socket the student may have closed: the turn is finished and persisted either way
+    (see app/streaming.py's note on GoneException), and a broken pipe is not a reason to
+    abandon a reply that is already paid for.
+
+    Bedrock's event names are the contract here, so an unknown event is ignored rather than
+    treated as an error - a new event type appearing in the stream must not fail a turn.
+    """
+    response = client.converse_stream(**call)
+
+    content: list[dict[str, Any]] = []
+    # contentBlockIndex -> the partial block being assembled. A dict rather than a list
+    # because the indices are the stream's, and nothing promises they arrive in order.
+    blocks: dict[int, dict[str, Any]] = {}
+    accumulated = ""
+    stop_reason = None
+    reported_usage = None
+
+    def push(text: str) -> None:
+        try:
+            stream.text(text)
+        except Exception:
+            logger.warning("Could not push a streamed delta; finishing the turn anyway",
+                           exc_info=True)
+
+    for event in response["stream"]:
+        if "contentBlockStart" in event:
+            start = event["contentBlockStart"]
+            index = start.get("contentBlockIndex", 0)
+            tool_use = (start.get("start") or {}).get("toolUse")
+            if tool_use:
+                blocks[index] = {
+                    "toolUse": {
+                        "toolUseId": tool_use.get("toolUseId"),
+                        "name": tool_use.get("name"),
+                        # Accumulated as a STRING and parsed at the close: Bedrock streams a
+                        # tool's arguments as partial JSON fragments, so no prefix of it is
+                        # valid JSON until the last one arrives.
+                        "_input_json": "",
+                    }
+                }
+            continue
+
+        if "contentBlockDelta" in event:
+            delta_event = event["contentBlockDelta"]
+            index = delta_event.get("contentBlockIndex", 0)
+            delta = delta_event.get("delta") or {}
+            if "text" in delta:
+                block = blocks.setdefault(index, {"text": ""})
+                block["text"] = block.get("text", "") + delta["text"]
+                accumulated += delta["text"]
+                push(accumulated)
+            elif "toolUse" in delta:
+                block = blocks.get(index)
+                if block and "toolUse" in block:
+                    block["toolUse"]["_input_json"] += delta["toolUse"].get("input", "")
+            continue
+
+        if "contentBlockStop" in event:
+            index = event["contentBlockStop"].get("contentBlockIndex", 0)
+            block = blocks.pop(index, None)
+            if block is not None:
+                content.append(_finished_block(block))
+            continue
+
+        if "messageStop" in event:
+            stop_reason = event["messageStop"].get("stopReason")
+            continue
+
+        if "metadata" in event:
+            reported_usage = event["metadata"].get("usage")
+            continue
+
+    # Any block the stream never closed. Keeping it is the same instinct the zero-card
+    # fallback has: a truncated reply reaches the student as the model's words rather than
+    # vanishing because a stop event went missing.
+    for index in sorted(blocks):
+        content.append(_finished_block(blocks[index]))
+
+    return {
+        "output": {"message": {"role": "assistant", "content": content}},
+        "stopReason": stop_reason,
+        "usage": reported_usage,
+    }
+
+
+def _finished_block(block: dict[str, Any]) -> dict[str, Any]:
+    """One assembled content block, in the shape Converse would have returned it.
+
+    A tool block's arguments arrived as partial JSON; they are parsed once, here. UNPARSEABLE
+    ARGUMENTS BECOME AN EMPTY INPUT rather than an exception: _run_tool already defaults a
+    missing query to the student's own message, so the search still happens and the turn
+    still answers, where a raise would lose a reply the model had already written.
+    """
+    if "toolUse" not in block:
+        return {"text": block.get("text", "")}
+
+    tool_use = dict(block["toolUse"])
+    raw = tool_use.pop("_input_json", "") or ""
+    try:
+        tool_use["input"] = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        logger.warning("A streamed toolUse carried unparseable input; searching on the "
+                       "student's own message instead")
+        tool_use["input"] = {}
+    return {"toolUse": tool_use}
+
+
 def _prime_first_search(
     messages: list[dict[str, Any]],
     *,
@@ -216,6 +393,7 @@ def _prime_first_search(
     settings: Settings,
     deadline: float,
     usage: TurnUsage | None = None,
+    stream: StreamSink | None = None,
 ) -> None:
     """Run the first retrieval server-side and append it as a completed tool exchange.
 
@@ -237,6 +415,7 @@ def _prime_first_search(
     if time.monotonic() >= deadline:
         return
     query = request.query.strip()
+    _tell(stream, "retrieving")
     try:
         chunks = retrieve_chunks(query, settings)
         # Counted only once it returned. A retrieval that raised may or may not have been
@@ -281,6 +460,24 @@ def _prime_first_search(
     )
 
 
+def _tell(stream: StreamSink | None, stage: str) -> None:
+    """Say what the turn is doing, when anybody is listening.
+
+    Retrieval is the one part of a turn that takes real time and produces no text, so
+    without this the socket goes quiet for a second or two and the UI has to either lie
+    ("thinking...") or say nothing. A status event lets it say the true thing.
+
+    Swallows its own failures for the reason every push does: the student may have closed
+    the tab, and a status event is the least important thing in the turn.
+    """
+    if stream is None:
+        return
+    try:
+        stream.status(stage)
+    except Exception:
+        logger.warning("Could not push a %r status event", stage, exc_info=True)
+
+
 def _run_tool(
     tool_use: dict[str, Any],
     *,
@@ -288,6 +485,7 @@ def _run_tool(
     request: ChatRequest,
     settings: Settings,
     usage: TurnUsage | None = None,
+    stream: StreamSink | None = None,
 ) -> dict[str, Any]:
     tool_name = tool_use["name"]
     tool_use_id = tool_use["toolUseId"]
@@ -299,6 +497,9 @@ def _run_tool(
         )
 
     search_query = str(tool_input.get("query", request.query)).strip()
+    # The model decided the primed results missed, so it is searching again. Worth saying:
+    # this is the case where the student waits longest.
+    _tell(stream, "retrieving")
     chunks = retrieve_chunks(search_query, settings)
     if usage is not None:
         usage.record_retrieval()

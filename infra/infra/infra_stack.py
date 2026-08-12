@@ -914,8 +914,19 @@ class NavigatorStack(Stack):
                 )
             ],
         )
+        # THE CHAT TURN'S GRANTS, collected as they are added. The WebSocket generation
+        # worker runs the SAME turn - retrieve, invoke, screen, read and write the table -
+        # so it is given this exact list rather than a second hand-written copy that could
+        # come to differ. A streamed turn that could reach less than a buffered one would
+        # not fail loudly; it would fail somewhere inside an answer.
+        _chat_turn_statements = []
+
+        def _grant_chat_turn(statement):
+            _chat_turn_statements.append(statement)
+            chat_lambda_role.add_to_policy(statement)
+
         # Retrieve chunks from the KB. Scoped to the one knowledge base.
-        chat_lambda_role.add_to_policy(
+        _grant_chat_turn(
             iam.PolicyStatement(
                 actions=["bedrock:Retrieve"],
                 resources=[knowledge_base.attr_knowledge_base_arn],
@@ -928,7 +939,7 @@ class NavigatorStack(Stack):
         # config-driven rather than a string test inline here.
         if generation_cfg["is_inference_profile"]:
             base_model_id = generation_cfg["base_model_id"]
-            chat_lambda_role.add_to_policy(
+            _grant_chat_turn(
                 iam.PolicyStatement(
                     actions=["bedrock:InvokeModel*"],
                     resources=[
@@ -948,7 +959,7 @@ class NavigatorStack(Stack):
             )
             # Resolve the profile's metadata/routing at runtime. ListInferenceProfiles has no
             # resource-level scoping (must be "*"); GetInferenceProfile is read-only metadata.
-            chat_lambda_role.add_to_policy(
+            _grant_chat_turn(
                 iam.PolicyStatement(
                     actions=[
                         "bedrock:GetInferenceProfile",
@@ -958,7 +969,7 @@ class NavigatorStack(Stack):
                 )
             )
         else:
-            chat_lambda_role.add_to_policy(
+            _grant_chat_turn(
                 iam.PolicyStatement(
                     actions=["bedrock:InvokeModel"],
                     resources=[
@@ -991,7 +1002,7 @@ class NavigatorStack(Stack):
                     f"arn:{self.partition}:bedrock:{self.region}"
                     f"::foundation-model/{title_model_id}"
                 ]
-            chat_lambda_role.add_to_policy(
+            _grant_chat_turn(
                 iam.PolicyStatement(
                     actions=["bedrock:InvokeModel*"],
                     resources=title_resources,
@@ -1000,7 +1011,7 @@ class NavigatorStack(Stack):
 
         # ApplyGuardrail on the ONE guardrail: the standalone input screen (source=INPUT).
         # Nothing is attached to Converse, so there is no second ARN to grant.
-        chat_lambda_role.add_to_policy(
+        _grant_chat_turn(
             iam.PolicyStatement(
                 actions=["bedrock:ApplyGuardrail"],
                 resources=[input_guardrail.attr_guardrail_arn],
@@ -1030,7 +1041,7 @@ class NavigatorStack(Stack):
         # Scoped to THIS table's ARN. No `/index/*` companion because there is no secondary
         # index in v1; adding a GSI means adding its ARN here, and that being a visible edit
         # is the point.
-        chat_lambda_role.add_to_policy(
+        _grant_chat_turn(
             iam.PolicyStatement(
                 actions=[
                     # List a user's conversations; load one conversation in order.
@@ -1996,6 +2007,84 @@ class NavigatorStack(Stack):
                 )
             )
 
+            # THE GENERATION WORKER: the half of a streamed turn that takes twenty seconds.
+            # It is a separate function because the route function is behind API Gateway and
+            # inherits the same 29-second integration ceiling POST /chat has, while the agent
+            # loop can use most of it. This one is invoked asynchronously and talks back down
+            # the connection, so the ceiling stops applying to it.
+            streaming_worker_log_group = logs.LogGroup(
+                self,
+                "ChatStreamWorkerLogGroup",
+                retention=logs.RetentionDays.THREE_MONTHS,
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+
+            # It runs the same turn the chat function runs, so it holds the same grants -
+            # taken from the same role rather than a second copy, because a streamed turn
+            # that could reach less than a buffered one would fail somewhere subtle.
+            streaming_worker_role = iam.Role(
+                self,
+                "ChatStreamWorkerRole",
+                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+                description="Execution role for the WebSocket generation worker.",
+                managed_policies=[
+                    iam.ManagedPolicy.from_aws_managed_policy_name(
+                        "service-role/AWSLambdaBasicExecutionRole"
+                    )
+                ],
+            )
+            for statement in _chat_turn_statements:
+                streaming_worker_role.add_to_policy(statement)
+
+            streaming_worker_lambda = _lambda.Function(
+                self,
+                "ChatStreamWorkerFunction",
+                runtime=_LAMBDA_PYTHON,
+                architecture=_LAMBDA_ARCH,
+                handler="stream_worker.lambda_handler",
+                code=_lambda.Code.from_asset(
+                    str(_APP_DIR),
+                    exclude=[
+                        "*",
+                        ".*",
+                        "!stream_worker.py",
+                        "!streaming.py",
+                        "!settings.py",
+                        "!models.py",
+                        "!prompts.py",
+                        "!tools.py",
+                        "!retrieve.py",
+                        "!cards.py",
+                        "!safety.py",
+                        "!orchestrator.py",
+                        "!history.py",
+                        "!titles.py",
+                        "!usage.py",
+                        "!ratelimit.py",
+                    ],
+                ),
+                layers=[chat_deps_layer],
+                role=streaming_worker_role,
+                # Longer than the chat function's 29 seconds because nothing is waiting on
+                # an HTTP response here - but the LOOP's budget is unchanged
+                # (chat.converse_deadline_seconds, read by stream_worker), so this is
+                # headroom for the writes, the title and the final push, not a longer answer.
+                timeout=Duration.seconds(60),
+                memory_size=1024,
+                log_group=streaming_worker_log_group,
+                environment=dict(chat_environment),
+            )
+            streaming_worker_lambda.node.add_dependency(chat_history_table)
+            streaming_worker_lambda.node.add_dependency(knowledge_base)
+
+            # ZERO RETRIES ON THE ASYNCHRONOUS INVOKE, and this is the single most important
+            # property of this resource. Lambda retries a failed async invocation TWICE by
+            # default, and a retried generation worker answers the same question again -
+            # down the same socket, billing a full agent loop each time, with the student
+            # watching a second reply type itself over the first. Nothing in the turn is
+            # idempotent enough to survive that.
+            streaming_worker_lambda.configure_async_invoke(retry_attempts=0)
+
             streaming_route_lambda = _lambda.Function(
                 self,
                 "ChatStreamRouteFunction",
@@ -2010,17 +2099,45 @@ class NavigatorStack(Stack):
                         "!streaming.py",
                         "!settings.py",
                         "!history.py",
+                        "!models.py",
+                        "!usage.py",
+                        "!ratelimit.py",
+                        "!cards.py",
+                        # cards.py imports retrieve.py at module scope. cards is here for
+                        # preview_safe_prefix ALONE - the stop rule that keeps markup off a
+                        # student's screen - and nothing on this function parses a card.
+                        "!retrieve.py",
                     ],
                 ),
                 layers=[chat_deps_layer],
                 role=streaming_route_role,
-                # A connect writes one DynamoDB item. Nothing here waits on a model.
-                timeout=Duration.seconds(10),
+                # It writes one or two DynamoDB items and makes one guardrail call. The model
+                # is the worker's problem.
+                timeout=Duration.seconds(15),
                 memory_size=512,
                 log_group=streaming_route_log_group,
-                environment=dict(chat_environment),
+                environment={
+                    **chat_environment,
+                    "STREAM_WORKER_FUNCTION_NAME": streaming_worker_lambda.function_name,
+                },
             )
             streaming_route_lambda.node.add_dependency(chat_history_table)
+
+            # The route function screens input with the same guardrail POST /chat uses, and
+            # starts the worker. Both grants are narrow and named.
+            streaming_route_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["bedrock:ApplyGuardrail"],
+                    resources=[input_guardrail.attr_guardrail_arn],
+                )
+            )
+            streaming_route_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["dynamodb:UpdateItem"],
+                    resources=[chat_history_table.table_arn],
+                )
+            )
+            streaming_worker_lambda.grant_invoke(streaming_route_lambda)
 
             streaming_api = apigwv2.WebSocketApi(
                 self,
@@ -2044,6 +2161,24 @@ class NavigatorStack(Stack):
                     integration=apigwv2_integrations.WebSocketLambdaIntegration(
                         "ChatStreamDisconnectIntegration", streaming_route_lambda
                     ),
+                ),
+            )
+
+            # THE MESSAGE ROUTE, named rather than left to $default. The API's route
+            # selection expression is `$request.body.action`, so a frame saying
+            # {"action": "sendMessage", ...} lands here and a frame naming nothing lands on
+            # $default - which this API deliberately does not define, so an unrecognised
+            # frame is refused instead of falling into the billable path. That is the same
+            # instinct app/handler.py's unknown-routeKey 404 has.
+            #
+            # NO AUTHORIZER, because a WebSocket API cannot put one here - and does not need
+            # to. The connection was authorized at $connect and API Gateway carries that
+            # authorizer's context onto this route, so every frame arrives with a `sub` that
+            # came out of a verified token.
+            streaming_api.add_route(
+                "sendMessage",
+                integration=apigwv2_integrations.WebSocketLambdaIntegration(
+                    "ChatStreamMessageIntegration", streaming_route_lambda
                 ),
             )
 
@@ -2080,6 +2215,38 @@ class NavigatorStack(Stack):
             for child in streaming_api.node.find_all():
                 if isinstance(child, apigwv2.CfnAuthorizer):
                     child.authorizer_result_ttl_in_seconds = 0
+
+            # PUSHING BACK DOWN THE CONNECTION. Both functions send frames - the route one
+            # for a guardrail block or a rate-limit refusal, the worker for the whole
+            # streamed reply - so both need ManageConnections on this API and both need the
+            # stage's callback endpoint.
+            #
+            # THE ENDPOINT COMES FROM THE STACK, never from the event. A WebSocket event
+            # carries `domainName` and `stage`, and assembling the URL a reply is sent to out
+            # of request data is how a request ends up choosing its own destination.
+            for function in (streaming_route_lambda, streaming_worker_lambda):
+                streaming_api.grant_manage_connections(function)
+                function.add_environment("STREAM_CALLBACK_URL", streaming_stage.callback_url)
+                function.add_environment(
+                    "STREAM_DELTA_MIN_CHARS", str(streaming_cfg["delta_min_chars"])
+                )
+                function.add_environment(
+                    "STREAM_DELTA_MAX_DELAY_MS", str(streaming_cfg["delta_max_delay_ms"])
+                )
+
+            # The route function applies the per-user daily cap, so it needs the same
+            # exemption list the chat function carries - and by reference to the same client,
+            # so the harness cannot be exempt on one transport and capped on the other.
+            streaming_route_lambda.add_environment(
+                "RATE_LIMIT_EXEMPT_CLIENT_IDS", eval_client.user_pool_client_id
+            )
+
+            # PRESENT ONLY WHEN IT IS ON, the same spelling of off the rest of this stack
+            # uses. When it is on, app/stream_worker.py can only build a `sync` guardrail
+            # config - `async` is not representable there - because async releases text to
+            # the student before it has been scanned.
+            if streaming_cfg["output_guardrail"]:
+                streaming_worker_lambda.add_environment("STREAM_OUTPUT_GUARDRAIL", "true")
 
             streaming_api_url = streaming_stage.url
 

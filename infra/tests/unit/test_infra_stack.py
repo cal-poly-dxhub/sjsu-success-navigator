@@ -1882,7 +1882,12 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
         if not path.name.startswith("test_")
     }
 
-    functions = ("ChatFunction", "ConnectAuthorizerFunction", "ChatStreamRouteFunction")
+    functions = (
+        "ChatFunction",
+        "ConnectAuthorizerFunction",
+        "ChatStreamRouteFunction",
+        "ChatStreamWorkerFunction",
+    )
     per_function = {
         name: {
             entry
@@ -2154,10 +2159,207 @@ def test_the_authorizer_never_logs_the_token():
     assert "print" not in called, "app/ws_authorizer.py prints; its event carries the token"
 
 
-def test_the_streaming_route_function_can_only_write_connection_records():
-    """It records a connection on $connect and clears it on $disconnect. It does not read a
-    conversation, does not query, and must not be able to - the chat function's wider grant
-    is for the chat function."""
+def test_every_streaming_bundle_carries_what_its_handler_imports():
+    """THE LIST-DRIFT TEST, per function rather than over the union.
+
+    "Every module is deployed somewhere" does not catch the failure that actually happens
+    here, which is a bundle missing ONE of its own transitive imports: synth is clean, the
+    deploy succeeds, and the function dies at cold start on an ImportError that surfaces as
+    a socket closing for no stated reason. Four functions now share app/, so the include
+    lists are four chances to get it wrong.
+
+    The expectation is COMPUTED from the source - each handler's imports, followed
+    transitively - never restated here, for the reason the union test gives: a test that
+    repeats the list is a second copy of the thing that goes stale.
+    """
+    import ast
+
+    app_dir = Path(__file__).resolve().parents[3] / "app"
+    local_modules = {path.stem for path in app_dir.glob("*.py")}
+
+    def _local_imports(module_name):
+        tree = ast.parse((app_dir / f"{module_name}.py").read_text())
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                found.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module.split(".")[0])
+        return found & local_modules
+
+    def _closure(entry):
+        seen, pending = set(), [entry]
+        while pending:
+            module = pending.pop()
+            if module in seen:
+                continue
+            seen.add(module)
+            pending.extend(_local_imports(module))
+        return seen
+
+    for prefix, entry in (
+        ("ChatFunction", "handler"),
+        ("ConnectAuthorizerFunction", "ws_authorizer"),
+        ("ChatStreamRouteFunction", "streaming"),
+        ("ChatStreamWorkerFunction", "stream_worker"),
+    ):
+        staged = {name.removesuffix(".py") for name in _streaming_staged_listing(prefix) if name.endswith(".py")}
+        needed = _closure(entry)
+        assert needed <= staged, (
+            f"{prefix} is missing {sorted(needed - staged)} - {entry}.py imports them "
+            "transitively, so the deployed function dies at cold start on an ImportError."
+        )
+        assert staged <= needed, (
+            f"{prefix} ships {sorted(staged - needed)}, which nothing in it imports."
+        )
+
+
+def test_the_message_route_is_named_and_nothing_falls_through_to_a_default():
+    """The API selects routes on `$request.body.action`, so a frame naming `sendMessage`
+    lands on a route built for it and a frame naming nothing lands on `$default` - which
+    this API deliberately does not define. An undefined $default is refused; a defined one
+    would be a billable path that unrecognised frames fall into."""
+    routes = {
+        (r["Properties"] or {}).get("RouteKey")
+        for r in _streaming_template().find_resources("AWS::ApiGatewayV2::Route").values()
+    }
+    assert "sendMessage" in routes
+    assert "$default" not in routes
+
+    api = _resource_named(
+        _streaming_template(), "AWS::ApiGatewayV2::Api", "ChatStreamingApi"
+    )["Properties"]
+    assert api["ProtocolType"] == "WEBSOCKET"
+    assert api["RouteSelectionExpression"] == "$request.body.action"
+
+
+def test_the_generation_worker_never_retries():
+    """THE SINGLE MOST IMPORTANT PROPERTY OF THIS RESOURCE. Lambda retries a failed
+    asynchronous invocation TWICE by default, and a retried generation worker answers the
+    same question again - down the same socket, billing a full agent loop each time, with
+    the student watching a second reply type itself over the first."""
+    config = _resource_named(
+        _streaming_template(), "AWS::Lambda::EventInvokeConfig", "ChatStreamWorkerFunction"
+    )["Properties"]
+    assert config["MaximumRetryAttempts"] == 0
+
+
+def test_the_worker_holds_exactly_the_chat_turns_grants():
+    """It runs the same turn the chat function runs - retrieve, invoke, screen, read and
+    write the table - so it is given that role's statements rather than a hand-written
+    second copy. A streamed turn that could reach less than a buffered one would not fail
+    loudly; it would fail somewhere inside an answer."""
+    template = _streaming_template()
+
+    def _dynamo_and_bedrock_actions(role_id_fragment):
+        actions = set()
+        for policy in template.find_resources("AWS::IAM::Policy").values():
+            if role_id_fragment not in json.dumps(policy["Properties"]):
+                continue
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                for action in _actions(statement):
+                    if action.startswith(("dynamodb:", "bedrock:")):
+                        actions.add(action)
+        return actions
+
+    chat = _dynamo_and_bedrock_actions("ChatFunctionRole")
+    worker = _dynamo_and_bedrock_actions("ChatStreamWorkerRole")
+    assert worker == chat, f"only in worker: {worker - chat}; only in chat: {chat - worker}"
+    # And the hole the chat role's own note is about is still closed on both.
+    assert "dynamodb:Scan" not in worker
+
+
+def test_both_streaming_functions_can_push_but_only_the_route_can_start_the_worker():
+    """The route function pushes a guardrail block or a rate-limit refusal; the worker pushes
+    the whole streamed reply. Only one of them starts a generation."""
+    template = _streaming_template()
+
+    def _actions_for(role_fragment):
+        actions = set()
+        for policy in template.find_resources("AWS::IAM::Policy").values():
+            if role_fragment not in json.dumps(policy["Properties"]):
+                continue
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                actions.update(_actions(statement))
+        return actions
+
+    route = _actions_for("ChatStreamRouteRole")
+    worker = _actions_for("ChatStreamWorkerRole")
+    assert "execute-api:ManageConnections" in route
+    assert "execute-api:ManageConnections" in worker
+    assert "lambda:InvokeFunction" in route
+    assert "lambda:InvokeFunction" not in worker, (
+        "the worker must not be able to start another worker"
+    )
+
+
+def test_the_worker_is_told_where_to_push_by_the_stack_not_by_the_request():
+    """A WebSocket event carries `domainName` and `stage`, so a function COULD assemble its
+    own callback URL - and then a request would be choosing where its reply is sent. Both
+    functions get the endpoint from the stage instead."""
+    for prefix in ("ChatStreamRouteFunction", "ChatStreamWorkerFunction"):
+        env = _resource_named(_streaming_template(), "AWS::Lambda::Function", prefix)[
+            "Properties"
+        ]["Environment"]["Variables"]
+        callback = env["STREAM_CALLBACK_URL"]
+        # A Fn::Join over the API's Ref and the region - resolved at deploy, so a fresh
+        # install in another account pushes to its own endpoint. The assertion is that the
+        # api id is a REFERENCE; the ".execute-api." in the middle is a literal either way.
+        assert isinstance(callback, dict), callback
+        assert "ChatStreamingApi" in json.dumps(callback), callback
+        assert "https://" in json.dumps(callback), (
+            "post_to_connection takes the https callback endpoint, not the wss:// one"
+        )
+
+
+def test_the_streaming_functions_answer_under_the_same_caps_as_the_buffered_one():
+    """The acceptance criterion is that a streamed turn renders identically to a buffered
+    one, and the loop's caps are half of what makes that true. The worker gets a longer
+    LAMBDA timeout because nothing is waiting on an HTTP response - but the same
+    CONVERSE_DEADLINE_SECONDS, so it is headroom for the writes and the final push rather
+    than a longer answer."""
+    template = _streaming_template()
+    chat_env = _resource_named(template, "AWS::Lambda::Function", "ChatFunction")[
+        "Properties"
+    ]["Environment"]["Variables"]
+    worker = _resource_named(template, "AWS::Lambda::Function", "ChatStreamWorkerFunction")[
+        "Properties"
+    ]
+    for key in (
+        "CONVERSE_DEADLINE_SECONDS",
+        "MAX_CONVERSE_ITERATIONS",
+        "MAX_HISTORY_MESSAGES",
+        "CARD_MAX_CARDS",
+        "CARD_DESC_MAX_CHARS",
+        "GENERATION_MAX_TOKENS",
+    ):
+        assert worker["Environment"]["Variables"][key] == chat_env[key], key
+    assert worker["Timeout"] > 29, "the worker is not behind the gateway's ceiling"
+
+
+def test_the_output_guardrail_leaves_no_trace_when_it_is_off():
+    """It is off by default and measured (config.yaml): attaching the guardrail to
+    ConverseStream in its only safe mode moved time-to-first-token from ~1.1s to ~6.8s.
+    Off means the variable is absent, not 'false' - one spelling of off."""
+    worker = _resource_named(
+        _streaming_template(), "AWS::Lambda::Function", "ChatStreamWorkerFunction"
+    )["Properties"]
+    assert "STREAM_OUTPUT_GUARDRAIL" not in worker["Environment"]["Variables"]
+
+    config = copy.deepcopy(_streaming_config())
+    config["streaming"]["output_guardrail"] = True
+    on = Template.from_stack(NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config))
+    worker_on = _resource_named(on, "AWS::Lambda::Function", "ChatStreamWorkerFunction")[
+        "Properties"
+    ]
+    assert worker_on["Environment"]["Variables"]["STREAM_OUTPUT_GUARDRAIL"] == "true"
+
+
+def test_the_streaming_route_function_writes_but_never_reads_a_conversation():
+    """It records a connection, counts the turn against the daily cap, and writes the
+    student's message. It NEVER READS A CONVERSATION - the history read belongs to the
+    worker - so it holds no Query and no GetItem, and the chat function's wider grant stays
+    the chat function's."""
     template = _streaming_template()
     actions = set()
     for policy in template.find_resources("AWS::IAM::Policy").values():
@@ -2168,7 +2370,15 @@ def test_the_streaming_route_function_can_only_write_connection_records():
             for action in _actions(statement):
                 if action.startswith("dynamodb:"):
                     actions.add(action)
-    assert actions == {"dynamodb:PutItem", "dynamodb:DeleteItem"}, sorted(actions)
+    assert actions == {
+        # open_connection, and the student's message.
+        "dynamodb:PutItem",
+        # close_connection.
+        "dynamodb:DeleteItem",
+        # The rate limit's conditional ADD, and the conversation header's counter.
+        "dynamodb:UpdateItem",
+    }, sorted(actions)
+    assert "dynamodb:Query" not in actions
     assert "dynamodb:Scan" not in actions
 
 
