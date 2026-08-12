@@ -60,7 +60,7 @@ export const es: Strings = {
 	yourMessage: 'Tu mensaje',
 	thinking: 'Pensando',
 	waitingForSammy: 'Esperando la respuesta de Sammy',
-	stageRetrieving: 'Buscando en los recursos del campus…',
+	stageRetrieving: 'Buscando en los recursos del campus',
 
 	chatsLoadFailedWith: (message: string) => `No se pudieron cargar tus chats: ${message}`,
 	chatsLoadFailed: 'No se pudieron cargar tus chats.',

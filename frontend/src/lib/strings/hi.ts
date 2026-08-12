@@ -55,7 +55,7 @@ export const hi: Strings = {
 	yourMessage: 'आपका संदेश',
 	thinking: 'सोच रहा हूँ',
 	waitingForSammy: 'Sammy के उत्तर की प्रतीक्षा है',
-	stageRetrieving: 'कैंपस संसाधनों में खोजा जा रहा है…',
+	stageRetrieving: 'कैंपस संसाधनों में खोजा जा रहा है',
 
 	chatsLoadFailedWith: (message: string) => `आपकी चैट लोड नहीं हो सकीं: ${message}`,
 	chatsLoadFailed: 'आपकी चैट लोड नहीं हो सकीं।',

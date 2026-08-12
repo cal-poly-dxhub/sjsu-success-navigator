@@ -77,7 +77,7 @@ export const en = {
 	yourMessage: 'Your message',
 	thinking: 'Thinking',
 	waitingForSammy: "Waiting for Sammy's response",
-	stageRetrieving: 'Looking through campus resources…',
+	stageRetrieving: 'Looking through campus resources',
 
 	// Failures the frontend says on its own behalf. Not replies: Sammy did not write these.
 	chatsLoadFailedWith: (message: string) => `Could not load your chats: ${message}`,

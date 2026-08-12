@@ -14,6 +14,11 @@ type ConversationFeedProps = {
 	pendingPreview?: string;
 	/** What the server says it is doing while the pending exchange has no prose yet. */
 	pendingStage?: string | null;
+	/**
+	 * The turn that just took the pending exchange's place, if any. Its bubble is the one
+	 * that was already on screen a frame ago, so it does not play an entrance.
+	 */
+	continuedTurnId?: string | null;
 	introDelayMs?: number;
 	onTypingChange?: (typing: boolean) => void;
 	onPhaseChange: (turnId: string, phase: RagPhase | 'done') => void;
@@ -25,6 +30,7 @@ export function ConversationFeed({
 	pendingPrompt = null,
 	pendingPreview = '',
 	pendingStage = null,
+	continuedTurnId = null,
 	introDelayMs = 0,
 	onTypingChange,
 	onPhaseChange,
@@ -51,6 +57,7 @@ export function ConversationFeed({
 						key={turn.id}
 						turn={turn}
 						isActive={!pendingPrompt && turn.id === activeId}
+						continuesPending={turn.id === continuedTurnId}
 						introDelayMs={turn.id === activeId && !pendingPrompt ? introDelayMs : 0}
 						onTypingChange={
 							turn.id === activeId && !pendingPrompt ? onTypingChange : undefined

@@ -54,7 +54,7 @@ export const tl: Strings = {
 	yourMessage: 'Ang iyong mensahe',
 	thinking: 'Nag-iisip',
 	waitingForSammy: 'Naghihintay ng sagot ni Sammy',
-	stageRetrieving: 'Naghahanap sa mga campus resource…',
+	stageRetrieving: 'Naghahanap sa mga campus resource',
 
 	chatsLoadFailedWith: (message: string) => `Hindi ma-load ang iyong mga chat: ${message}`,
 	chatsLoadFailed: 'Hindi ma-load ang iyong mga chat.',
