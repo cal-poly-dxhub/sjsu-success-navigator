@@ -12,6 +12,7 @@ which is what the fake store at the bottom of this file is for.
 import json
 import os
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -72,25 +73,48 @@ from history import ConversationSummary, DisplayMessage, StoredMessage  # noqa: 
 TEST_SUB = "11111111-2222-3333-4444-555555555555"
 
 
-def _authorized(event, sub):
+# The app client id a browser's token carries. A real deployment has exactly two - the web
+# client and the eval harness's machine client - and only the second is ever exempt from the
+# rate limit, so this one stands in for "an ordinary student".
+TEST_CLIENT_ID = "web-client-id"
+
+# The eval harness's machine client, the one the stack puts in RATE_LIMIT_EXEMPT_CLIENT_IDS.
+EXEMPT_CLIENT_ID = "eval-client-id"
+
+
+def _authorized(event, sub, client_id=TEST_CLIENT_ID):
     """Attach the claims the JWT authorizer would have put on the event.
 
     Tests build events THROUGH these helpers so nothing accidentally asserts on a request
     the deployed stack could not produce: every route is authorizer-gated, so a request with
     no `sub` is a misconfiguration rather than an anonymous student.
+
+    `client_id` rides alongside because a Cognito ACCESS token carries it and API Gateway
+    validates it against the authorizer's audience list - it is what the rate limit's
+    exemption is keyed on. Defaulted to the web client so an ordinary test event is an
+    ordinary student rather than an exempt machine.
     """
     if sub is not None:
-        event["requestContext"] = {"authorizer": {"jwt": {"claims": {"sub": sub}}}}
+        claims = {"sub": sub}
+        if client_id is not None:
+            claims["client_id"] = client_id
+        event["requestContext"] = {"authorizer": {"jwt": {"claims": claims}}}
     return event
 
 
-def chat_event(body, sub=TEST_SUB, is_base64=False, route="POST /chat"):
+def chat_event(
+    body,
+    sub=TEST_SUB,
+    is_base64=False,
+    route="POST /chat",
+    client_id=TEST_CLIENT_ID,
+):
     event = {"body": body if isinstance(body, str) else json.dumps(body)}
     if route is not None:
         event["routeKey"] = route
     if is_base64:
         event["isBase64Encoded"] = True
-    return _authorized(event, sub)
+    return _authorized(event, sub, client_id)
 
 
 def conversations_event(sub=TEST_SUB):
@@ -148,11 +172,20 @@ class FakeConversationStore:
         renamed=True,
         titled=True,
         deleted_messages=0,
+        counters=None,
     ):
         self.history = list(history)
         self.fail_on = set(fail_on)
         self.conversations = list(conversations)
         self.messages = list(messages)
+        # The rate-limit counters, keyed exactly as the real item is: (user, window). Seeded
+        # by a test that wants a user already partway through their day.
+        self.counters = dict(counters or {})
+        # DynamoDB serialises updates to a single item, and claim_message_allowance leans on
+        # that entirely - the compare and the increment are one operation. The fake holds a
+        # lock so a concurrency test exercises the same guarantee rather than Python's
+        # interpreter happening to switch threads somewhere convenient.
+        self._counter_lock = threading.Lock()
         # What the two CONDITIONAL writes report back. False is not an error: it is the
         # condition holding - no such header, or one the student named themselves.
         self.renamed = renamed
@@ -168,6 +201,27 @@ class FakeConversationStore:
         sort_key = f"MSG#{kwargs['conversation_id']}#SK{len(self.appended) + 1:04d}"
         self.appended.append({**kwargs, "sort_key_returned": sort_key})
         return sort_key
+
+    def claim_message_allowance(self, *, user_id, window_key, limit, expires_at):
+        """DynamoDB's conditional ADD, modelled: compare and increment as ONE step.
+
+        This is the semantics the real call buys from `ConditionExpression` plus `ADD` on a
+        single item - the condition is evaluated against the value the item holds at the
+        moment of the write, so two writers cannot both see the same count and both increment
+        it. The lock is what makes that true here; in DynamoDB it is the item itself.
+
+        test_history.py asserts separately that the real store sends exactly that expression.
+        """
+        self.calls.append(("allowance", {"user_id": user_id, "window_key": window_key}))
+        if "allowance" in self.fail_on:
+            raise RuntimeError("DynamoDB is unavailable (rate limit write)")
+        with self._counter_lock:
+            count = self.counters.get((user_id, window_key), 0)
+            if count >= limit:
+                return False
+            self.counters[(user_id, window_key)] = count + 1
+            self.expires_at = expires_at
+            return True
 
     def recent_messages(self, **kwargs):
         self.calls.append(("read", kwargs))
@@ -217,6 +271,31 @@ def store(monkeypatch):
     fake = FakeConversationStore()
     monkeypatch.setattr(handler, "STORE", fake)
     return fake
+
+
+@pytest.fixture
+def daily_limit(monkeypatch):
+    """Turn the per-user daily cap on for one test, at whatever number it asks for.
+
+    The cap is OFF in the rest of the suite, which is deliberate rather than convenient: the
+    deployed default reads from an environment variable the stack omits when the feature is
+    disabled, so a suite that switched it on globally would stop testing the shape every
+    other test is about. Tests that want it say so.
+    """
+    import dataclasses
+
+    import handler
+
+    def _set(limit, exempt=(EXEMPT_CLIENT_ID,)):
+        settings = dataclasses.replace(
+            handler.SETTINGS,
+            daily_message_limit=limit,
+            rate_limit_exempt_client_ids=frozenset(exempt),
+        )
+        monkeypatch.setattr(handler, "SETTINGS", settings)
+        return settings
+
+    return _set
 
 
 def stored(role, text):

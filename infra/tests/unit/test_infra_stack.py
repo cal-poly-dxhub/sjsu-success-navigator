@@ -1021,6 +1021,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "models.py",
         "orchestrator.py",
         "prompts.py",
+        "ratelimit.py",
         "retrieve.py",
         "safety.py",
         "settings.py",
@@ -1922,3 +1923,93 @@ def test_the_two_conversation_writes_are_served_by_the_chat_function_and_gated()
     for route in writes:
         assert route["Properties"]["AuthorizationType"] == "JWT"
         assert integration_id in json.dumps(route["Properties"]["Target"])
+
+
+def test_the_chat_function_carries_the_daily_message_limit():
+    """The per-user cost fence's one number, reaching the function that enforces it.
+
+    THE FAILURE THIS PINS IS SILENT. app/settings.py reads an unset DAILY_MESSAGE_LIMIT as
+    "disabled" - it has to, because that is how the gate below turns the cap off - so a
+    variable dropped from this block does not raise at import like the identity ones do. It
+    just removes the only control that bounds what one account can spend, and nothing about
+    the running system looks different until a bill arrives.
+    """
+    from infra.config import resolve_rate_limit
+
+    env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+
+    assert env["DAILY_MESSAGE_LIMIT"] == str(resolve_rate_limit(load_config()))
+
+
+def test_the_eval_client_is_exempt_from_the_daily_message_limit():
+    """The exemption is the MACHINE CLIENT's id, by reference to the client itself.
+
+    eval/run_eval.py fires 82 questions as one account at concurrency 3, so any per-user cap
+    worth having is one the harness trips - and a tripped harness fails quietly, recording
+    refusals as answers so the eval reads as a model regression.
+
+    By Ref rather than a literal for the usual reason, plus one specific to this: the id is
+    generated at deploy, so a literal here could not be right. And it is the EVAL client, not
+    the web client - pointing this at the browser's id would exempt every student instead.
+    """
+    template = _template()
+    env = _resource_named(template, "AWS::Lambda::Function", "ChatFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+
+    eval_client_id = next(
+        lid for lid in template.find_resources("AWS::Cognito::UserPoolClient")
+        if lid.startswith("ChatUserPoolChatEvalClient")
+    )
+    web_client_id = next(
+        lid for lid in template.find_resources("AWS::Cognito::UserPoolClient")
+        if lid.startswith("ChatUserPoolChatWebClient")
+    )
+
+    assert env["RATE_LIMIT_EXEMPT_CLIENT_IDS"] == {"Ref": eval_client_id}
+    assert env["RATE_LIMIT_EXEMPT_CLIENT_IDS"] != {"Ref": web_client_id}
+
+
+def test_the_daily_message_limit_is_gated_by_config_and_omitted_when_off():
+    """`rate_limit.daily_message_limit: 0` must remove the variable entirely, not set "0".
+
+    THE OMISSION IS THE GATE, the same shape the cost panel uses one section down. It means
+    "off" has exactly one spelling: the function reads an absent variable as disabled, so
+    there is no second value it has to be trusted to interpret, and turning the cap off for a
+    closed pilot is a config edit rather than a code change.
+    """
+    config = copy.deepcopy(load_config())
+    config["rate_limit"]["daily_message_limit"] = 0
+
+    app = cdk.App(outdir=tempfile.mkdtemp())
+    template = Template.from_stack(NavigatorStack(app, "SjsuNavigatorStack", config=config))
+
+    env = _resource_named(template, "AWS::Lambda::Function", "ChatFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+    assert "DAILY_MESSAGE_LIMIT" not in env
+    # The exemption list is unconditional, and harmlessly so: with no cap there is nothing to
+    # be exempt from, and making it conditional too would be a second thing to keep in step.
+    assert "RATE_LIMIT_EXEMPT_CLIENT_IDS" in env
+    assert env["CHAT_HISTORY_TABLE_NAME"], "turning the cap off must not disturb the rest"
+
+
+def test_the_rate_counter_needs_no_new_table_and_no_new_grant():
+    """The counter lives in the chat-history table's own user partition under a third
+    sort-key prefix, so this feature adds NO AWS resource: the table is the one that exists,
+    its TTL attribute is the one already enabled, and dynamodb:UpdateItem was already granted
+    for the header's messageCount ADD.
+
+    Pinned because the alternative shape - a second table, or a wildcard grant - is the
+    obvious way to build this and would pass every behavioural test in app/.
+    """
+    template = _template()
+
+    assert len(template.find_resources("AWS::DynamoDB::Table")) == 1
+    table = _resource(template, "AWS::DynamoDB::Table")
+    assert table["Properties"]["TimeToLiveSpecification"] == {
+        "AttributeName": "expiresAt",
+        "Enabled": True,
+    }

@@ -292,6 +292,35 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       two numbers that total is made of - the zero-use floor and the per-message price. The
       itemized rows, the depth note and the rates table came off: an audit of the arithmetic in
       the middle of a demo, and the arithmetic is in costModel.ts where it can be read properly.
+- [x] a per-user daily message cap, which is the first control that bounds what ONE account
+      spends (config.yaml `rate_limit`, app/ratelimit.py). Everything fencing cost before this
+      bounded the SERVICE - the stage throttle bounds invocations started per second, reserved
+      concurrency bounds invocations running at once, the loop's deadline and iteration cap
+      bound a single request - and not one of them can tell two students apart, so a signed-in
+      account could sit inside all four all day. At ~$0.026 a question, 60 a day is ~$1.56 per
+      person. Counted against the Cognito `sub` from the validated JWT, in the chat-history
+      table's own user partition under a third sort-key prefix (`RATE#DAY#<date>`), expired by
+      the TTL attribute the table has had enabled since it was created - so this is the first
+      thing in the app to write `expiresAt`, and it adds NO AWS resource and no new IAM grant.
+      ONE ATOMIC CONDITIONAL WRITE per turn (`ADD #count :one` under `count < :limit`), no read
+      first: a read-then-write loses the race that matters, since two turns in flight would
+      both see the same count and both spend a model call on it. ATTEMPTS, NOT ANSWERS, and
+      BEFORE the guardrail - a refused turn costs one DynamoDB write and nothing billable, not
+      even a guardrail text unit, which is the only ordering that makes it a guard rather than
+      a report. Over the limit is a 429 carrying the reset INSTANT, which the browser renders
+      in the student's own clock; the server's own sentence says "midnight UTC" for callers
+      with no timezone. A FIXED UTC CALENDAR DAY rather than a sliding window (a sliding window
+      needs a read and its precision buys nothing here) and rather than a campus-local midnight
+      (which needs a timezone database in the function, for a boundary the student never reads
+      anyway). The eval harness is EXEMPT, keyed on the validated `client_id` claim rather than
+      a username or a higher number: it fires all 82 ground-truth questions as one account at
+      concurrency 3, its machine client is one of exactly two in the authorizer's audience, and
+      a number would have to be kept above whatever ground-truth.yaml grows to. FAILS OPEN on a
+      DynamoDB fault that is not a condition failure, logged at ERROR - the same posture the
+      guardrail screen and the history writes already take, because the service-wide fences are
+      still up and a blip must not become an outage of a product that receives disclosures. The
+      gate is the cost panel's: absent or 0 omits the environment variable entirely, so "off"
+      has one spelling.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

@@ -659,3 +659,97 @@ def test_the_title_cap_travels_with_the_store(monkeypatch):
 
     title = fake.updates[0]["ExpressionAttributeValues"][":title"]
     assert len(title) == 20 and title.endswith("…")
+
+
+# --- the rate-limit counter --------------------------------------------------------------
+
+
+def test_the_allowance_claim_is_one_atomic_conditional_write(table):
+    """THE WHOLE RACE GUARANTEE, in one request. The compare and the increment are the same
+    operation: DynamoDB evaluates `count < :limit` against the value the item holds at the
+    instant of the write, so two concurrent turns at the limit cannot both pass.
+
+    The shape is what is pinned, because it is the part no test can recover afterwards - a
+    read-then-write refactor would still pass every behavioural test in a single-threaded
+    suite and lose the property completely in production.
+    """
+    assert (
+        table.store.claim_message_allowance(
+            user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
+        )
+        is True
+    )
+
+    assert len(table.updates) == 1, "one write, and no read before it"
+    assert table.queries == [], "the count is never read back to be compared in Python"
+    update = table.updates[0]
+    assert "ADD #count :one" in update["UpdateExpression"]
+    assert update["ConditionExpression"] == (
+        "attribute_not_exists(#count) OR #count < :limit"
+    )
+    assert update["ExpressionAttributeValues"][":limit"] == 60
+    assert update["ExpressionAttributeValues"][":one"] == 1
+
+
+def test_the_counter_is_its_own_item_in_the_users_partition(table):
+    """Same partition as the caller's conversations - built from the JWT claim like every
+    other key here - under a third sort-key prefix that no existing read can see: the list is
+    begins_with('CONV#') and both message reads are begins_with('MSG#<convId>#')."""
+    table.store.claim_message_allowance(
+        user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
+    )
+
+    key = table.updates[0]["Key"]
+    assert key == {"pk": f"USER#{_SUB}", "sk": "RATE#DAY#2026-08-12"}
+    assert not key["sk"].startswith("CONV#") and not key["sk"].startswith("MSG#")
+
+
+def test_the_counter_carries_the_tables_ttl_attribute(table):
+    """`expiresAt`, epoch seconds, written with if_not_exists so the window's end is fixed by
+    the request that opened it rather than rewritten on every message. This is the first
+    thing in the app to set the attribute the table has always had enabled."""
+    table.store.claim_message_allowance(
+        user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
+    )
+
+    update = table.updates[0]
+    assert "SET #expiresAt = if_not_exists(#expiresAt, :expiresAt)" in update["UpdateExpression"]
+    assert update["ExpressionAttributeNames"]["#expiresAt"] == "expiresAt"
+    assert update["ExpressionAttributeValues"][":expiresAt"] == 1786579200
+
+
+def test_count_goes_through_expression_attribute_names(table):
+    """`count` is a DynamoDB reserved word. Used bare it fails the call at RUNTIME - every
+    message refused with an error that looks nothing like a rate limit."""
+    table.store.claim_message_allowance(
+        user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
+    )
+    assert table.updates[0]["ExpressionAttributeNames"]["#count"] == "count"
+
+
+def test_a_spent_allowance_is_a_false_not_an_exception(monkeypatch):
+    """The condition failing is the guard working, so it comes back as a value rather than as
+    an error the caller has to know how to interpret."""
+    fake = _FakeTable(raises_on="condition")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    assert (
+        store.claim_message_allowance(
+            user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
+        )
+        is False
+    )
+
+
+def test_any_other_failure_on_the_allowance_write_still_raises(monkeypatch):
+    """A throttled counter write must not read as "the student is over their limit". It is
+    re-raised, and app/ratelimit.py decides - it fails OPEN and logs at ERROR."""
+    fake = _FakeTable(raises_on="update_item")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    with pytest.raises(RuntimeError):
+        store.claim_message_allowance(
+            user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
+        )

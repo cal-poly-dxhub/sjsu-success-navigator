@@ -83,3 +83,44 @@ def test_a_non_numeric_knob_raises_rather_than_silently_defaulting(monkeypatch):
     monkeypatch.setenv("MAX_CONVERSE_ITERATIONS", "six")
     with pytest.raises(SettingsError, match="MAX_CONVERSE_ITERATIONS"):
         load_settings()
+
+
+def test_the_daily_message_limit_defaults_to_disabled(monkeypatch):
+    """THE ONE BEHAVIOURAL DEFAULT THAT IS NOT config.yaml's VALUE, and deliberately so.
+
+    The stack omits DAILY_MESSAGE_LIMIT entirely when the cap is off (the cost panel's gate
+    shape), so an unset variable HAS to mean disabled. A default of 60 here would mean a
+    wiring mistake invented a limit nobody configured, and students would start being refused
+    with nothing in config.yaml to explain it.
+    """
+    _set_identity(monkeypatch)
+    monkeypatch.delenv("DAILY_MESSAGE_LIMIT", raising=False)
+
+    assert load_settings().daily_message_limit == 0
+
+
+def test_the_daily_message_limit_is_read_from_the_environment(monkeypatch):
+    _set_identity(monkeypatch)
+    monkeypatch.setenv("DAILY_MESSAGE_LIMIT", "60")
+
+    assert load_settings().daily_message_limit == 60
+
+
+def test_the_exemption_list_is_empty_when_unset(monkeypatch):
+    """Empty is the safe direction: a missing value exempts nobody rather than everybody."""
+    _set_identity(monkeypatch)
+    monkeypatch.delenv("RATE_LIMIT_EXEMPT_CLIENT_IDS", raising=False)
+
+    assert load_settings().rate_limit_exempt_client_ids == frozenset()
+
+
+def test_the_exemption_list_takes_more_than_one_client(monkeypatch):
+    """Plural on purpose, so a second machine client is a config edit rather than a code
+    change. Whitespace and empty entries are dropped rather than becoming ids that no token
+    can match but that read as if they might."""
+    _set_identity(monkeypatch)
+    monkeypatch.setenv("RATE_LIMIT_EXEMPT_CLIENT_IDS", " eval-client , , second-client ")
+
+    assert load_settings().rate_limit_exempt_client_ids == frozenset(
+        {"eval-client", "second-client"}
+    )

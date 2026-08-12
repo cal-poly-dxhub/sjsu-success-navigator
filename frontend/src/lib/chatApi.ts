@@ -17,6 +17,52 @@ export class ChatApiError extends Error {
 	}
 }
 
+/**
+ * When a daily-limit refusal lifts, in the reader's own time.
+ *
+ * The server sends the reset INSTANT as ISO 8601 UTC and never a formatted time, because the
+ * server has no idea what timezone the student is in - the window is a UTC calendar day, so
+ * for someone on the west coast it refills mid-afternoon rather than at their midnight.
+ * Formatting here is the only place that knows.
+ *
+ * Returns null on anything unparseable, and the caller then keeps the server's own sentence
+ * rather than rendering "Invalid Date" at somebody who has just been told they cannot ask
+ * their question.
+ */
+function localResetTime(resetAt: string): string | null {
+	const reset = new Date(resetAt);
+	if (Number.isNaN(reset.getTime())) return null;
+
+	const time = reset.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+	// "at 5:00 PM" is only unambiguous if it IS today. Past midnight local - which is most of
+	// the world, and is what a UTC boundary does to anyone east of London - the same string
+	// would point at a time that has already passed today.
+	const sameDay = reset.toDateString() === new Date().toDateString();
+	if (sameDay) return `at ${time}`;
+
+	// The preposition travels WITH the phrase rather than sitting in the sentence template,
+	// because the two halves need different ones: "at 5:03 PM" but "on Thursday at 5:03 PM".
+	const day = reset.toLocaleDateString(undefined, { weekday: 'long' });
+	return `on ${day} at ${time}`;
+}
+
+/**
+ * The daily-limit refusal, rewritten with a time the student can act on.
+ *
+ * The server's own sentence names the cap and says it resets at midnight UTC, which is true
+ * and useless to a person. This replaces the second half with their own clock. Everything
+ * else about the response is left alone: a 429 without the fields (an API Gateway throttle
+ * rather than this cap) keeps whatever message it came with.
+ */
+function dailyLimitMessage(body: { limit?: number; resetAt?: string }): string | null {
+	if (typeof body.limit !== 'number' || typeof body.resetAt !== 'string') return null;
+
+	const when = localResetTime(body.resetAt);
+	if (when === null) return null;
+
+	return `You have reached your daily limit of ${body.limit} messages. You can ask Sammy again ${when}.`;
+}
+
 type PostChatOptions = {
 	query: string;
 	followup?: boolean;
@@ -33,8 +79,19 @@ async function failureFrom(response: Response): Promise<ChatApiError> {
 	try {
 		// The handler returns {"error": ...}; camp's FastAPI returned {"detail": ...}.
 		// Both are read so a stale deployment does not surface as a blank message.
-		const body = (await response.json()) as { error?: string; detail?: string };
+		const body = (await response.json()) as {
+			error?: string;
+			detail?: string;
+			limit?: number;
+			resetAt?: string;
+		};
 		detail = body.error ?? body.detail ?? detail;
+		// The per-user daily cap (app/ratelimit.py). Handled HERE rather than at each call
+		// site so the sentence is written once: what reaches the student is a plain
+		// explanation with a time they can act on, not a generic failure and not a status
+		// code. Every other 429 - the stage throttle, which carries none of these fields -
+		// falls through with its own message untouched.
+		if (response.status === 429) detail = dailyLimitMessage(body) ?? detail;
 	} catch {
 		// Keep statusText when error body is not JSON.
 	}

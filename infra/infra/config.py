@@ -854,6 +854,55 @@ def resolve_http_api(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def resolve_rate_limit(config: Dict[str, Any]) -> Optional[int]:
+    """The `rate_limit` block: how many messages one user may send per UTC day.
+
+    Returns None when the block is absent or the limit is 0, and the stack then omits the
+    environment variable entirely - the same gate `resolve_cost_model` below uses, for the
+    same reason: "off" should be one state with one spelling, not a zero the application
+    has to be trusted to interpret. app/settings.py reads an unset variable as disabled, so
+    the two layers agree without either of them carrying a second default.
+
+    OFF IS NOT AN ERROR. A stack that wants no per-user cap is a decision (a closed pilot
+    where every account is known), so a missing block does not fail synth.
+
+    WHAT IT BOUNDS, stated because the other three numbers in this file sound like they
+    already cover it: http_api's throttle bounds invocations STARTED per second and its
+    reserved concurrency bounds invocations running AT ONCE, both across everybody. Neither
+    can tell two students apart, so neither bounds what one account spends. This is the
+    only number here that does.
+
+    NEGATIVE IS AN ERROR rather than another spelling of off. A negative limit would make
+    the condition `count < :limit` false on the very first message of the day, so every
+    student would be refused their first question - and it would read as a disabled feature
+    in config.yaml rather than as the total outage it is.
+    """
+    rate_cfg = config.get("rate_limit")
+    if rate_cfg is None:
+        return None
+    if not isinstance(rate_cfg, dict):
+        raise ValueError("rate_limit must be a mapping.")
+
+    limit = rate_cfg.get("daily_message_limit")
+    if limit is None:
+        return None
+    # Booleans are ints in Python, so `daily_message_limit: true` would otherwise resolve to
+    # a limit of exactly one message per day.
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError(
+            f"rate_limit.daily_message_limit must be an integer (got {limit!r}). Use 0 or "
+            "remove the block to disable the per-user cap."
+        )
+    if limit < 0:
+        raise ValueError(
+            f"rate_limit.daily_message_limit must not be negative (got {limit}). A negative "
+            "limit is not 'off' - it refuses every student their first message of the day, "
+            "because the counter starts at zero and the check is 'count < limit'. Use 0 to "
+            "disable the cap."
+        )
+    return limit or None
+
+
 def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The `cost_model` block: rates x measured usage for the demo cost panel.
 
@@ -1005,6 +1054,10 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_chat(config)
     resolve_chat_history(config)
     resolve_cards(config)
+    # Returns None when the per-user cap is off, which is a decision rather than an error -
+    # but a non-integer or negative limit still fails synth here, where the message can name
+    # the key, rather than deploying a stack that refuses every student's first question.
+    resolve_rate_limit(config)
     # Returns None when the panel is off, which is a valid config rather than an error -
     # but an ENABLED block with a bad rate still fails synth here, before any construct
     # exists, rather than reaching a browser as $NaN.
