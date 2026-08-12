@@ -83,6 +83,7 @@ from infra.config import (
     resolve_retrieval,
     resolve_scraper,
     resolve_seed_pages,
+    resolve_streaming,
     resolve_vector_store,
     validate_config,
 )
@@ -128,6 +129,14 @@ _EVAL_USERNAME = "eval-runner"
 # Placeholder standing in for a real person's account in the printed admin-create-user
 # command. Deliberately not a valid username shape anyone would leave in place.
 _HUMAN_USERNAME_PLACEHOLDER = "USERNAME-HERE"
+
+# The WebSocket streaming API's stage name. It is part of the URL the browser connects to
+# (wss://<apiId>.execute-api.<region>.amazonaws.com/<stage>), so it is spelled once here
+# rather than in config.yaml: it names nothing globally - it is scoped to an API that does
+# not exist until this stack creates it - and there is no deployment that wants a different
+# one. A config knob would be a value nobody has a reason to change and a second place the
+# frontend's URL could come from.
+_STREAMING_STAGE_NAME = "stream"
 
 
 def _astro_bundling() -> BundlingOptions:
@@ -1106,6 +1115,80 @@ class NavigatorStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # The chat function's runtime wiring, hoisted out of the constructor because the
+        # WebSocket streaming functions in section 7 run the SAME application modules and
+        # therefore need the same values. Spelled once: two copies of this dict would drift,
+        # and the drift would be a streaming turn answering under a different cap or against
+        # a different table than the buffered one.
+        chat_environment = {
+            "KNOWLEDGE_BASE_ID": knowledge_base.attr_knowledge_base_id,
+            "GENERATION_MODEL_ID": generation_model_id,
+            # The model that names a conversation. Identity like the one above, and
+            # granted its own InvokeModel statement above when it differs.
+            "TITLE_MODEL_ID": title_model_id,
+            # Lambda auto-sets AWS_REGION and it is RESERVED (it cannot be set in a
+            # function's configuration), so the region is passed under our own key.
+            "BEDROCK_REGION": self.region,
+            "NUMBER_OF_RESULTS": str(retrieval_cfg["number_of_results"]),
+            "RETRIEVE_MIN_SCORE": str(retrieval_cfg["min_score"]),
+            "GENERATION_MAX_TOKENS": str(generation_cfg["max_tokens"]),
+            "GENERATION_TEMPERATURE": str(generation_cfg["temperature"]),
+            "MAX_QUERY_CHARS": str(request_cfg["max_query_chars"]),
+            # The agent loop's caps. MAX_CONVERSE_ITERATIONS is camp's 6, but from config
+            # and logged when reached (see resolve_chat).
+            "MAX_CONVERSE_ITERATIONS": str(chat_cfg["max_converse_iterations"]),
+            "MAX_HISTORY_MESSAGES": str(chat_cfg["max_history_messages"]),
+            # The read endpoints' caps (GET /conversations and one conversation). Not
+            # the same number as MAX_HISTORY_MESSAGES on purpose: that one is billed in
+            # tokens on every turn, these bound one DynamoDB query of stored items.
+            "MAX_CONVERSATIONS_LISTED": str(chat_cfg["max_conversations_listed"]),
+            "MAX_CONVERSATION_MESSAGES": str(chat_cfg["max_conversation_messages"]),
+            # The loop's WALL-CLOCK budget. The iteration cap bounds how many model
+            # calls happen, not how long they take, so without this a slow run is
+            # killed mid-Converse - billed, with no response reaching the student.
+            # Validated at synth to sit under the function timeout above.
+            "CONVERSE_DEADLINE_SECONDS": str(chat_cfg["converse_deadline_seconds"]),
+            # The conversation title's cap and the titling call's own budget. The cap
+            # reaches TWO places inside the function, like the card caps do: the model
+            # title's validator and the first-message truncation that is its fallback,
+            # so the two can never disagree about how long a sidebar row may be.
+            "TITLE_MAX_CHARS": str(chat_cfg["title_max_chars"]),
+            "TITLE_DEADLINE_SECONDS": str(chat_cfg["title_deadline_seconds"]),
+            # The card contract's caps. Each one reaches TWO places inside the function -
+            # the parser that enforces it and the system prompt that states it - and both
+            # read it from here, so the number the model is told is by construction the
+            # number the server applies.
+            "CARD_MAX_CARDS": str(cards_cfg["max_cards"]),
+            "CARD_MAX_RETRIEVAL_RESULTS": str(cards_cfg["max_retrieval_results"]),
+            "CARD_TITLE_MAX_CHARS": str(cards_cfg["title_max_chars"]),
+            "CARD_DESC_MAX_CHARS": str(cards_cfg["desc_max_chars"]),
+            "CARD_FOLLOWUP_MAX_CHARS": str(cards_cfg["followup_max_chars"]),
+            # The input screen, pinned to its published numbered version. There is no
+            # OUTPUT_GUARDRAIL_* pair and no GUARDRAIL_TRACE: nothing is attached to
+            # Converse, so there is no trace to configure.
+            "INPUT_GUARDRAIL_ID": input_guardrail.attr_guardrail_id,
+            "INPUT_GUARDRAIL_VERSION": input_guardrail_version.attr_version,
+            # The conversation history table, read and written on every turn. By
+            # REFERENCE, not as the literal from config.yaml: a copy here would be a
+            # second place the name is spelled, and the two would drift the moment
+            # either changed.
+            "CHAT_HISTORY_TABLE_NAME": chat_history_table.table_name,
+            # The PER-USER daily message cap, counted in that same table under the
+            # caller's own partition (app/ratelimit.py). Nothing else in this stack
+            # bounds what ONE account spends: the stage throttle and the reserved
+            # concurrency below both bound the service as a whole and cannot tell two
+            # students apart.
+            #
+            # PRESENT ONLY WHEN THE CAP IS ON. A disabled cap omits the variable rather
+            # than setting it to "0", so there is one spelling of off and the function
+            # reads an unset value as disabled without a second default to keep in step.
+            **(
+                {"DAILY_MESSAGE_LIMIT": str(daily_message_limit)}
+                if daily_message_limit is not None
+                else {}
+            ),
+        }
+
         chat_lambda = _lambda.Function(
             self,
             "ChatFunction",
@@ -1164,74 +1247,7 @@ class NavigatorStack(Stack):
             # deliberate over-provision rather than a measured value.
             memory_size=1024,
             log_group=chat_log_group,
-            environment={
-                "KNOWLEDGE_BASE_ID": knowledge_base.attr_knowledge_base_id,
-                "GENERATION_MODEL_ID": generation_model_id,
-                # The model that names a conversation. Identity like the one above, and
-                # granted its own InvokeModel statement above when it differs.
-                "TITLE_MODEL_ID": title_model_id,
-                # Lambda auto-sets AWS_REGION and it is RESERVED (it cannot be set in a
-                # function's configuration), so the region is passed under our own key.
-                "BEDROCK_REGION": self.region,
-                "NUMBER_OF_RESULTS": str(retrieval_cfg["number_of_results"]),
-                "RETRIEVE_MIN_SCORE": str(retrieval_cfg["min_score"]),
-                "GENERATION_MAX_TOKENS": str(generation_cfg["max_tokens"]),
-                "GENERATION_TEMPERATURE": str(generation_cfg["temperature"]),
-                "MAX_QUERY_CHARS": str(request_cfg["max_query_chars"]),
-                # The agent loop's caps. MAX_CONVERSE_ITERATIONS is camp's 6, but from config
-                # and logged when reached (see resolve_chat).
-                "MAX_CONVERSE_ITERATIONS": str(chat_cfg["max_converse_iterations"]),
-                "MAX_HISTORY_MESSAGES": str(chat_cfg["max_history_messages"]),
-                # The read endpoints' caps (GET /conversations and one conversation). Not
-                # the same number as MAX_HISTORY_MESSAGES on purpose: that one is billed in
-                # tokens on every turn, these bound one DynamoDB query of stored items.
-                "MAX_CONVERSATIONS_LISTED": str(chat_cfg["max_conversations_listed"]),
-                "MAX_CONVERSATION_MESSAGES": str(chat_cfg["max_conversation_messages"]),
-                # The loop's WALL-CLOCK budget. The iteration cap bounds how many model
-                # calls happen, not how long they take, so without this a slow run is
-                # killed mid-Converse - billed, with no response reaching the student.
-                # Validated at synth to sit under the function timeout above.
-                "CONVERSE_DEADLINE_SECONDS": str(chat_cfg["converse_deadline_seconds"]),
-                # The conversation title's cap and the titling call's own budget. The cap
-                # reaches TWO places inside the function, like the card caps do: the model
-                # title's validator and the first-message truncation that is its fallback,
-                # so the two can never disagree about how long a sidebar row may be.
-                "TITLE_MAX_CHARS": str(chat_cfg["title_max_chars"]),
-                "TITLE_DEADLINE_SECONDS": str(chat_cfg["title_deadline_seconds"]),
-                # The card contract's caps. Each one reaches TWO places inside the function -
-                # the parser that enforces it and the system prompt that states it - and both
-                # read it from here, so the number the model is told is by construction the
-                # number the server applies.
-                "CARD_MAX_CARDS": str(cards_cfg["max_cards"]),
-                "CARD_MAX_RETRIEVAL_RESULTS": str(cards_cfg["max_retrieval_results"]),
-                "CARD_TITLE_MAX_CHARS": str(cards_cfg["title_max_chars"]),
-                "CARD_DESC_MAX_CHARS": str(cards_cfg["desc_max_chars"]),
-                "CARD_FOLLOWUP_MAX_CHARS": str(cards_cfg["followup_max_chars"]),
-                # The input screen, pinned to its published numbered version. There is no
-                # OUTPUT_GUARDRAIL_* pair and no GUARDRAIL_TRACE: nothing is attached to
-                # Converse, so there is no trace to configure.
-                "INPUT_GUARDRAIL_ID": input_guardrail.attr_guardrail_id,
-                "INPUT_GUARDRAIL_VERSION": input_guardrail_version.attr_version,
-                # The conversation history table, read and written on every turn. By
-                # REFERENCE, not as the literal from config.yaml: a copy here would be a
-                # second place the name is spelled, and the two would drift the moment
-                # either changed.
-                "CHAT_HISTORY_TABLE_NAME": chat_history_table.table_name,
-                # The PER-USER daily message cap, counted in that same table under the
-                # caller's own partition (app/ratelimit.py). Nothing else in this stack
-                # bounds what ONE account spends: the stage throttle and the reserved
-                # concurrency below both bound the service as a whole and cannot tell two
-                # students apart.
-                #
-                # PRESENT ONLY WHEN THE CAP IS ON. A disabled cap omits the variable rather
-                # than setting it to "0", so there is one spelling of off and the function
-                # reads an unset value as disabled without a second default to keep in step.
-                **(
-                    {"DAILY_MESSAGE_LIMIT": str(daily_message_limit)}
-                    if daily_message_limit is not None
-                    else {}
-                ),
-            },
+            environment=chat_environment,
         )
         # The function retrieves from the KB at runtime, so it must not exist before the KB.
         chat_lambda.node.add_dependency(knowledge_base)
@@ -1811,6 +1827,273 @@ class NavigatorStack(Stack):
             ),
         )
 
+        # --- WebSocket streaming API (OPTIONAL, and off by default) --------------
+        #
+        # DELIBERATELY UNNUMBERED, like the chat history table above: it is not a gav pull,
+        # so putting it in a sequence that means "gav's section order" would be a lie. It
+        # sits HERE, between 5 and 6, for a mechanical reason - section 6 stamps config.json,
+        # and the browser's choice of transport is the presence of this API's URL in it.
+        #
+        # THE GATE IS THE WHOLE FEATURE (config.yaml `streaming`). resolve_streaming returns
+        # None when the block is absent or disabled, and then NOTHING below is synthesized:
+        # no API, no authorizer, no functions, no layer, and no `streamingApiUrl` in
+        # config.json - so the frontend has nothing to open and every student stays on
+        # POST /chat, which none of this touches.
+        #
+        # WHY A WEBSOCKET. API Gateway response streaming is REST-API only and this is an
+        # HTTP API; Lambda response streaming is Node.js/custom-runtime only and the agent
+        # loop is Python. In-band streaming means rewriting the loop in another language.
+        # This keeps the Python and moves the stream out of band: ConverseStream on the way
+        # in, post_to_connection on the way out.
+        streaming_cfg = resolve_streaming(config)
+        streaming_api_url = None
+
+        if streaming_cfg is not None:
+            # THE AUTHORIZER'S OWN DEPS LAYER, separate from the chat function's rather
+            # than a line added to it. Two reasons: PyJWT's `crypto` extra pulls in
+            # `cryptography`, a large compiled wheel the chat function has no use for, and
+            # POST /chat is under a hard "keeps working unchanged" constraint - changing
+            # its layer changes its deployed artifact for a feature it does not run.
+            #
+            # `_requirements_hash` folds the layer NAME into the asset hash, which is what
+            # keeps this out of the collision the chat layer's long note describes: three
+            # layers with the same image, command and platform would otherwise share a
+            # cache key and silently reuse each other's bundle.
+            connect_authorizer_layer = _lambda.LayerVersion(
+                self,
+                "ConnectAuthorizerDepsLayer",
+                description=(
+                    "PyJWT + cryptography (manylinux x86_64) for the WebSocket $connect "
+                    "authorizer's RS256 verification."
+                ),
+                compatible_runtimes=[_LAMBDA_PYTHON],
+                compatible_architectures=[_LAMBDA_ARCH],
+                code=_lambda.Code.from_asset(
+                    str(_APP_DIR),
+                    asset_hash=_requirements_hash(
+                        "connect-authorizer", _APP_DIR / "requirements-authorizer.txt"
+                    ),
+                    asset_hash_type=AssetHashType.CUSTOM,
+                    exclude=["*", ".*", "!requirements-authorizer.txt"],
+                    bundling=BundlingOptions(
+                        image=_LAMBDA_PYTHON.bundling_image,
+                        local=_PipManylinuxLayerBundler(
+                            _APP_DIR / "requirements-authorizer.txt"
+                        ),
+                        command=[
+                            "bash",
+                            "-c",
+                            "pip install -r requirements-authorizer.txt "
+                            "--target /asset-output/python",
+                        ],
+                        platform="linux/amd64",
+                    ),
+                ),
+            )
+
+            connect_authorizer_log_group = logs.LogGroup(
+                self,
+                "ConnectAuthorizerLogGroup",
+                retention=logs.RetentionDays.THREE_MONTHS,
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+
+            # THE ONE PIECE OF OUR CODE IN AN AUTH DECISION ANYWHERE IN THIS STACK, and it
+            # exists only because a WebSocket API cannot use the native JWT authorizer the
+            # HTTP API uses: REQUEST (Lambda) is the only authorizer type it accepts, and
+            # `$connect` is the only route one can be attached to.
+            #
+            # NO IAM GRANTS BEYOND LOGGING. It reaches exactly one thing - the pool's public
+            # JWKS document over https - which needs no credentials. An authorizer that
+            # could read the history table would be an authorizer that could be made to.
+            connect_authorizer_lambda = _lambda.Function(
+                self,
+                "ConnectAuthorizerFunction",
+                runtime=_LAMBDA_PYTHON,
+                architecture=_LAMBDA_ARCH,
+                handler="ws_authorizer.lambda_handler",
+                # ONE FILE. It imports nothing from the rest of app/, which is the point:
+                # the module that decides who a caller is should not be able to reach the
+                # store, the model or the guardrail.
+                code=_lambda.Code.from_asset(
+                    str(_APP_DIR), exclude=["*", ".*", "!ws_authorizer.py"]
+                ),
+                layers=[connect_authorizer_layer],
+                # Short: it fetches a cached JWKS and verifies one signature. A slow
+                # authorizer is a slow handshake, in front of a student.
+                timeout=Duration.seconds(10),
+                memory_size=512,
+                log_group=connect_authorizer_log_group,
+                environment={
+                    "COGNITO_REGION": self.region,
+                    "USER_POOL_ID": auth_pool.user_pool_id,
+                    # THE SAME ALLOWLIST THE HTTP API'S AUTHORIZER CARRIES as its audience,
+                    # and deliberately the same rather than narrowed to the web client. Two
+                    # doors into one pool with two different answers to "which clients?" is
+                    # how one of them ends up wrong; the eval harness cannot reach a browser
+                    # socket anyway, and its token is a token from this pool either way.
+                    "ALLOWED_CLIENT_IDS": Fn.join(
+                        ",",
+                        [
+                            web_client.user_pool_client_id,
+                            eval_client.user_pool_client_id,
+                        ],
+                    ),
+                },
+            )
+
+            # THE TOKEN TRAVELS IN THE QUERY STRING, and that is measured rather than
+            # preferred. The better option is `Sec-WebSocket-Protocol`, which keeps the
+            # token out of URLs entirely and which API Gateway DOES accept as an identity
+            # source - but it never echoes the subprotocol back in its 101 response, and RFC
+            # 6455 says a client whose requested subprotocol is not echoed must fail the
+            # connection. Probed against a deployed WebSocket API on 2026-08-12: the 101
+            # came back with no `Sec-WebSocket-Protocol` header, and Chrome 151 and Node's
+            # WHATWG WebSocket both fired `error` without opening. Query string it is.
+            #
+            # THE IDENTITY SOURCE IS LOAD-BEARING IN A WAY THAT BITES: if it is ABSENT from
+            # the request, API Gateway does not invoke the authorizer at all. The handshake
+            # is still refused (probed: HTTP 401), but a browser cannot read the status of a
+            # failed upgrade, so in JS it surfaces as an opaque error and a 1006 close.
+            connect_authorizer = apigwv2_authorizers.WebSocketLambdaAuthorizer(
+                "ChatConnectAuthorizer",
+                connect_authorizer_lambda,
+                identity_source=["route.request.querystring.token"],
+            )
+
+            # The routes' own function: $connect and $disconnect record and clear the
+            # connection. It runs the SAME application modules as the chat function and
+            # therefore takes the same environment (see chat_environment above).
+            streaming_route_log_group = logs.LogGroup(
+                self,
+                "ChatStreamRouteLogGroup",
+                retention=logs.RetentionDays.THREE_MONTHS,
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+
+            streaming_route_role = iam.Role(
+                self,
+                "ChatStreamRouteRole",
+                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+                description=(
+                    "Execution role for the WebSocket route function (connect/disconnect)."
+                ),
+                managed_policies=[
+                    iam.ManagedPolicy.from_aws_managed_policy_name(
+                        "service-role/AWSLambdaBasicExecutionRole"
+                    )
+                ],
+            )
+            # Exactly the two actions the connection record needs, scoped to the one table.
+            # Not the chat role's list: this function does not read a conversation, does not
+            # query, and must not be able to. Spelled out for the reason the chat role's
+            # note gives - `grant_read_write_data` would bring dynamodb:Scan, the one
+            # operation that takes no partition key.
+            streaming_route_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=["dynamodb:PutItem", "dynamodb:DeleteItem"],
+                    resources=[chat_history_table.table_arn],
+                )
+            )
+
+            streaming_route_lambda = _lambda.Function(
+                self,
+                "ChatStreamRouteFunction",
+                runtime=_LAMBDA_PYTHON,
+                architecture=_LAMBDA_ARCH,
+                handler="streaming.lambda_handler",
+                code=_lambda.Code.from_asset(
+                    str(_APP_DIR),
+                    exclude=[
+                        "*",
+                        ".*",
+                        "!streaming.py",
+                        "!settings.py",
+                        "!history.py",
+                    ],
+                ),
+                layers=[chat_deps_layer],
+                role=streaming_route_role,
+                # A connect writes one DynamoDB item. Nothing here waits on a model.
+                timeout=Duration.seconds(10),
+                memory_size=512,
+                log_group=streaming_route_log_group,
+                environment=dict(chat_environment),
+            )
+            streaming_route_lambda.node.add_dependency(chat_history_table)
+
+            streaming_api = apigwv2.WebSocketApi(
+                self,
+                "ChatStreamingApi",
+                # The frame field that picks a route. `$request.body.action` is the
+                # convention API Gateway documents, and it is what makes a message route a
+                # named thing rather than everything falling into $default.
+                route_selection_expression="$request.body.action",
+                connect_route_options=apigwv2.WebSocketRouteOptions(
+                    integration=apigwv2_integrations.WebSocketLambdaIntegration(
+                        "ChatStreamConnectIntegration", streaming_route_lambda
+                    ),
+                    # $connect IS THE ONLY ROUTE THAT CAN CARRY AN AUTHORIZER, which is not
+                    # a gap: a WebSocket connection is authorized once, at the handshake,
+                    # and API Gateway carries this authorizer's `context` onto every later
+                    # route on that connection (verified against a deployed probe), so the
+                    # message route reads `sub` from a validated token rather than a frame.
+                    authorizer=connect_authorizer,
+                ),
+                disconnect_route_options=apigwv2.WebSocketRouteOptions(
+                    integration=apigwv2_integrations.WebSocketLambdaIntegration(
+                        "ChatStreamDisconnectIntegration", streaming_route_lambda
+                    ),
+                ),
+            )
+
+            # NO ACCESS LOGGING, and with a token in the query string that is a decision
+            # rather than an omission. API Gateway access logs are built from an explicit
+            # `$context.*` format string, so a token could only appear in one by being put
+            # there - but the surest way for that not to happen is for there to be no log.
+            # The HTTP API alongside this one configures none either.
+            streaming_stage = apigwv2.WebSocketStage(
+                self,
+                "ChatStreamingStage",
+                web_socket_api=streaming_api,
+                stage_name=_STREAMING_STAGE_NAME,
+                auto_deploy=True,
+                # The same fence the HTTP stage carries, from the same config numbers: this
+                # endpoint reaches the same paid model calls, so it gets the same throttle
+                # rather than a second set of numbers to keep in step.
+                throttle=apigwv2.ThrottleSettings(
+                    rate_limit=http_api_cfg["throttling_rate_limit"],
+                    burst_limit=http_api_cfg["throttling_burst_limit"],
+                ),
+            )
+
+            # AUTHORIZER RESULT CACHING OFF. API Gateway caches a REQUEST authorizer's answer
+            # against its identity source for 300 seconds by default - and the identity
+            # source here is the token itself, so a cached Allow would keep admitting a
+            # token for five minutes after it expired. A connect happens once per
+            # connection, so the cache saves almost nothing and costs exactly that.
+            #
+            # Reached by walking the tree rather than through the binder: a
+            # WebSocketLambdaAuthorizer is a BINDER, not a construct - the CfnAuthorizer it
+            # describes is created when the $connect route binds it - so there is no
+            # `.node` on the object above to escape-hatch through.
+            for child in streaming_api.node.find_all():
+                if isinstance(child, apigwv2.CfnAuthorizer):
+                    child.authorizer_result_ttl_in_seconds = 0
+
+            streaming_api_url = streaming_stage.url
+
+            CfnOutput(
+                self,
+                "ChatStreamingApiUrl",
+                value=streaming_api_url,
+                description=(
+                    "WebSocket endpoint for progressive replies (requires a Cognito access "
+                    "token as ?token=). The frontend reads this from config.json; when the "
+                    "key is absent it uses POST /chat."
+                ),
+            )
+
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------
         #
         # THE BUILD: the Astro app in frontend/ is compiled IN A CONTAINER at synth (see
@@ -2007,6 +2290,19 @@ function handler(event) {
                         **(
                             {"costModel": cost_model}
                             if (cost_model := resolve_cost_model(config)) is not None
+                            else {}
+                        ),
+                        # The WebSocket endpoint for progressive replies, or the key
+                        # omitted entirely when streaming is off. THE OMISSION IS THE GATE
+                        # again, and here it does something stronger than hide a control:
+                        # the frontend picks its TRANSPORT from whether this key is present
+                        # (frontend/src/lib/chatStream.ts), so a build that never receives
+                        # it cannot open a socket at all - there is no URL for it to guess.
+                        # Turning streaming off is a config edit, and what it turns off is
+                        # the whole path rather than a branch inside it.
+                        **(
+                            {"streamingApiUrl": streaming_api_url}
+                            if streaming_api_url is not None
                             else {}
                         ),
                     },

@@ -1051,6 +1051,78 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The `streaming` block: the WebSocket API that streams a reply as it is written.
+
+    Returns None when the block is absent or `enabled` is false, and the stack then
+    synthesizes NO WebSocket API, no connect authorizer, no streaming functions and no
+    `streamingApiUrl` in config.json - so the frontend never opens a socket and every
+    student stays on POST /chat. Same gate as resolve_cost_model, for the same reason: off
+    should be one state with one spelling, and the absence of the URL in config.json is
+    what makes the browser's choice of transport a config decision rather than a code one.
+
+    OFF IS NOT AN ERROR, and off is the shipped default: this lands dark so it can be
+    turned on deliberately rather than by merging.
+
+    THE BATCHING NUMBERS ARE HERE BECAUSE THEY ARE A COST CONTROL, not a feel knob. Every
+    push down a WebSocket is a billable API Gateway message, so a naive one-message-per-
+    token stream multiplies the message count by roughly the token count for no visible
+    benefit - the frontend already animates arriving text at ~108 characters a second, and
+    the model outruns that. Batching to a few hundred characters puts a turn in the low
+    tens of messages.
+
+    OUTPUT GUARDRAIL DEFAULTS OFF, AND ASYNC IS UNREPRESENTABLE. When it is on the stack
+    attaches this stack's guardrail to ConverseStream in `sync` mode, which is the only
+    mode this code can emit: `async` releases chunks to the student BEFORE they are
+    scanned, which is not a screen, and it does not support PII masking. The default is
+    off because it is measured (2026-08-12, us-west-2, claude-sonnet-4-6, n=4 real
+    questions): sync mode moved the model's time to first token from a median of 1.12s to
+    6.75s while total stream time barely moved, because sync mode holds the response back
+    and scans it in large chunks. That is most of this feature's benefit spent on a screen
+    that, with today's guardrail, cannot fire - the one filter is PROMPT_ATTACK with
+    outputStrength forced to NONE and there is no PII policy, so it scans output and can
+    never intervene on it. Turn it on the day a policy is added that can.
+    """
+    streaming_cfg = config.get("streaming")
+    if not streaming_cfg:
+        return None
+    if not isinstance(streaming_cfg, dict):
+        raise ValueError("streaming must be a mapping.")
+    if not streaming_cfg.get("enabled", False):
+        return None
+
+    def _bounded_int(key: str, minimum: int, maximum: int) -> int:
+        value = streaming_cfg.get(key)
+        # Booleans are ints in Python, so `delta_min_chars: true` would resolve to 1 - one
+        # gateway message per character, which is the exact bill this block exists to bound.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"streaming.{key} must be an integer (got {value!r})."
+            )
+        if not minimum <= value <= maximum:
+            raise ValueError(
+                f"streaming.{key} must be between {minimum} and {maximum} (got {value})."
+            )
+        return value
+
+    output_guardrail = streaming_cfg.get("output_guardrail", False)
+    if not isinstance(output_guardrail, bool):
+        raise ValueError(
+            f"streaming.output_guardrail must be true or false (got {output_guardrail!r})."
+        )
+
+    return {
+        # Floor of 1 would be one message per character; the ceiling keeps a batch under a
+        # size where the reader can see the text arrive in blocks rather than flow.
+        "delta_min_chars": _bounded_int("delta_min_chars", 16, 2000),
+        # How long a partial batch may wait before it is pushed anyway. Without it the tail
+        # of a reply - the last few characters, under the batch size - would never be sent
+        # as a delta and the preview would stall short of the final payload.
+        "delta_max_delay_ms": _bounded_int("delta_max_delay_ms", 50, 5000),
+        "output_guardrail": output_guardrail,
+    }
+
+
 def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The `okta` block: the SAML identity provider federated into the chat user pool.
 
@@ -1156,6 +1228,11 @@ def validate_config(config: Dict[str, Any]) -> None:
     # deployment and not an error. A URL that IS set gets checked here rather than at
     # CreateIdentityProvider, which is a mid-update deploy failure.
     resolve_okta(config)
+    # And again: None when the WebSocket streaming path is off, which is the shipped
+    # default and not an error - but an ENABLED block with a batch size of 1 still fails
+    # synth here, where the message can name the key, rather than deploying an endpoint
+    # that bills one API Gateway message per token.
+    resolve_streaming(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:

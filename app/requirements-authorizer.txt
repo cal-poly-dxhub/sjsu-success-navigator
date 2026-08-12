@@ -1,0 +1,14 @@
+# Deps for the WebSocket $connect authorizer (app/ws_authorizer.py) ONLY, and its own
+# file rather than a line in requirements.txt so the chat Lambda's layer does not change
+# shape for a feature it has nothing to do with.
+#
+# PyJWT with the `crypto` extra, which pulls in `cryptography` - a compiled wheel, so this
+# layer needs the same manylinux treatment pydantic's does. The extra is not optional:
+# without it PyJWT cannot verify RS256 at all, which is the only algorithm Cognito signs
+# with, and the failure would be at runtime on a student's first connect.
+#
+# WHY A LIBRARY AND NOT TWENTY LINES OF `pow(sig, e, n)`. RSA PKCS#1 v1.5 verification is
+# short enough to hand-roll and the padding check is exactly where hand-rolled versions go
+# wrong - a lenient parser accepts forged signatures (Bleichenbacher). This is the one
+# thing in the request path that decides who a caller is.
+pyjwt[crypto]>=2.8,<3

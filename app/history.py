@@ -18,11 +18,18 @@ The item shapes are the doc's, not this module's invention:
     message               pk=USER#<sub>   sk=MSG#<convId>#<ulid>
                           role, text, cards (URLs already resolved), createdAt
 
-plus one item that is not history at all and shares the partition because the partition is
-already the user (app/ratelimit.py, and claim_message_allowance below):
+plus two items that are not history at all and share the partition because the partition is
+already the user (app/ratelimit.py and app/streaming.py; claim_message_allowance and
+open_connection below):
 
     rate counter          pk=USER#<sub>   sk=RATE#DAY#<YYYY-MM-DD>
                           count, expiresAt
+    open connection       pk=USER#<sub>   sk=CONN#<connectionId>
+                          connectedAt, expiresAt
+
+Both expire by the table's TTL attribute, and neither is visible to any read here: the
+conversation list is begins_with('CONV#') and both message reads are
+begins_with('MSG#<convId>#').
 
 `USER#<sub>` is built HERE from the JWT claim the handler read, never from anything in the
 request body. That is the whole isolation story for this table: a request cannot address
@@ -378,6 +385,74 @@ class ConversationStore:
                 return False
             raise
         return True
+
+    def open_connection(
+        self,
+        *,
+        user_id: str,
+        connection_id: str,
+        expires_at: int,
+    ) -> None:
+        """Record that this user has a WebSocket connection open.
+
+            connection   pk=USER#<sub>   sk=CONN#<connectionId>   connectedAt, expiresAt
+
+        A FOURTH SORT-KEY PREFIX IN THE USER'S OWN PARTITION, which is the same trick the
+        rate counter above plays and for the same reason: the partition is already the
+        user, so an item that is about the user needs no new table and no new grant. It is
+        invisible to every read in this module - the conversation list is
+        begins_with('CONV#') and both message reads are begins_with('MSG#<convId>#') - so
+        nothing had to learn to skip it.
+
+        THE PARTITION IS THE USER, NOT THE CONNECTION, and that was a real choice. Keying
+        on `CONN#<connectionId>` would make the record addressable by connection id alone,
+        which sounds useful until you notice nothing needs it: API Gateway carries the
+        $connect authorizer's context onto every later route on the connection, so the
+        message route already has a `sub` that came out of a verified token. Keeping the
+        partition the user preserves the property the whole table is built on
+        (docs/accounts-and-storage.md, Storage) - every key here derives from a JWT claim -
+        rather than opening one item kind that does not.
+
+        TTL IS NOT HOUSEKEEPING HERE, it is the whole lifetime story. API Gateway closes an
+        idle connection after 10 minutes and any connection after 2 hours, so a record that
+        outlives those quotas describes a connection that cannot exist. `expiresAt` is the
+        table's existing TTL attribute (epoch seconds), set well past the hard cap so DynamoDB
+        collects the rows $disconnect never reached - a Lambda error, a throttle, a region
+        blip - rather than leaving them to accumulate forever.
+
+        SWALLOWS ITS OWN FAILURES. This record is a record, not a gate: nothing reads it to
+        decide whether a student may stream, so a write that fails must not cost them their
+        connection. Same posture as _touch_header above.
+        """
+        try:
+            self._table_resource().put_item(
+                Item={
+                    "pk": f"USER#{user_id}",
+                    "sk": f"CONN#{connection_id}",
+                    "connectedAt": _now_iso(),
+                    "expiresAt": expires_at,
+                }
+            )
+        except Exception:
+            logger.exception(
+                "Could not record a WebSocket connection; streaming continues without it"
+            )
+
+    def close_connection(self, *, user_id: str, connection_id: str) -> None:
+        """Forget a connection that has closed. Idempotent, and swallows its failures.
+
+        A delete of something that is not there is not an error - $disconnect can fire for
+        a connection whose open record never landed - and the TTL is the backstop for the
+        case where this never runs at all.
+        """
+        try:
+            self._table_resource().delete_item(
+                Key={"pk": f"USER#{user_id}", "sk": f"CONN#{connection_id}"}
+            )
+        except Exception:
+            logger.exception(
+                "Could not clear a WebSocket connection record; its TTL will collect it"
+            )
 
     def set_generated_title(
         self,

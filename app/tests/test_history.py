@@ -753,3 +753,68 @@ def test_any_other_failure_on_the_allowance_write_still_raises(monkeypatch):
         store.claim_message_allowance(
             user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
         )
+
+
+# --- connection records (app/streaming.py) -----------------------------------------------
+
+
+def test_a_connection_is_an_item_in_the_users_own_partition(table):
+    """pk=USER#<sub>, sk=CONN#<connectionId> - a fourth sort-key prefix in the partition
+    the user already owns, exactly as the rate counter is a third.
+
+    THE PARTITION IS THE USER, NOT THE CONNECTION, and that is the assertion. Keying on the
+    connection id would make the row addressable by a value that is not a JWT claim, which
+    is the one property this whole table is built on (docs/accounts-and-storage.md)."""
+    table.store.open_connection(user_id=_SUB, connection_id="abc123=", expires_at=1_700_010_000)
+
+    item = table.puts[0]["Item"]
+    assert item["pk"] == f"USER#{_SUB}"
+    assert item["sk"] == "CONN#abc123="
+    assert item["expiresAt"] == 1_700_010_000
+    assert item["connectedAt"]
+
+
+def test_a_connection_record_is_invisible_to_every_read_in_the_module(table):
+    """It shares the partition with the conversations, so the thing that keeps it out of a
+    student's sidebar is the sort-key prefix and nothing else. The conversation list asks
+    for begins_with('CONV#') and both message reads for begins_with('MSG#<convId>#'), so
+    'CONN#' is unreachable from all three - no read had to learn to skip it."""
+    table.store.list_conversations(user_id=_SUB, limit=10)
+    table.store.conversation_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
+    table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
+
+    for query in table.queries:
+        prefix = query["ExpressionAttributeValues"][":prefix"]
+        assert prefix in ("CONV#", f"MSG#{_CONV}#")
+        assert not prefix.startswith("CONN#")
+
+
+def test_closing_a_connection_deletes_exactly_that_row(table):
+    table.store.close_connection(user_id=_SUB, connection_id="abc123=")
+
+    assert table.deletes == [
+        {"Key": {"pk": f"USER#{_SUB}", "sk": "CONN#abc123="}}
+    ]
+
+
+def test_a_failed_connection_write_does_not_cost_the_student_their_connection(monkeypatch):
+    """The record is a record, not a gate: nothing reads it to decide whether a student may
+    stream. Same posture as the header counter above - a write that fails logs and the turn
+    goes on."""
+    fake = _FakeTable(raises_on="put_item")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    store.open_connection(user_id=_SUB, connection_id="abc", expires_at=1)
+
+    assert fake.puts, "it still attempted the write"
+
+
+def test_a_failed_connection_delete_is_left_to_the_ttl(monkeypatch):
+    fake = _FakeTable(raises_on="delete_item")
+    store = history.ConversationStore("chat-history-test")
+    monkeypatch.setattr(store, "_table_resource", lambda: fake)
+
+    store.close_connection(user_id=_SUB, connection_id="abc")
+
+    assert fake.deletes, "it still attempted the delete"

@@ -211,6 +211,48 @@ chat_history:
   # effect of tearing down infrastructure.
   table_name: sjsu-navigator-chat-history
 
+# --- Progressive replies over a WebSocket ---------------------------------------------
+#
+# ONE KEY, AND IT SHIPS OFF. `enabled: false` (or no block at all) synthesizes NO WebSocket
+# API, no connect authorizer, no streaming Lambdas, and stamps no `streamingApiUrl` into
+# config.json - so the browser has nothing to open a socket to and every student is on
+# POST /chat, which is untouched by all of this and remains the fallback for anyone whose
+# socket fails at any point. The absence IS the gate, the shape `cost_model` and `okta`
+# already use.
+#
+# WHY A WEBSOCKET AND NOT RESPONSE STREAMING. API Gateway response streaming is REST-API
+# only and this is an HTTP API; Lambda response streaming is Node.js/custom-runtime only
+# and the agent loop is Python. Streaming in band therefore means rewriting the loop in
+# another language. A WebSocket keeps the Python and moves the stream out of band.
+#
+# WHAT STREAMS IS A PREVIEW. Prose only, never parsed. Cards, the length caps, dash
+# normalisation and the safety-card decision all come off the COMPLETE reply, in the same
+# code POST /chat runs, and arrive in one final message carrying exactly the payload
+# POST /chat would have returned. The browser renders that, not the preview.
+streaming:
+  enabled: false
+  # How many characters accumulate before a delta is pushed. EVERY PUSH IS A BILLABLE
+  # API Gateway message, so this is a cost control rather than a feel knob: one message per
+  # token would multiply the message count by the token count for nothing a reader can see,
+  # because the typewriter on the other end reveals ~108 characters a second and the model
+  # outruns it either way. At 160, a 1,500-character reply is ~10 messages.
+  delta_min_chars: 160
+  # How long a partial batch may wait before it goes anyway. Without it the tail of a reply
+  # - whatever is left under delta_min_chars - would never be pushed, and the preview would
+  # stall a sentence short of the final payload.
+  delta_max_delay_ms: 250
+  # Attach this stack's guardrail to ConverseStream. OFF, and measured rather than assumed
+  # (2026-08-12, us-west-2, claude-sonnet-4-6, 4 real questions): turning it on moves the
+  # model's time to first token from a median of 1.12s to 6.75s, because the only safe
+  # stream mode - `sync`, the only one this code can emit - holds the response back and
+  # scans it in large chunks, which is very nearly the buffered path again. What that buys
+  # today is nothing: the guardrail's one filter is PROMPT_ATTACK with outputStrength
+  # forced to NONE and there is no PII policy, so it scans the output and can never
+  # intervene on it. Turn this on the day a policy exists that can, and accept the latency
+  # knowingly. `async` is not an option and is not spellable here - it releases text to the
+  # student before it is scanned, which is not a screen.
+  output_guardrail: false
+
 # --- Identity federation (Okta SAML into the chat user pool) --------------------------
 #
 # ONE KEY, SET THREE WAYS, and that is the whole feature. Empty or absent -> no identity
