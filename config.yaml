@@ -340,7 +340,9 @@ generation:
 #   - the retrieved passages ride in the input tokens and dominate them (85% of the cost);
 #   - the guardrail bills per 1,000-character text unit, not per question.
 cost_model:
-  # The gate. false -> no costModel key in config.json -> no button in the UI.
+  # The gate. false -> no costModel key in config.json -> no cost section inside the
+  # settings panel. The gear that opens settings is there either way; it holds the
+  # language picker too, which is not a sponsor's instrument.
   enabled: true
   # Shown on the panel. Rates move; a figure with no date is not checkable.
   as_of: "2026-08-11"

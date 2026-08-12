@@ -1,0 +1,151 @@
+/*
+ * The cost breakdown: two cards inside the settings panel's collapsible section - what the
+ * chat on screen has billed, and what a month at a given volume would. Numbers are set in a
+ * tabular face so the counts line up down the column while they change.
+ *
+ * The dialog chrome this file used to carry (scrim, centring layer, head, close button) is
+ * in SettingsPanel.css now: it belongs to the panel that owns those things, not to one
+ * section inside it.
+ */
+
+.cost-breakdown {
+	display: grid;
+	grid-template-columns: 1fr 1.15fr;
+	gap: 1.15rem;
+}
+
+@media (max-width: 44rem) {
+	.cost-breakdown {
+		grid-template-columns: 1fr;
+	}
+}
+
+.cost-card {
+	background: #fff;
+	border: 1px solid #e4e7ec;
+	border-radius: 14px;
+	padding: 0.95rem 1rem 1.05rem;
+}
+
+.cost-card h3 {
+	margin: 0 0 0.55rem;
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--text-muted, #6b7380);
+}
+
+.cost-card__big {
+	margin: 0;
+	font-size: 2.05rem;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-primary, #1c2430);
+}
+
+.cost-card__big--sm {
+	font-size: 1.45rem;
+}
+
+.cost-card__sub {
+	margin: 0.28rem 0 0;
+	font-size: 0.78rem;
+	line-height: 1.45;
+	color: var(--text-muted, #6b7380);
+}
+
+/* --- the conversation's own counts --------------------------------------- */
+
+.cost-rows {
+	list-style: none;
+	margin: 0.85rem 0 0;
+	padding: 0;
+	font-size: 0.82rem;
+}
+
+.cost-rows li {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.75rem;
+	padding: 0.4rem 0;
+	border-bottom: 1px solid #eef0f3;
+}
+
+.cost-rows li:last-child {
+	border-bottom: none;
+}
+
+.cost-rows__k {
+	color: var(--text-secondary, #3d4654);
+}
+
+.cost-rows__v {
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+/* --- the one slider ----------------------------------------------------- */
+
+.cost-slider__label {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.75rem;
+	font-size: 0.82rem;
+	font-weight: 600;
+	color: var(--text-secondary, #3d4654);
+}
+
+.cost-slider__value {
+	font-variant-numeric: tabular-nums;
+	font-weight: 700;
+	color: var(--text-primary, #1c2430);
+}
+
+.cost-slider {
+	width: 100%;
+	margin: 0.5rem 0 0.9rem;
+	accent-color: var(--accent-blue, #0055a2);
+}
+
+.cost-slider:focus-visible {
+	outline: 3px solid var(--accent-blue, #0055a2);
+	outline-offset: 2px;
+}
+
+/*
+ * The two figures the projected total is made of. They sit UNDER it rather than beside it,
+ * so the number the slider moves is read first and these explain where it came from.
+ */
+.cost-figures {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0.85rem;
+	margin-top: 1rem;
+	padding-top: 0.9rem;
+	border-top: 1px solid #eef0f3;
+}
+
+.cost-figures__label {
+	margin: 0;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--text-muted, #6b7380);
+}
+
+.cost-breakdown__foot {
+	margin: 1rem 0 0;
+	font-size: 0.72rem;
+	line-height: 1.55;
+	color: var(--text-muted, #6b7380);
+}
+
+.cost-breakdown__foot strong {
+	color: var(--text-secondary, #3d4654);
+}

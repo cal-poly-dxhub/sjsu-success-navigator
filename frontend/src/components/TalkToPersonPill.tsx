@@ -1,3 +1,4 @@
+import { useStrings } from '../lib/i18n';
 import { PressableButton } from './PressableButton';
 import './TalkToPersonPill.css';
 
@@ -13,12 +14,13 @@ type TalkToPersonPillProps = {
  * from somewhere else.
  */
 export function TalkToPersonPill({ onClick }: TalkToPersonPillProps) {
+	const t = useStrings();
 	return (
 		<PressableButton
 			variant="ghost"
 			className="talk-pill"
 			onClick={onClick}
-			aria-label="Talk to a person at SJSU Cares"
+			aria-label={t.talkToPersonAria}
 		>
 			<span className="talk-pill__seal" aria-hidden="true">
 				<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" focusable="false">
@@ -27,7 +29,7 @@ export function TalkToPersonPill({ onClick }: TalkToPersonPillProps) {
 			</span>
 			<span className="talk-pill__copy">
 				<span className="talk-pill__kicker">SJSU Cares</span>
-				<span className="talk-pill__label">Talk to a person</span>
+				<span className="talk-pill__label">{t.talkToPerson}</span>
 			</span>
 		</PressableButton>
 	);

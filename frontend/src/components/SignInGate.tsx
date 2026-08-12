@@ -7,6 +7,7 @@ import {
 	isSignedIn,
 } from '../lib/auth';
 import ChatApp from './ChatApp';
+import { strings, useStrings } from '../lib/i18n';
 import { PressableButton } from './PressableButton';
 import './SignInGate.css';
 
@@ -30,6 +31,7 @@ import './SignInGate.css';
  * the redirect flow adds no /login or /auth/callback page and no CloudFront routing case.
  */
 export default function SignInGate() {
+	const t = useStrings();
 	const [signedIn, setSignedIn] = useState(() => isSignedIn());
 	const [error, setError] = useState<string | null>(null);
 	// Starts true on a return trip so the sign-in button never flashes over a sign-in that
@@ -48,7 +50,7 @@ export default function SignInGate() {
 				setError(
 					err instanceof AuthError || err instanceof Error
 						? err.message
-						: 'Sign-in could not be completed.',
+						: strings().signInNotCompleted,
 				);
 			})
 			.finally(() => {
@@ -72,7 +74,7 @@ export default function SignInGate() {
 			setError(
 				err instanceof AuthError || err instanceof Error
 					? err.message
-					: 'Sign-in could not be started.',
+					: t.signInNotStarted,
 			);
 			setBusy(false);
 		});
@@ -81,8 +83,8 @@ export default function SignInGate() {
 	return (
 		<main className="sign-in">
 			<div className="sign-in__card">
-				<h1 className="sign-in__title">Student Success Navigator</h1>
-				<p className="sign-in__subtitle">Sign in with your SJSU account to continue.</p>
+				<h1 className="sign-in__title">{t.appName}</h1>
+				<p className="sign-in__subtitle">{t.signInSubtitle}</p>
 
 				{error ? (
 					<p className="sign-in__error" role="alert">
@@ -96,7 +98,7 @@ export default function SignInGate() {
 					onClick={handleSignIn}
 					disabled={busy}
 				>
-					{busy ? 'Signing in…' : 'Sign in'}
+					{busy ? t.signingIn : t.signIn}
 				</PressableButton>
 			</div>
 		</main>

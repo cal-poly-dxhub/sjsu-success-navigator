@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LayoutGroup, motion } from 'motion/react';
+import { UNSENT_CHAT_TITLE } from '../types/chat';
 import type { ChatResponse, ChatSession, ConversationTurn, RagPhase } from '../types/chat';
 import {
 	ChatApiError,
@@ -21,13 +22,14 @@ import {
 } from '../lib/conversationTurns';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
-import { CostPanel } from './CostPanel';
 import { SammyStage } from './SammyStage';
+import { SettingsPanel } from './SettingsPanel';
 import { SideNav } from './SideNav';
 import { SjsuCaresModal } from './SjsuCaresModal';
 import { TalkToPersonPill } from './TalkToPersonPill';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { addTurnUsage } from '../lib/costModel';
+import { strings, useStrings } from '../lib/i18n';
 import { currentUsername, signOut } from '../lib/auth';
 import { loadRuntimeConfig } from '../lib/runtimeConfig';
 import type { CostModel } from '../lib/runtimeConfig';
@@ -78,16 +80,19 @@ function tileAlignedSlideDistance(): number {
 }
 
 /**
- * The opening greeting. This is REAL UI copy, not fixture data - it was the one thing in
+ * The opening greeting. This is REAL UI COPY, not fixture data - it was the one thing in
  * camp's chatFixtures.ts worth keeping, so it moved here when that file was deleted along
- * with the four fake conversations it also held.
+ * with the four fake conversations it also held. Being UI copy is exactly why it lives in
+ * the string catalogue now and is read at the moment a chat is created rather than being a
+ * module constant fixed at import.
  */
-const WELCOME_RESPONSE: ChatResponse = {
-	conversationalText:
-		"Hi! I'm Sammy. Ask me anything about SJSU campus resources: tutoring, advising, wellness, housing help, and more.",
-	talkToPersonAvailable: true,
-	statementBatches: [],
-};
+function welcomeResponse(): ChatResponse {
+	return {
+		conversationalText: strings().welcome,
+		talkToPersonAvailable: true,
+		statementBatches: [],
+	};
+}
 
 /**
  * The unsent chat at the top of the sidebar. It holds the welcome turn and NO conversation
@@ -101,12 +106,15 @@ const WELCOME_RESPONSE: ChatResponse = {
 function newChatSession(): ChatSession {
 	return {
 		id: `new-${Date.now()}`,
-		title: 'New chat',
-		turns: turnsFromResponse(WELCOME_RESPONSE),
+		title: UNSENT_CHAT_TITLE,
+		// Flagged so the feed can keep re-rendering it in the chosen language until this
+		// chat is used - see `shownTurns` below, which is where that actually happens.
+		turns: turnsFromResponse(welcomeResponse()).map((turn) => ({ ...turn, welcome: true })),
 	};
 }
 
 export default function ChatApp() {
+	const t = useStrings();
 	const reduceMotion = usePrefersReducedMotion();
 	const [initialChat] = useState(newChatSession);
 	const [turns, setTurns] = useState<ConversationTurn[]>(() => initialChat.turns ?? []);
@@ -141,15 +149,16 @@ export default function ChatApp() {
 	 */
 	const [streamingReady, setStreamingReady] = useState(false);
 	const [showSjsuCaresModal, setShowSjsuCaresModal] = useState(false);
-	const [showCostPanel, setShowCostPanel] = useState(false);
+	const [showSettings, setShowSettings] = useState(false);
 	/**
 	 * The cost model, or null when the stack did not stamp one.
 	 *
 	 * Loaded on mount rather than at build time for the same reason the API URL is: it does
-	 * not exist until `cdk deploy` writes config.json. Null covers both "the panel is off"
-	 * and "config.json could not be read at all" - the control simply does not render, which
-	 * is the right outcome for both. A failure here must never break the chat, so the fetch
-	 * swallows its error: this is a demo instrument, not part of answering a student.
+	 * not exist until `cdk deploy` writes config.json. Null covers both "the section is off"
+	 * and "config.json could not be read at all" - the cost section simply does not render
+	 * inside settings, which is the right outcome for both. A failure here must never break
+	 * the chat, so the fetch swallows its error: this is a demo instrument, not part of
+	 * answering a student. Settings itself does not wait on any of it.
 	 */
 	const [costModel, setCostModel] = useState<CostModel | null>(null);
 
@@ -209,8 +218,8 @@ export default function ChatApp() {
 				if (cancelled) return;
 				setHistoryError(
 					error instanceof ChatApiError
-						? `Could not load your chats: ${error.message}`
-						: 'Could not load your chats.',
+						? strings().chatsLoadFailedWith(error.message)
+						: strings().chatsLoadFailed,
 				);
 			})
 			.finally(() => {
@@ -229,6 +238,25 @@ export default function ChatApp() {
 	 * after "New chat", which returns to the welcome turn and therefore to the landing.
 	 */
 	const conversationStarted = Boolean(pendingPrompt) || turns.some((turn) => Boolean(turn.query));
+
+	/**
+	 * The turns as they are shown, which differs from what is stored in exactly one case: an
+	 * UNUSED chat's greeting is rendered in the language chosen right now. Switching to
+	 * Tiếng Việt on the landing screen should change the sentence on the landing screen -
+	 * it is the app's own copy and nobody has asked anything yet.
+	 *
+	 * Once `conversationStarted` is true this passes `turns` straight through, so the frozen
+	 * text written by beginPendingExchange is what stays on screen. The Typewriter treats a
+	 * REPLACED string as a new message and re-types it (components/Typewriter.tsx), which is
+	 * the right behaviour here: the greeting is being said again, in another language.
+	 */
+	const shownTurns = useMemo(
+		() =>
+			conversationStarted
+				? turns
+				: turns.map((turn) => (turn.welcome ? { ...turn, text: t.welcome } : turn)),
+		[conversationStarted, t, turns],
+	);
 
 	const settleBackground = useCallback((landedId: number, toX: number) => {
 		setChatTransition((current) => {
@@ -291,7 +319,14 @@ export default function ChatApp() {
 	const beginPendingExchange = useCallback(
 		(query: string) => {
 			setTurns((current) => {
-				const archived = archiveActiveTurns(current);
+				// THE GREETING IS FROZEN HERE, in the language it was being read in, because
+				// this is the instant the chat stops being new. After this the conversation
+				// has a language of its own - the student's first message set it and the
+				// model answers in kind - and a greeting that kept following the picker
+				// would be the one line in the thread rewriting itself under them.
+				const archived = archiveActiveTurns(current).map((turn) =>
+					turn.welcome ? { ...turn, text: strings().welcome } : turn,
+				);
 				updateChat(activeChatId, archived);
 				return archived;
 			});
@@ -441,7 +476,7 @@ export default function ChatApp() {
 			const message =
 				error instanceof ChatApiError
 					? error.message
-					: 'Something went wrong reaching Sammy. Is the chat API running?';
+					: t.turnFailed;
 			setPendingPrompt(null);
 			setPendingPreview('');
 			setPendingStage(null);
@@ -505,7 +540,7 @@ export default function ChatApp() {
 		// name arriving sooner rather than a second source of truth.
 		setChats((current) =>
 			current.map((chat) =>
-				chat.id === activeChatId && chat.title === 'New chat'
+				chat.id === activeChatId && chat.title === UNSENT_CHAT_TITLE
 					? { ...chat, title: query.length > 36 ? `${query.slice(0, 36).trim()}…` : query }
 					: chat,
 			),
@@ -557,8 +592,8 @@ export default function ChatApp() {
 				setOpeningChatId(null);
 				setHistoryError(
 					error instanceof ChatApiError
-						? `Could not open that chat: ${error.message}`
-						: 'Could not open that chat.',
+						? t.chatOpenFailedWith(error.message)
+						: t.chatOpenFailed,
 				);
 			});
 	};
@@ -666,10 +701,10 @@ export default function ChatApp() {
 				historyError={historyError}
 				userEmail={userEmail}
 				onLogout={handleSignOut}
-				// Undefined when no cost model was stamped, which is what keeps the control
-				// out of the sidebar entirely rather than rendering a button that opens
-				// nothing.
-				onOpenCost={costModel ? () => setShowCostPanel(true) : undefined}
+				// Unconditional. The gear used to be handed this only when a cost model was
+				// stamped, so a deployment with the cost panel off had no gear; settings now
+				// holds the language picker, which every student has a reason to open.
+				onOpenSettings={() => setShowSettings(true)}
 				collapsed={navCollapsed}
 				onExpand={() => setNavCollapsedPersisted(false)}
 				onCollapse={() => setNavCollapsedPersisted(true)}
@@ -689,7 +724,7 @@ export default function ChatApp() {
 				type="button"
 				className="chat-app__nav-toggle"
 				onClick={() => setNavOpen(true)}
-				aria-label="Open chat history"
+				aria-label={t.openChatHistory}
 			>
 				<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
 					<path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z" fill="currentColor" />
@@ -717,7 +752,7 @@ export default function ChatApp() {
 						>
 							{hasContent || pendingPrompt ? (
 								<ConversationFeed
-									turns={turns}
+									turns={shownTurns}
 									pendingPrompt={pendingPrompt}
 									pendingPreview={pendingPreview}
 									pendingStage={pendingStage}
@@ -762,16 +797,17 @@ export default function ChatApp() {
 				highlightedServiceTheme={inferSjsuCaresServiceTheme(lastUserQuery)}
 			/>
 
-			{costModel ? (
-				<CostPanel
-					open={showCostPanel}
-					model={costModel}
-					// The meter for the conversation on screen, not for the tab: opening a
-					// different chat shows what that one has billed here.
-					usage={activeChat?.usage}
-					onClose={() => setShowCostPanel(false)}
-				/>
-			) : null}
+			{/* Always rendered, cost model or not - the language picker inside is the reason
+			    the gear exists now. `costModel` being null is what removes the cost section
+			    within it, and nothing else changes. */}
+			<SettingsPanel
+				open={showSettings}
+				costModel={costModel}
+				// The meter for the conversation on screen, not for the tab: opening a
+				// different chat shows what that one has billed here.
+				usage={activeChat?.usage}
+				onClose={() => setShowSettings(false)}
+			/>
 		</div>
 	);
 }
