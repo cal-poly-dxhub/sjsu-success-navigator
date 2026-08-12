@@ -149,8 +149,11 @@ balance is:
 Where it sits now: in the cards. Anything that sends a student somewhere, or
 that tells them about a source we ingested, is a card, and each one carries a
 real description rather than a bare source link - the destination, the specifics
-that make it usable, the next step. The prose is two or three lines saying what
-kinds of options exist and pointing at the cards below.
+that make it usable, the next step. The prose is one or two lines saying what
+kinds of options exist and pointing at the cards below, and the balance is
+measurable rather than aspirational: in every worked example that emits cards,
+the titles and descriptions outweigh the prose on both sides of the grid, and a
+unit test asserts it so a rewrite cannot drift the weight back into the bubble.
 
 The first shipped balance was the other one - prose answering directly in a few
 sentences, cards carrying per-source detail - and moving it took a prompt
@@ -158,6 +161,29 @@ rewrite and one config number. That is the claim above holding up. The one thing
 the weighting does not change is a turn with no cards, where the prose is
 necessarily the whole answer; the prompt says so explicitly, because a teaser
 bubble above an empty space is this balance's failure mode.
+
+## The two marks
+
+The model may write **bold** and unordered bullet lists, in the prose and inside
+a `<desc>` alike, and nothing else: no headings, no ordered lists, no tables, no
+images, no typed links. The permission and the ban both live in the system
+prompt and are modelled in its examples.
+
+The ban is the half that matters. Only these two render, so anything else
+reaches the student as the literal characters the model typed, and a typed link
+is the sharper case: it is a destination nobody resolved, which is exactly what
+`ref` exists to make unrepresentable. Bullets earn their place on a routing card,
+where the office's email and phone go at the foot of the description, because a
+card that names the right office and leaves its number to be hunted down is the
+partial answer the 2026-08-10 eval kept scoring.
+
+**Newlines do not survive a `<desc>`.** `_first_field` collapses all whitespace
+to single spaces (so does `_capped`), which is what makes the caps measure the
+string the student reads. Bold is unaffected. A bulleted list is not: written
+inside a description it arrives at the frontend on one line, where a renderer
+keyed on line starts sees no list. Prose keeps its newlines and renders bullets
+correctly. Closing that gap is a change to this module's field reader, which the
+prompt cannot do from its side.
 
 ## Length caps
 
@@ -182,6 +208,14 @@ shortened where it can be measured, never hidden by the layout.
   before the card leaves the backend) is a WARNING-logged bug, not a daily
   event - an ellipsis on screen means something is broken, and the frontend
   still renders whatever it receives without clipping.
+- Which is why lowering the target does NOT lower the cap. The target came down
+  to one or two short sentences and the guards stayed where they were, so the
+  gap between steer and guard widened from roughly 3x to closer to 5x. That is
+  the intended direction: a wider gap absorbs more ordinary variance before
+  anything is cut. The pair of numbers that has to stay in step is the stated
+  target and the example descriptions, not the target and the cap - the examples
+  sat at the old target, so moving the target alone would have left the model
+  copying the length it was shown. Both moved in the same commit.
 - Cap violation rate is an eval metric. If the model overruns often, either the
   prompt or the cap is wrong, and the fixture run says which.
 
@@ -198,10 +232,10 @@ ellipsis. A cap sized AT the steered length converts ordinary variance into
 routine truncation, and a card whose last sentence is missing is a worse card
 than one that runs a sentence long.
 
-So the two jobs are now in separate places. The prompt still steers to two
-sentences - its stated shape and its examples are unchanged in intent - and the
-cap moved to roughly 3x that target, where the only thing it can catch is a
-runaway response shipping an essay into a card. At 600 an ellipsis means a bug,
+So the two jobs are now in separate places. The prompt steers to one or two
+short sentences, plus a contact list on the cards that have one, and the cap
+sits several times above that, where the only thing it can catch is a runaway
+response shipping an essay into a card. At 600 an ellipsis means a bug,
 and cards.py logs every hit at WARNING so the bug is diagnosable rather than
 quietly absorbed by the UI. Title moved 60 to 90 on the same reasoning, its
 one-line derivation retired: titles wrap, so the layout was never protecting

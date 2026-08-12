@@ -39,6 +39,8 @@ def _settings(**overrides):
 
 
 _EXAMPLE_BLOCK_RE = re.compile(r"<example>(.*?)</example>", re.DOTALL)
+# Mirrors cards._CARD_BLOCK_RE, kept local so this module imports nothing that reaches boto3.
+_CARD_BLOCK_RE = re.compile(r"<card\b[^>]*>.*?</card\s*>", re.DOTALL)
 
 
 def _examples(prompt: str, field: str) -> list[str]:
@@ -93,19 +95,110 @@ def test_every_canonical_example_sits_under_its_cap():
             assert len(text) <= cap, f"<{field}> example is {len(text)} chars, cap {cap}: {text!r}"
 
 
-def test_the_card_descriptions_in_the_examples_carry_real_substance():
-    """The weighting the prompt asks for: cards hold the answer, prose introduces them. A
-    one-line description is the shape that weighting exists to move away from, so the
-    examples must not model it - they are what the model copies.
+def test_the_card_descriptions_in_the_examples_sit_in_the_stated_band():
+    """The examples teach a LENGTH, and it is the stated target that moves with them.
 
-    The examples teach a LENGTH, not just an upper bound: two sentences at roughly 150-175
-    characters. The cap is a guard sitting far above that, so it holds no floor of its own -
-    an example rewritten short would quietly re-teach the one-line card even though nothing
-    about it violates a cap. This assertion is the floor."""
+    A floor, because the weighting the prompt asks for is cards-hold-the-answer and a
+    one-line description is the shape that weighting exists to move away from. A ceiling,
+    because the guard cap is several times the target and therefore enforces nothing
+    editorial: an example that drifts back to the old length re-teaches it while violating
+    nothing. The band is one or two short sentences, plus a contact list on the card that
+    has one, which is the outlier at the top of the range."""
     descs = _examples(build_system_prompt(_SETTINGS), "desc")
 
     for desc in descs:
-        assert len(desc) >= 150, f"a thin <desc> example undercuts the weighting: {desc!r}"
+        assert len(desc) >= 110, f"a thin <desc> example undercuts the weighting: {desc!r}"
+        assert len(desc) <= 200, (
+            f"a <desc> example at {len(desc)} chars re-teaches the length this band replaced: "
+            f"{desc!r}"
+        )
+
+
+def test_the_cards_carry_the_majority_of_each_worked_reply():
+    """Shorter replies must get shorter by moving text INTO the cards, not by thinning them.
+    Measured on what the student actually reads: titles and descriptions against the prose on
+    both sides of the grid. The follow-up is a hidden button prompt, so it is not in the
+    count. Examples with no cards are the case where the prose is necessarily the whole
+    answer, and they are excluded rather than failed."""
+    for block in _EXAMPLE_BLOCK_RE.findall(build_system_prompt(_SETTINGS)):
+        reply = block.split("[your reply]", 1)[1]
+        card_text = sum(
+            len(text) for field in ("title", "desc") for text in _FIELD_RE[field].findall(reply)
+        )
+        if not card_text:
+            continue
+        prose = len(_CARD_BLOCK_RE.sub("", reply).strip())
+        assert card_text > prose, (
+            f"an example puts more text in its prose ({prose}) than in its cards ({card_text})"
+        )
+
+
+def test_the_prompt_permits_bold_and_bulleted_lists_in_both_places():
+    """Two marks, prose and <desc> alike. The permission has to be explicit in both places:
+    a model told only that the prose renders markup writes plain descriptions, and the
+    descriptions are where most of the reply lives."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "Formatting:" in prompt
+    assert "in the prose and inside a <desc> alike" in prompt
+    assert "**Bold**" in prompt
+    assert 'each line starting with "- "' in prompt
+
+
+def test_the_prompt_bans_the_constructs_nothing_renders():
+    """The load-bearing half. Only bold and unordered bullets reach the student as anything
+    other than the literal characters typed, and a typed link is worse than unrendered: it is
+    a destination nobody resolved, which is the failure the card ref contract exists to make
+    unrepresentable."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    for banned in ("no headings", "no numbered lists", "no tables", "no images"):
+        assert banned in prompt, f"the formatting ban dropped {banned!r}"
+    assert "no links written as bracketed text with a URL after it" in prompt
+
+
+_BANNED_MARKUP = (
+    ("a heading", re.compile(r"^\s{0,3}#{1,6}\s", re.MULTILINE)),
+    ("an ordered list", re.compile(r"^\s{0,3}\d+[.)]\s", re.MULTILINE)),
+    ("a table row", re.compile(r"^\s*\|.*\|", re.MULTILINE)),
+    ("an image", re.compile(r"!\[[^\]]*\]\(")),
+    ("a typed link", re.compile(r"\[[^\]]+\]\([^)]*\)")),
+)
+
+
+def test_no_worked_example_uses_a_construct_the_prompt_bans():
+    """Examples steer harder than instructions, so a ban contradicted by an example is a ban
+    the model will break. Scoped to the <example> blocks: the prose OUTSIDE them describes
+    the contract to the model and is not text it copies."""
+    for block in _EXAMPLE_BLOCK_RE.findall(build_system_prompt(_SETTINGS)):
+        for name, pattern in _BANNED_MARKUP:
+            match = pattern.search(block)
+            assert match is None, f"a worked example models {name}: {match.group(0)!r}"
+
+
+def test_the_examples_model_both_marks_rather_than_only_permitting_them():
+    """A construct that appears in no example is one the model uses at whatever rate its
+    training suggests. Bullets are modelled where they earn their place - the contact band of
+    a routing card, which is the half of the answer the 2026-08-10 eval kept losing."""
+    prompt = build_system_prompt(_SETTINGS)
+    descs = _examples(prompt, "desc")
+
+    assert any("**" in desc for desc in descs), "no example description models bold"
+    bulleted = [desc for desc in descs if "\n- " in desc]
+    assert bulleted, "no example description models a bulleted list"
+    assert any("@" in desc for desc in bulleted), (
+        "no example carries a contact in its bullets, which is what they are there for"
+    )
+
+    # And in the prose, which is the other half of "in both places".
+    prose = [
+        block.split("[your reply]", 1)[1]
+        for block in _EXAMPLE_BLOCK_RE.findall(prompt)
+        if "[your reply]" in block
+    ]
+    assert any("**" in _CARD_BLOCK_RE.sub("", part) for part in prose), (
+        "no example models bold in the prose"
+    )
 
 
 def test_the_prompt_never_withholds_cards_because_a_turn_is_a_follow_up():
