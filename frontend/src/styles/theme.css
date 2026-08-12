@@ -36,4 +36,11 @@
 	--control-border: 2px;
 
 	--side-nav-width: 13rem;
+	/* The rail. Wide enough for his face and a 2.2rem tap target, and nothing more. */
+	--side-nav-width-collapsed: 3.5rem;
+	/* One curve for the whole collapse: the rail, the content margin and the dock all
+	   travel together, so they have to be the same length and the same easing or the
+	   layout arrives in pieces. */
+	--side-nav-ease: cubic-bezier(0.22, 1, 0.36, 1);
+	--side-nav-duration: 240ms;
 }
