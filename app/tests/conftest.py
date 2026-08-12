@@ -193,6 +193,9 @@ class FakeConversationStore:
         self.deleted_messages = deleted_messages
         self.calls = []
         self.appended = []
+        # Open WebSocket connections, as (user_id, connection_id). The real item is
+        # pk=USER#<sub>, sk=CONN#<connectionId>, which is why the pair is the identity here.
+        self.connections = set()
 
     def append_message(self, **kwargs):
         self.calls.append(("append", kwargs))
@@ -258,6 +261,17 @@ class FakeConversationStore:
         if "delete" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (delete)")
         return self.deleted_messages
+
+    def open_connection(self, **kwargs):
+        """The WebSocket connection record. Note it does NOT raise on `fail_on`: the real
+        one swallows its own failures, because the record is a record and not a gate - a
+        write that fails must not cost a student their connection."""
+        self.calls.append(("connect", kwargs))
+        self.connections.add((kwargs["user_id"], kwargs["connection_id"]))
+
+    def close_connection(self, **kwargs):
+        self.calls.append(("disconnect", kwargs))
+        self.connections.discard((kwargs["user_id"], kwargs["connection_id"]))
 
     @property
     def call_names(self):

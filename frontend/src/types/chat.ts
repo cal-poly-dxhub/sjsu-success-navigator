@@ -173,6 +173,15 @@ export type ConversationTurn = {
 	 * the feed: being the newest turn is not the same as being a new turn.
 	 */
 	live: boolean;
+	/**
+	 * How much of this turn's prose a streamed preview already typed out.
+	 *
+	 * The hand-off at the end of a streamed turn: the preview types the lead-in while the
+	 * reply is being written, then the authoritative payload arrives carrying the same
+	 * prose. Without this the bubble would re-type from the top text the student has
+	 * already read. Absent on the buffered path, where nothing was shown early.
+	 */
+	revealedChars?: number;
 	query?: string;
 	createdAt: number;
 };

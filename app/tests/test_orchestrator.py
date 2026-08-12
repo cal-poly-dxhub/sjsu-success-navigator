@@ -719,3 +719,295 @@ def test_the_loop_runs_unchanged_without_a_tally(monkeypatch, no_retrieval):
     response = _run(monkeypatch, fake)
     assert response.conversational_text == "Here you go."
     assert response.usage is None, "the loop never attaches one; the handler does"
+
+
+# --- streaming: the same loop, one extra output ------------------------------------------
+#
+# The point of every test here is that streaming changed nothing about the ANSWER. The sink
+# is an output side effect bolted to the side of the loop, so a streamed turn and a buffered
+# turn built from the same model text must produce the identical ChatResponse - which is what
+# lets the browser render the final payload and throw the preview away.
+
+
+class _RecordingSink:
+    """A StreamSink that remembers what it was told, in order."""
+
+    def __init__(self, on_text=None):
+        self.texts = []
+        self.stages = []
+        self._on_text = on_text
+
+    def status(self, stage):
+        self.stages.append(stage)
+
+    def text(self, accumulated):
+        self.texts.append(accumulated)
+        if self._on_text is not None:
+            self._on_text()
+
+
+class _FakeStreamingBedrock:
+    """A ConverseStream stand-in. `script` is one list of stream events per call."""
+
+    def __init__(self, script):
+        self.script = script
+        self.calls = 0
+
+    def converse_stream(self, **kwargs):
+        self.calls += 1
+        self.kwargs = copy.deepcopy(kwargs)
+        index = min(self.calls - 1, len(self.script) - 1)
+        return {"stream": iter(self.script[index])}
+
+    def converse(self, **kwargs):  # pragma: no cover - a streaming test must not call this
+        raise AssertionError("a streaming turn must not call Converse")
+
+
+def _text_events(text, *, chunks=3, usage=None):
+    """A ConverseStream event sequence for a plain text reply, split into deltas."""
+    size = max(1, -(-len(text) // chunks))
+    pieces = [text[i : i + size] for i in range(0, len(text), size)] or [""]
+    events = [{"messageStart": {"role": "assistant"}}]
+    events += [
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": piece}}}
+        for piece in pieces
+    ]
+    events.append({"contentBlockStop": {"contentBlockIndex": 0}})
+    events.append({"messageStop": {"stopReason": "end_turn"}})
+    events.append({"metadata": {"usage": usage or {"inputTokens": 900, "outputTokens": 120}}})
+    return events
+
+
+def _streaming_loop(monkeypatch, script, sink=None, **kwargs):
+    fake = _FakeStreamingBedrock(script)
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    response = orchestrator.run_chat(
+        ChatRequest(query="where is the writing center?"),
+        _SETTINGS,
+        stream=sink if sink is not None else _RecordingSink(),
+        **kwargs,
+    )
+    return response, fake
+
+
+def test_a_streamed_turn_and_a_buffered_turn_produce_the_same_response(monkeypatch):
+    """THE ACCEPTANCE CRITERION, as a unit test. Same model text, same cards, same prose,
+    same trailing split - because both transports exit through the same _response_from_text
+    reading the same complete reply."""
+    reply = (
+        "Two places can help.\n\n"
+        '<card ref="1"><title>Writing Center</title><desc>Drop-in help with any '
+        "assignment.</desc><followup>What are the writing center hours?</followup></card>\n\n"
+        "Which one sounds closer to what you need?"
+    )
+    chunks = [
+        RetrievedChunk(
+            text="The Writing Center supports every student.",
+            score=0.9,
+            source_url="https://www.sjsu.edu/writingcenter/",
+            title="Writing Center",
+            section="academic-support",
+            s3_uri="s3://bucket/writingcenter",
+        )
+    ]
+
+    fake_buffered = _FakeBedrock([_text_turn(reply)])
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: chunks)
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake_buffered)
+    buffered = orchestrator.run_chat(ChatRequest(query="writing help"), _SETTINGS)
+
+    fake_streamed = _FakeStreamingBedrock([_text_events(reply, chunks=7)])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake_streamed)
+    streamed = orchestrator.run_chat(
+        ChatRequest(query="writing help"), _SETTINGS, stream=_RecordingSink()
+    )
+
+    assert streamed.model_dump(by_alias=True, exclude={"statement_batches"}) == buffered.model_dump(
+        by_alias=True, exclude={"statement_batches"}
+    )
+    # The batches carry a minted id and a timestamp, so they are compared on content.
+    streamed_cards = [c.model_dump(by_alias=True) for b in streamed.statement_batches for c in b.cards]
+    buffered_cards = [c.model_dump(by_alias=True) for b in buffered.statement_batches for c in b.cards]
+    assert streamed_cards == buffered_cards
+    assert streamed_cards[0]["sourceUrl"] == "https://www.sjsu.edu/writingcenter/"
+
+
+def test_the_sink_sees_the_whole_reply_so_far_and_never_a_fragment(monkeypatch):
+    """The sink is handed the ACCUMULATED text every time, so it owns both questions the
+    loop should not have an opinion about: how much is safe to show, and how much has
+    already been sent."""
+    sink = _RecordingSink()
+    _streaming_loop(monkeypatch, [_text_events("abcdefghi", chunks=3)], sink=sink)
+
+    assert sink.texts == ["abc", "abcdef", "abcdefghi"]
+    for earlier, later in zip(sink.texts, sink.texts[1:]):
+        assert later.startswith(earlier), "the accumulated text must only ever grow"
+
+
+def test_token_usage_comes_from_the_streams_own_metadata(monkeypatch):
+    """Taken from the metadata event rather than recomputed, so the cost panel prices a
+    streamed conversation off the same numbers Bedrock reports for a buffered one."""
+    usage = TurnUsage()
+    _streaming_loop(
+        monkeypatch,
+        [_text_events("hello", usage={"inputTokens": 1234, "outputTokens": 56})],
+        usage=usage,
+    )
+
+    assert usage.model_calls == 1
+    assert usage.input_tokens == 1234
+    assert usage.output_tokens == 56
+
+
+def test_a_streamed_tool_call_reassembles_its_partial_json_arguments(monkeypatch):
+    """Bedrock streams a tool's arguments as JSON FRAGMENTS - no prefix of which is valid
+    JSON - so they are accumulated as a string and parsed once at the block's close. Get
+    this wrong and the model's second search runs on the wrong query, silently."""
+    tool_events = [
+        {"messageStart": {"role": "assistant"}},
+        {
+            "contentBlockStart": {
+                "contentBlockIndex": 0,
+                "start": {"toolUse": {"toolUseId": "tu-1", "name": "retrieve_campus_resources"}},
+            }
+        },
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"que'}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": 'ry": "cap'}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": 'lan hours"}'}}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"messageStop": {"stopReason": "tool_use"}},
+        {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 2}}},
+    ]
+    searched = []
+
+    fake = _FakeStreamingBedrock([tool_events, _text_events("Here you go.")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    def _record(query, settings):
+        searched.append(query)
+        return []
+
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", _record)
+    orchestrator.run_chat(ChatRequest(query="caplan"), _SETTINGS, stream=_RecordingSink())
+
+    # The primed search on the student's own words, then the model's own sharper one.
+    assert searched == ["caplan", "caplan hours"]
+
+
+def test_a_tool_calls_arguments_never_reach_the_preview(monkeypatch):
+    """What streams is prose. A toolUse block's input is arguments addressed to the server,
+    and typing `{"query": "caplan hours"}` onto a student's screen would be nonsense."""
+    tool_events = [
+        {"messageStart": {"role": "assistant"}},
+        {
+            "contentBlockStart": {
+                "contentBlockIndex": 0,
+                "start": {"toolUse": {"toolUseId": "tu-1", "name": "retrieve_campus_resources"}},
+            }
+        },
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"query": "x"}'}}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"messageStop": {"stopReason": "tool_use"}},
+    ]
+    sink = _RecordingSink()
+    fake = _FakeStreamingBedrock([tool_events, _text_events("Answer.")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+
+    orchestrator.run_chat(ChatRequest(query="x"), _SETTINGS, stream=sink)
+
+    assert all("query" not in text for text in sink.texts), sink.texts
+    # Only the second call's text streamed. The tool call - which is the whole of the first
+    # model call - pushed nothing at all, so every frame is a prefix of the reply's prose.
+    assert sink.texts[-1] == "Answer."
+    assert all("Answer.".startswith(text) for text in sink.texts), sink.texts
+
+
+def test_unparseable_tool_arguments_still_answer_the_turn(monkeypatch):
+    """A raise here would lose a reply the model had already written. _run_tool defaults a
+    missing query to the student's own message, so the search still happens."""
+    broken = [
+        {
+            "contentBlockStart": {
+                "contentBlockIndex": 0,
+                "start": {"toolUse": {"toolUseId": "tu-1", "name": "retrieve_campus_resources"}},
+            }
+        },
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"que'}}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"messageStop": {"stopReason": "tool_use"}},
+    ]
+    searched = []
+    fake = _FakeStreamingBedrock([broken, _text_events("Recovered.")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    monkeypatch.setattr(
+        orchestrator, "retrieve_chunks", lambda query, settings: searched.append(query) or []
+    )
+
+    response = orchestrator.run_chat(ChatRequest(query="pantry"), _SETTINGS, stream=_RecordingSink())
+
+    assert searched == ["pantry", "pantry"]
+    assert response.conversational_text == "Recovered."
+
+
+def test_a_status_event_is_pushed_while_retrieval_runs(monkeypatch):
+    """Retrieval produces no text, so without this the socket goes silent and the UI has to
+    invent something to say."""
+    sink = _RecordingSink()
+    _streaming_loop(monkeypatch, [_text_events("Here.")], sink=sink)
+
+    assert sink.stages == ["retrieving"]
+
+
+def test_a_broken_sink_never_costs_the_answer(monkeypatch):
+    """The sink pushes to a socket the student may have closed. The turn is already paid
+    for, so a broken pipe must not abandon a reply."""
+
+    def _explode():
+        raise RuntimeError("the socket is gone")
+
+    sink = _RecordingSink(on_text=_explode)
+    response, _ = _streaming_loop(monkeypatch, [_text_events("Still answered.")], sink=sink)
+
+    assert response.conversational_text == "Still answered."
+
+
+def test_the_buffered_path_never_opens_a_stream(monkeypatch):
+    """POST /chat is under a hard 'keeps working unchanged' constraint. Passing no sink must
+    call Converse, not ConverseStream - asserted by a fake that raises on the wrong one."""
+
+    class _StreamIsForbidden(_FakeBedrock):
+        def converse_stream(self, **kwargs):  # pragma: no cover - the assertion
+            raise AssertionError("the buffered path must not call ConverseStream")
+
+    fake = _StreamIsForbidden([_text_turn("Buffered.")])
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    response = orchestrator.run_chat(ChatRequest(query="hi"), _SETTINGS)
+
+    assert response.conversational_text == "Buffered."
+    assert "guardrailConfig" not in fake.kwargs, "nothing is attached to the buffered call"
+
+
+def test_the_guardrail_reaches_the_model_call_only_when_asked_and_only_in_sync_mode(monkeypatch):
+    """`async` releases text to the student before it has been scanned, which is not a
+    screen. The caller cannot spell it - app/stream_worker.py builds this block - so what is
+    pinned here is that what arrives is passed through untouched."""
+    sink = _RecordingSink()
+    _, fake = _streaming_loop(
+        monkeypatch,
+        [_text_events("Screened.")],
+        sink=sink,
+        guardrail_config={
+            "guardrailIdentifier": "gr-1",
+            "guardrailVersion": "3",
+            "streamProcessingMode": "sync",
+        },
+    )
+
+    assert fake.kwargs["guardrailConfig"]["streamProcessingMode"] == "sync"
+
+    _, unscreened = _streaming_loop(monkeypatch, [_text_events("Plain.")])
+    assert "guardrailConfig" not in unscreened.kwargs

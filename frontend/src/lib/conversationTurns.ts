@@ -27,6 +27,8 @@ export function createConversationTurn(
 		createdAt?: number;
 		phase?: ConversationTurn['phase'];
 		live?: boolean;
+		/** Prose a streamed preview already typed out - see ConversationTurn.revealedChars. */
+		revealedChars?: number;
 	},
 ): ConversationTurn {
 	const cards = options?.cards?.slice(0, 4) ?? [];
@@ -38,6 +40,7 @@ export function createConversationTurn(
 		cards,
 		safetyHandoff: options?.safetyHandoff,
 		query: options?.query,
+		revealedChars: options?.revealedChars,
 		createdAt: options?.createdAt ?? Date.now(),
 		phase: options?.phase ?? (hasRag ? 'conversational' : 'conversational'),
 		// Live by default because the ordinary reason to build a turn is that one just

@@ -1133,3 +1133,76 @@ def test_the_okta_side_attribute_name_is_configurable_but_never_blank(config):
     config["okta"]["email_attribute"] = "  "
     with pytest.raises(ValueError, match="email_attribute"):
         resolve_okta(config)
+
+
+def test_streaming_is_off_unless_the_block_says_otherwise(config):
+    """THE GATE. Absent, empty or `enabled: false` all resolve to None, and the stack then
+    synthesizes no WebSocket API at all. Off is one state, and it is the shipped default -
+    this lands dark so it is turned on deliberately rather than by merging."""
+    from infra.config import resolve_streaming
+
+    assert resolve_streaming(load_config()) is None, "streaming must ship disabled"
+
+    for mutate in (
+        lambda c: c.pop("streaming"),
+        lambda c: c.update(streaming={}),
+        lambda c: c["streaming"].update(enabled=False),
+    ):
+        candidate = copy.deepcopy(config)
+        mutate(candidate)
+        assert resolve_streaming(candidate) is None
+        # Off is not a half-configured stack: the whole synth-time gate still passes.
+        validate_config(candidate)
+
+
+def test_an_enabled_block_resolves_its_batching_numbers(config):
+    from infra.config import resolve_streaming
+
+    config["streaming"]["enabled"] = True
+    resolved = resolve_streaming(config)
+    assert resolved["delta_min_chars"] == config["streaming"]["delta_min_chars"]
+    assert resolved["delta_max_delay_ms"] == config["streaming"]["delta_max_delay_ms"]
+    assert resolved["output_guardrail"] is False
+
+
+def test_a_batch_size_of_one_fails_at_synth(config):
+    """EVERY PUSH IS A BILLABLE API GATEWAY MESSAGE, so a batch size of 1 is one message
+    per character - the exact bill this block exists to bound, and invisible in testing
+    because it looks identical on screen. Booleans are rejected for the same reason they
+    are in the rate limit: `true` is an int in Python and would resolve to 1."""
+    from infra.config import resolve_streaming
+
+    config["streaming"]["enabled"] = True
+    for value in (1, 0, -5, True, "160", None, 99999):
+        config["streaming"]["delta_min_chars"] = value
+        with pytest.raises(ValueError, match="delta_min_chars"):
+            resolve_streaming(config)
+
+
+def test_the_flush_delay_is_bounded_at_both_ends(config):
+    """Too small is a message per token by another route; too large and the tail of a reply
+    - whatever is left under the batch size - sits unsent while the reader waits."""
+    from infra.config import resolve_streaming
+
+    config["streaming"]["enabled"] = True
+    for value in (10, 0, -1, 60000, False, "250"):
+        config["streaming"]["delta_max_delay_ms"] = value
+        with pytest.raises(ValueError, match="delta_max_delay_ms"):
+            resolve_streaming(config)
+
+
+def test_the_output_guardrail_switch_is_a_boolean_and_defaults_off(config):
+    """It defaults off because it is MEASURED (2026-08-12, us-west-2, claude-sonnet-4-6):
+    attaching the guardrail to ConverseStream in its only safe mode moved time-to-first-token
+    from a median of 1.12s to 6.75s, because sync mode holds the response back and scans it
+    in large chunks. With today's guardrail - PROMPT_ATTACK, outputStrength NONE, no PII
+    policy - that buys a screen that cannot fire."""
+    from infra.config import resolve_streaming
+
+    config["streaming"]["enabled"] = True
+    del config["streaming"]["output_guardrail"]
+    assert resolve_streaming(config)["output_guardrail"] is False
+
+    config["streaming"]["output_guardrail"] = "yes"
+    with pytest.raises(ValueError, match="output_guardrail"):
+        resolve_streaming(config)

@@ -120,7 +120,11 @@ export function ConversationTurnView({
 				{turn.text && isArriving ? (
 					<ConversationalBubble
 						text={turn.text}
-						introDelayMs={introDelayMs}
+						// A turn that was previewed over the socket has already been on screen
+						// for seconds, so it observes no opening beat and resumes where the
+						// preview stopped instead of replaying it.
+						introDelayMs={turn.revealedChars ? 0 : introDelayMs}
+						startAt={turn.revealedChars ?? 0}
 						onTypingChange={onTypingChange}
 						onTypingComplete={revealCards}
 					/>

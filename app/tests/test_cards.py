@@ -829,3 +829,59 @@ def test_the_parser_tolerates_the_shapes_a_model_actually_writes(raw):
     assert parsed.cards[0].ref_id == 1
     assert parsed.cards[0].title == "T"
     assert parsed.cards[0].desc == "D"
+
+
+# --- preview_safe_prefix: a stop rule, not a parser ---------------------------------------
+
+
+def test_the_preview_is_everything_before_the_first_card_tag():
+    """The model writes one text stream - lead-in, then card blocks - so this is what makes
+    a streamed preview the lead-in rather than a screen with markup typing onto it."""
+    text = 'Two places can help.\n\n<card ref="1"><title>Writing Center</title></card>'
+    assert cards.preview_safe_prefix(text) == "Two places can help.\n\n"
+
+
+def test_a_partial_tag_at_the_end_of_a_chunk_is_held_back():
+    """Deltas straddle tag boundaries constantly. Emitting `<ca` and then discovering it was
+    the start of a card block would have already put markup on screen."""
+    for partial in ("<", "<c", "<ca", "<car", "<card", "<card ref=", "</", "</ca"):
+        assert cards.preview_safe_prefix(f"Try this. {partial}") == "Try this. "
+
+
+def test_a_less_than_sign_that_is_not_ours_streams_intact():
+    """The guarantee needed is only that OUR tags never surface - the same reason the tag
+    scrub is a named vocabulary rather than a generic <[^>]+> sweep. A student asking about
+    unit loads should not lose half a sentence to it."""
+    for text in ("Take <15 units to stay part time.", "a < b", "5<6 and 7>6"):
+        assert cards.preview_safe_prefix(text) == text
+
+
+def test_every_tag_in_the_contract_stops_the_preview():
+    """One vocabulary, shared with the scrub. A tag this did not know about would reach a
+    student as markup."""
+    for tag in ("card", "title", "desc", "followup", "safety"):
+        assert cards.preview_safe_prefix(f"prose <{tag}>x</{tag}>") == "prose "
+        assert cards.preview_safe_prefix(f"prose </{tag}>") == "prose "
+    assert cards.preview_safe_prefix("prose <SAFETY>crisis-988</SAFETY>") == "prose "
+
+
+def test_the_prefix_only_ever_grows_as_the_reply_does():
+    """Append-only is what makes it safe to type out: every push is a suffix of the reply so
+    far, so nothing on screen is ever taken back."""
+    reply = 'Here is the answer.\n\n<card ref="1"><title>T</title></card>\n\nAnything else?'
+    seen = ""
+    for length in range(len(reply) + 1):
+        prefix = cards.preview_safe_prefix(reply[:length])
+        # Each prefix EXTENDS the last one: never shorter, and never a rewrite of what was
+        # already sent. That pair is exactly what a caller needs to push `prefix[sent:]`.
+        assert prefix.startswith(seen), (length, prefix, seen)
+        seen = prefix
+
+
+def test_the_preview_does_not_cap_or_normalise_anything():
+    """Both belong to the finished reply and are applied there, once. Doing either here
+    would be the duplication the streaming design exists to avoid - and a substitution near
+    the end of a partial string could rewrite text already on screen."""
+    long_text = "x" * 5000
+    assert cards.preview_safe_prefix(long_text) == long_text
+    assert cards.preview_safe_prefix("a — b") == "a — b"
