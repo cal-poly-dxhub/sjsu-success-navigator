@@ -31,6 +31,13 @@ card group, so the only thing there is to preserve is which side of that group e
 prose was on. This is what keeps a closing question under the cards it refers to instead of
 above the answer it is asking about.
 
+THE DESCRIPTION KEEPS ITS LINE BREAKS. Every other field is collapsed to one line, because
+every other field IS one line. <desc> is the one the student reads as a body of text, and
+the display parser keys on line starts - a bullet is a line beginning with a marker - so
+flattening its newlines into spaces turns a list the model wrote into one long sentence with
+dashes in it. Indentation is still collapsed: a model that indents its bullets under <desc>
+is formatting its XML, not asking for leading space on screen.
+
 AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
 reason is observability: a card that renders without its source button is a visible symptom,
 where a silently dropped card is a student seeing three cards instead of four and nobody
@@ -62,6 +69,9 @@ SOURCE_ACTION_LABEL = "Open source"
 FOLLOWUP_ACTION_LABEL = "Tell me more"
 
 _WHITESPACE_RE = re.compile(r"\s+")
+# Spaces and tabs, never a newline. The description is collapsed with this one so the line
+# breaks the model wrote survive to the browser - see _collapse_keeping_line_breaks.
+_HORIZONTAL_WHITESPACE_RE = re.compile(r"[^\S\n]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 # Em and en dashes are rewritten out of everything the student reads. The prompt bans them
@@ -248,7 +258,7 @@ def parse_model_response(text: str) -> ParsedResponse:
             ParsedCard(
                 ref_id=int(ref_match.group(1)) if ref_match else None,
                 title=_first_field(_TITLE_RE, body),
-                desc=_first_field(_DESC_RE, body),
+                desc=_first_field(_DESC_RE, body, keep_line_breaks=True),
                 followup=_first_field(_FOLLOWUP_RE, body),
             )
         )
@@ -312,11 +322,37 @@ def normalise_dashes(text: str) -> str:
     return _EM_EN_DASH_RE.sub(_to_comma, result)
 
 
-def _first_field(pattern: re.Pattern[str], body: str) -> str:
+def _collapse_whitespace(text: str) -> str:
+    """One line, single-spaced. Every field but the description gets this."""
+    return _WHITESPACE_RE.sub(" ", text or "").strip()
+
+
+def _collapse_keeping_line_breaks(text: str) -> str:
+    """The same collapse, except that the model's line breaks stay.
+
+    ONLY the description needs this, and it needs it because the renderer keys on line
+    starts: a bullet is a line beginning with a marker, so a description whose newlines were
+    flattened into spaces arrives as one paragraph reading "... - Email: ... - Walk in: ..."
+    rather than as a list. The tags themselves are unchanged - this is whitespace handling
+    inside one field, not a new construct in the contract.
+
+    Indentation is still incidental and still goes: a model that indents its bullets under
+    <desc> is formatting its XML, not asking for leading space on screen. So each line is
+    collapsed and stripped on its own, and a run of blank lines closes up to one, the same
+    normalisation _clean_prose already applies to the prose either side of the cards.
+    """
+    lines = [
+        _HORIZONTAL_WHITESPACE_RE.sub(" ", line).strip() for line in (text or "").splitlines()
+    ]
+    return _BLANK_LINES_RE.sub("\n\n", "\n".join(lines)).strip()
+
+
+def _first_field(pattern: re.Pattern[str], body: str, *, keep_line_breaks: bool = False) -> str:
     match = pattern.search(body)
     if match is None:
         return ""
-    return _WHITESPACE_RE.sub(" ", match.group(1)).strip()
+    collapse = _collapse_keeping_line_breaks if keep_line_breaks else _collapse_whitespace
+    return collapse(match.group(1))
 
 
 def _clean_prose(text: str) -> str:
@@ -337,37 +373,46 @@ def strip_card_tags(text: str) -> str:
     return _clean_prose(text or "")
 
 
-def truncate_to_cap(text: str, cap: int) -> str:
+def truncate_to_cap(text: str, cap: int, *, keep_line_breaks: bool = False) -> str:
     """Shorten to `cap` characters INCLUDING the ellipsis, breaking on a word boundary.
 
     Shortening happens here, where it can be measured, rather than in the layout, where v1
     did it: a CSS line clamp hides text without shortening it, so the model was never held to
     a budget and roughly a third of every description was cut with no ellipsis to show it.
 
+    `keep_line_breaks` is the description's normalisation (_collapse_keeping_line_breaks);
+    the cap value and the word-boundary rule are the same either way. A break is a boundary
+    like a space is, because after either collapse those are the only two whitespace
+    characters left in the string.
+
     The caps this enforces are runaway guards, not editorial budgets - see _capped, which is
     where enforcement actually routes and where hitting one is logged.
     """
-    normalized = _WHITESPACE_RE.sub(" ", text or "").strip()
+    collapse = _collapse_keeping_line_breaks if keep_line_breaks else _collapse_whitespace
+    normalized = collapse(text)
     if len(normalized) <= cap:
         return normalized
 
     # One character of the budget belongs to the ellipsis.
     head = normalized[: cap - 1]
-    boundary = head.rfind(" ")
+    boundary = max(head.rfind(" "), head.rfind("\n"))
     if boundary > 0:
         head = head[:boundary]
 
-    return head.rstrip(" ,;:.-") + "…"
+    return head.rstrip(" \n,;:.-") + "…"
 
 
-def _capped(text: str, cap: int, field: str, ref_id: int | None) -> str:
+def _capped(
+    text: str, cap: int, field: str, ref_id: int | None, *, keep_line_breaks: bool = False
+) -> str:
     """Apply one display field's guard cap, logging when it actually bites.
 
     The caps sit far above what the prompt asks for, so a truncation here is a bug in the
     prompt or the model rather than routine length variance - the WARNING is what turns a
     quiet ellipsis on screen into a diagnosable event in the logs.
     """
-    normalized = _WHITESPACE_RE.sub(" ", text or "").strip()
+    collapse = _collapse_keeping_line_breaks if keep_line_breaks else _collapse_whitespace
+    normalized = collapse(text)
     if len(normalized) > cap:
         logger.warning(
             "A card %s ran past its guard cap (%s chars, cap %s, ref=%r) and was "
@@ -378,7 +423,7 @@ def _capped(text: str, cap: int, field: str, ref_id: int | None) -> str:
             cap,
             ref_id,
         )
-    return truncate_to_cap(normalized, cap)
+    return truncate_to_cap(normalized, cap, keep_line_breaks=keep_line_breaks)
 
 
 def cards_from_parsed(
@@ -409,8 +454,15 @@ def cards_from_parsed(
         title = _capped(
             normalise_dashes(parsed.title), settings.card_title_max_chars, "title", parsed.ref_id
         )
+        # The description keeps its line breaks; every other field is one line. A bullet is
+        # a line that starts with a marker, so flattening them here would cost the list on
+        # screen and nothing would show that it had happened.
         desc = _capped(
-            normalise_dashes(parsed.desc), settings.card_desc_max_chars, "description", parsed.ref_id
+            normalise_dashes(parsed.desc),
+            settings.card_desc_max_chars,
+            "description",
+            parsed.ref_id,
+            keep_line_breaks=True,
         )
         if not title or not desc:
             logger.warning(
@@ -438,7 +490,7 @@ def cards_from_parsed(
         # the student's next turn, where it wraps like any typed message, so an over-long
         # one costs nothing visible; the overrun is logged because the cap is a guard on a
         # paid model input, and passing it means the prompt or the model is broken.
-        followup = _WHITESPACE_RE.sub(" ", parsed.followup).strip()
+        followup = _collapse_whitespace(parsed.followup)
         if followup and len(followup) > settings.card_followup_max_chars:
             logger.warning(
                 "An over-cap follow-up prompt (%s chars, cap %s) on card ref=%r. Keeping "
