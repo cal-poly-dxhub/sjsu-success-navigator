@@ -1,18 +1,15 @@
-export type SjsuCaresService = {
-	title: string;
-	kicker: string;
-	description: string;
-	href: string;
-	theme: 'food' | 'housing' | 'financial' | 'parenting';
-};
+/** The four kinds of help SJSU Cares publishes, and the only thing routed on. */
+export type SjsuCaresTheme = 'food' | 'housing' | 'financial' | 'parenting';
 
 // Every contact detail below is transcribed from the SJSU Cares contact page, verified 2026-08-06.
 // Deliberately short: each hardcoded fact is one that can go stale, so anything SJSU already
 // publishes as a list (staff directory, full service catalogue) is linked, not reproduced here.
-export const SJSU_CARES_OVERVIEW =
-	'SJSU Cares helps students facing basic-needs challenges with case management, referrals, and follow-up.';
-
-export const SJSU_CARES_NOTE = 'Include your student ID when you reach out.';
+//
+// WHAT IS A FACT AND WHAT IS COPY. This file holds the facts - the number to ring, the address
+// to walk to, the URL to open - and they read the same in every language. The sentences ABOUT
+// them (the overview, the note, the hours, and each service's name and description) are copy,
+// so they live in lib/i18n.ts and switch with the rest of the interface. The building name is
+// a fact and stays here: nobody is looking for a translated sign.
 
 export const SJSU_CARES_LOCATION =
 	'Diaz Compean Student Union West, entrance across from the Engineering Building.';
@@ -20,8 +17,6 @@ export const SJSU_CARES_LOCATION =
 export const SJSU_CARES_PHONE = '408.924.1234';
 
 export const SJSU_CARES_EMAIL = 'sjsucares@sjsu.edu';
-
-export const SJSU_CARES_HOURS = 'Monday - Friday, 10 am - 4 pm';
 
 export const SJSU_CARES_REQUEST_FORM =
 	'https://cm.maxient.com/reportingform.php?SanJoseStateUniv&layout_id=12';
@@ -33,38 +28,23 @@ export const SJSU_CARES_CONTACT_PAGE =
 export const SJSU_CARES_SERVICES_INDEX =
 	'https://www.sjsu.edu/sjsucares/get-assistance/index.php';
 
-export const SJSU_CARES_SERVICES: SjsuCaresService[] = [
-	{
-		title: 'Food assistance',
-		kicker: 'If food is the main stressor',
-		description: 'Spartan Food Pantry access and CalFresh application help.',
-		href: 'https://www.sjsu.edu/sjsucares/get-assistance/food-assistance/index.php',
-		theme: 'food',
-	},
-	{
-		title: 'Housing assistance',
-		kicker: 'If you need a safer place to stay',
-		description: 'Emergency housing, rehousing programs, and housing search support.',
-		href: 'https://www.sjsu.edu/sjsucares/get-assistance/housing-assistance/index.php',
-		theme: 'housing',
-	},
-	{
-		title: 'Financial assistance',
-		kicker: 'If unexpected costs are piling up',
-		description: 'Emergency grants and financial coaching for unexpected expenses.',
-		href: 'https://www.sjsu.edu/sjsucares/get-assistance/financial-assistance/index.php',
-		theme: 'financial',
-	},
-	{
-		title: 'Parenting students',
-		kicker: 'If you are balancing school and caregiving',
-		description: 'Registration support, rights guidance, and campus accommodations.',
-		href: 'https://www.sjsu.edu/sjsucares/resources/parenting-students/index.php',
-		theme: 'parenting',
-	},
-];
+/** SJSU's page for each theme. English pages, because that is what SJSU publishes. */
+export const SJSU_CARES_SERVICE_HREFS: Record<SjsuCaresTheme, string> = {
+	food: 'https://www.sjsu.edu/sjsucares/get-assistance/food-assistance/index.php',
+	housing: 'https://www.sjsu.edu/sjsucares/get-assistance/housing-assistance/index.php',
+	financial: 'https://www.sjsu.edu/sjsucares/get-assistance/financial-assistance/index.php',
+	parenting: 'https://www.sjsu.edu/sjsucares/resources/parenting-students/index.php',
+};
 
-const SERVICE_KEYWORDS: Record<SjsuCaresService['theme'], string[]> = {
+/**
+ * The words that route a question to a theme, and they are ENGLISH ONLY today.
+ *
+ * That is a real limit and not a hidden one: a student who asks about food in Spanish gets
+ * the modal with no recommendation rather than a wrong one, which is the same thing that
+ * happens for any question this list does not recognise. Translating the model's side of the
+ * conversation is the job that makes a Spanish keyword list worth having.
+ */
+const SERVICE_KEYWORDS: Record<SjsuCaresTheme, string[]> = {
 	food: [
 		'food',
 		'hungry',
@@ -116,24 +96,15 @@ const SERVICE_KEYWORDS: Record<SjsuCaresService['theme'], string[]> = {
 	],
 };
 
-export function inferSjsuCaresServiceTheme(
-	query?: string | null,
-): SjsuCaresService['theme'] | null {
+export function inferSjsuCaresServiceTheme(query?: string | null): SjsuCaresTheme | null {
 	if (!query) return null;
 	const normalized = query.toLowerCase();
 	for (const [theme, keywords] of Object.entries(SERVICE_KEYWORDS) as Array<
-		[SjsuCaresService['theme'], string[]]
+		[SjsuCaresTheme, string[]]
 	>) {
 		if (keywords.some((keyword) => normalized.includes(keyword))) {
 			return theme;
 		}
 	}
 	return null;
-}
-
-export function findSjsuCaresService(
-	theme?: SjsuCaresService['theme'] | null,
-): SjsuCaresService | null {
-	if (!theme) return null;
-	return SJSU_CARES_SERVICES.find((service) => service.theme === theme) ?? null;
 }

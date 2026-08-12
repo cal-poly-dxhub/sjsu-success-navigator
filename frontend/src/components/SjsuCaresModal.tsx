@@ -1,25 +1,23 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useRef } from 'react';
 import {
-	findSjsuCaresService,
 	SJSU_CARES_CONTACT_PAGE,
 	SJSU_CARES_EMAIL,
-	SJSU_CARES_HOURS,
 	SJSU_CARES_LOCATION,
-	SJSU_CARES_NOTE,
-	SJSU_CARES_OVERVIEW,
 	SJSU_CARES_PHONE,
 	SJSU_CARES_REQUEST_FORM,
+	SJSU_CARES_SERVICE_HREFS,
 	SJSU_CARES_SERVICES_INDEX,
 } from '../lib/sjsuCares';
-import type { SjsuCaresService } from '../lib/sjsuCares';
+import type { SjsuCaresTheme } from '../lib/sjsuCares';
+import { useStrings } from '../lib/i18n';
 import { PressableButton } from './PressableButton';
 import './SjsuCaresModal.css';
 
 type SjsuCaresModalProps = {
 	open: boolean;
 	onClose: () => void;
-	highlightedServiceTheme?: SjsuCaresService['theme'] | null;
+	highlightedServiceTheme?: SjsuCaresTheme | null;
 };
 
 const TEL_HREF = `tel:${SJSU_CARES_PHONE.replaceAll('.', '')}`;
@@ -29,9 +27,15 @@ export function SjsuCaresModal({
 	onClose,
 	highlightedServiceTheme = null,
 }: SjsuCaresModalProps) {
+	const t = useStrings();
 	const panelRef = useRef<HTMLElement | null>(null);
 	const previousActiveRef = useRef<HTMLElement | null>(null);
-	const recommended = findSjsuCaresService(highlightedServiceTheme);
+	// The service SJSU publishes under this theme, named and described in the reader's
+	// language. The link is SJSU's own page and stays as it is - it is in English, and
+	// sending someone to a URL that does not exist would be worse than sending them there.
+	const recommended = highlightedServiceTheme
+		? { href: SJSU_CARES_SERVICE_HREFS[highlightedServiceTheme], ...t.caresServices[highlightedServiceTheme] }
+		: null;
 
 	useEffect(() => {
 		if (!open) return;
@@ -91,7 +95,7 @@ export function SjsuCaresModal({
 					<motion.button
 						type="button"
 						className="cares__backdrop"
-						aria-label="Close SJSU Cares information"
+						aria-label={t.caresClose}
 						initial={{ opacity: 0 }}
 						animate={{ opacity: 1 }}
 						exit={{ opacity: 0 }}
@@ -109,7 +113,7 @@ export function SjsuCaresModal({
 					>
 						<header className="cares__masthead">
 							<div className="cares__identity">
-								<p className="cares__eyebrow">San José State University</p>
+								<p className="cares__eyebrow">{t.university}</p>
 								<h2 id="cares-title" className="cares__title">
 									SJSU Cares
 								</h2>
@@ -118,7 +122,7 @@ export function SjsuCaresModal({
 							<button
 								type="button"
 								className="cares__close"
-								aria-label="Close SJSU Cares information"
+								aria-label={t.caresClose}
 								onClick={onClose}
 							>
 								<span aria-hidden="true">×</span>
@@ -126,37 +130,37 @@ export function SjsuCaresModal({
 						</header>
 
 						<div className="cares__body">
-							<p className="cares__intro">{SJSU_CARES_OVERVIEW}</p>
+							<p className="cares__intro">{t.caresOverview}</p>
 
 							<PressableButton
 								variant="secondary"
 								className="cares__primary"
 								href={SJSU_CARES_REQUEST_FORM}
 							>
-								<span className="cares__primary-label">Request assistance</span>
-								<span className="cares__primary-hint">The fastest way to reach a case manager</span>
+								<span className="cares__primary-label">{t.caresRequest}</span>
+								<span className="cares__primary-hint">{t.caresRequestHint}</span>
 							</PressableButton>
 
 							<div className="cares__direct">
 								<PressableButton variant="ghost" className="cares__direct-link" href={TEL_HREF}>
-									Call {SJSU_CARES_PHONE}
+									{t.caresCall(SJSU_CARES_PHONE)}
 								</PressableButton>
 								<PressableButton
 									variant="ghost"
 									className="cares__direct-link"
 									href={`mailto:${SJSU_CARES_EMAIL}`}
 								>
-									Email {SJSU_CARES_EMAIL}
+									{t.caresEmail(SJSU_CARES_EMAIL)}
 								</PressableButton>
 							</div>
 
 							<dl className="cares__facts">
 								<div className="cares__fact">
-									<dt>Hours</dt>
-									<dd>{SJSU_CARES_HOURS}</dd>
+									<dt>{t.caresHoursLabel}</dt>
+									<dd>{t.caresHoursValue}</dd>
 								</div>
 								<div className="cares__fact">
-									<dt>Office</dt>
+									<dt>{t.caresOfficeLabel}</dt>
 									<dd>{SJSU_CARES_LOCATION}</dd>
 								</div>
 							</dl>
@@ -167,7 +171,7 @@ export function SjsuCaresModal({
 									className="cares__service"
 									href={recommended.href}
 								>
-									<span className="cares__service-badge">Recommended for your question</span>
+									<span className="cares__service-badge">{t.caresRecommended}</span>
 									<span className="cares__service-title">{recommended.title}</span>
 									<span className="cares__service-desc">{recommended.description}</span>
 								</PressableButton>
@@ -175,14 +179,14 @@ export function SjsuCaresModal({
 
 							<div className="cares__more">
 								<a href={SJSU_CARES_SERVICES_INDEX} target="_blank" rel="noopener noreferrer">
-									All SJSU Cares services
+									{t.caresAllServices}
 								</a>
 								<a href={SJSU_CARES_CONTACT_PAGE} target="_blank" rel="noopener noreferrer">
-									Staff directory and full contact list
+									{t.caresDirectory}
 								</a>
 							</div>
 
-							<p className="cares__note">{SJSU_CARES_NOTE}</p>
+							<p className="cares__note">{t.caresNote}</p>
 						</div>
 					</motion.section>
 				</div>

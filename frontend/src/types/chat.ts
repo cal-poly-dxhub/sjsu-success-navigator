@@ -128,6 +128,16 @@ export type StoredMessage = {
  * This is a VIEW of server state, never the truth: nothing is written here that the server
  * was not told, and a reload rebuilds all of it from the read endpoints.
  */
+/**
+ * The title an unsent chat carries until it has been sent or the server has named it.
+ *
+ * A SENTINEL, not a label: the sidebar renders it through the string catalogue, so the row
+ * reads "Chat nuevo" in Spanish while the value compared against here stays one fixed
+ * string. Storing the translated word instead would make "is this chat still unsent?" a
+ * question about what language the student had chosen when they opened the tab.
+ */
+export const UNSENT_CHAT_TITLE = 'New chat';
+
 export type ChatSession = {
 	/** Stable React key. Deliberately not the conversation id: a new chat has no id yet. */
 	id: string;
@@ -152,6 +162,15 @@ export type RagPhase = 'conversational' | 'grid';
 export type ConversationTurn = {
 	id: string;
 	text: string;
+	/**
+	 * The greeting a new chat opens with, and the only turn the frontend wrote itself.
+	 *
+	 * It is flagged because it is the one piece of prose whose language this app still owns:
+	 * while the chat is untouched the greeting follows the language picker, and the moment a
+	 * message is sent it is frozen into whatever it said at that point and never changes
+	 * again (components/ChatApp.tsx). Every other turn is the model's and is left alone.
+	 */
+	welcome?: boolean;
 	/** Prose emitted after the cards; renders under the grid, never above it. */
 	trailingText?: string;
 	cards: StatementCard[];

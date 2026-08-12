@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { UNSENT_CHAT_TITLE } from '../types/chat';
 import type { ChatSession } from '../types/chat';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { useStrings } from '../lib/i18n';
 import { PressableButton } from './PressableButton';
 import './SideNav.css';
 
@@ -26,13 +28,16 @@ const TITLE_MAX_CHARS = 80;
  * it used to be.
  */
 function SammyMark({ className }: { className: string }) {
+	// Above the early return, or the second render of a failed image would call one hook
+	// fewer than the first.
+	const t = useStrings();
 	const [failed, setFailed] = useState(false);
 	if (failed) return null;
 	return (
 		<img
 			className={className}
 			src="/sammy-head.png"
-			alt="Sammy, the SJSU Spartans mascot"
+			alt={t.sammyAlt}
 			// The intrinsic size, so the box is reserved from the first frame and the title
 			// does not jump sideways when the picture arrives.
 			width={234}
@@ -91,10 +96,13 @@ type SideNavProps = {
 	userEmail?: string;
 	onLogout?: () => void;
 	/**
-	 * Opens the cost panel. Absent unless the stack stamped a cost model into config.json,
-	 * and its absence is what hides the control entirely - see lib/runtimeConfig.ts.
+	 * Opens settings. NOT OPTIONAL, and that is the change: the gear used to be handed an
+	 * `onOpenCost` that was undefined unless the stack stamped a cost model into config.json,
+	 * so a deployment with the cost panel off had no gear at all. Settings now holds the
+	 * language picker, which is for the student rather than for a sponsor, so it is always
+	 * there; what the cost model's absence hides is the section inside it (SettingsPanel).
 	 */
-	onOpenCost?: () => void;
+	onOpenSettings: () => void;
 	/**
 	 * DESKTOP ONLY. The rail is collapsed to its icon width; the mobile drawer is always
 	 * given `false`, because it is already a thing you open and dismiss and a drawer that
@@ -132,7 +140,7 @@ function NavContent({
 	historyError = null,
 	userEmail,
 	onLogout,
-	onOpenCost,
+	onOpenSettings,
 	collapsed = false,
 	onExpand,
 	onCollapse,
@@ -141,6 +149,7 @@ function NavContent({
 	onRenameChat,
 	onDeleteChat,
 }: Omit<SideNavProps, 'open' | 'onClose'>) {
+	const t = useStrings();
 	// Which row is mid-rename, mid-delete-confirm, or waiting on the server. Local to the
 	// sidebar because none of it is data: it is what this panel is currently showing, and it
 	// is thrown away the moment the server answers.
@@ -175,7 +184,7 @@ function NavContent({
 		void onRenameChat(chat.id, title)
 			.then(closeRowUi)
 			.catch((error: unknown) => {
-				setRowError(error instanceof Error ? error.message : 'Could not rename that chat.');
+				setRowError(error instanceof Error ? error.message : t.renameFailed);
 			})
 			.finally(() => setPendingId(null));
 	};
@@ -185,7 +194,7 @@ function NavContent({
 		void onDeleteChat(chat.id)
 			.then(closeRowUi)
 			.catch((error: unknown) => {
-				setRowError(error instanceof Error ? error.message : 'Could not delete that chat.');
+				setRowError(error instanceof Error ? error.message : t.deleteFailed);
 			})
 			.finally(() => setPendingId(null));
 	};
@@ -208,9 +217,9 @@ function NavContent({
 					type="button"
 					className="side-nav__rail-brand"
 					onClick={onExpand}
-					aria-label="Expand sidebar"
+					aria-label={t.expandSidebar}
 					aria-expanded={false}
-					title="Expand sidebar"
+					title={t.expandSidebar}
 				>
 					{/* Both live in one grid cell and cross-fade: hovering ANYWHERE on the rail
 					    turns his face into the control (see SideNav.css), which is the whole
@@ -245,7 +254,7 @@ function NavContent({
 					    name is one string, so there is nothing left to fix into a single reading. */}
 					<SammyMark className="side-nav__mark" />
 					<span className="side-nav__brand-copy">
-						<strong>SJSU Student Success</strong>
+						<strong>{t.brandName}</strong>
 					</span>
 				</div>
 
@@ -254,9 +263,9 @@ function NavContent({
 						type="button"
 						className="side-nav__collapse"
 						onClick={onCollapse}
-						aria-label="Collapse sidebar"
+						aria-label={t.collapseSidebar}
 						aria-expanded
-						title="Collapse sidebar"
+						title={t.collapseSidebar}
 					>
 						<PanelIcon />
 					</button>
@@ -267,11 +276,11 @@ function NavContent({
 				<svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
 					<path d="M11 5h2v14h-2zM5 11h14v2H5z" fill="currentColor" />
 				</svg>
-				<span>New chat</span>
+				<span>{t.newChat}</span>
 			</button>
 
-			<nav className="side-nav__history" aria-label="Chat history">
-				<p className="side-nav__eyebrow">Recent chats</p>
+			<nav className="side-nav__history" aria-label={t.chatHistory}>
+				<p className="side-nav__eyebrow">{t.recentChats}</p>
 				<ul className="side-nav__list">
 					{chats.map((chat) => {
 						const active = chat.id === activeChatId;
@@ -297,7 +306,7 @@ function NavContent({
 											value={draft}
 											maxLength={TITLE_MAX_CHARS}
 											autoFocus
-											aria-label={`Rename ${chat.title}`}
+											aria-label={t.renameChat(chat.title)}
 											disabled={pending}
 											onChange={(event) => setDraft(event.target.value)}
 											onKeyDown={(event) => {
@@ -307,7 +316,7 @@ function NavContent({
 											}}
 										/>
 										<button type="submit" className="side-nav__row-action" disabled={pending}>
-											{pending ? 'Saving…' : 'Save'}
+											{pending ? t.saving : t.save}
 										</button>
 										<button
 											type="button"
@@ -315,7 +324,7 @@ function NavContent({
 											disabled={pending}
 											onClick={closeRowUi}
 										>
-											Cancel
+											{t.cancel}
 										</button>
 									</form>
 								</li>
@@ -325,13 +334,11 @@ function NavContent({
 						if (chat.id === confirmingId) {
 							return (
 								<li key={chat.id} className="side-nav__row">
-									<div className="side-nav__confirm" role="group" aria-label={`Delete ${chat.title}`}>
+									<div className="side-nav__confirm" role="group" aria-label={t.deleteChat(chat.title)}>
 										{/* Named, and named as permanent. The server hard deletes the
 										    conversation and every message under it, so this sentence is
 										    the last point at which that is still a choice. */}
-										<p className="side-nav__confirm-copy">
-											Delete “{chat.title}”? This cannot be undone.
-										</p>
+										<p className="side-nav__confirm-copy">{t.deleteConfirm(chat.title)}</p>
 										<div className="side-nav__confirm-actions">
 											<button
 												type="button"
@@ -339,7 +346,7 @@ function NavContent({
 												disabled={pending}
 												onClick={() => confirmDelete(chat)}
 											>
-												{pending ? 'Deleting…' : 'Delete'}
+												{pending ? t.deleting : t.delete}
 											</button>
 											<button
 												type="button"
@@ -347,7 +354,7 @@ function NavContent({
 												disabled={pending}
 												onClick={closeRowUi}
 											>
-												Cancel
+												{t.cancel}
 											</button>
 										</div>
 									</div>
@@ -365,8 +372,12 @@ function NavContent({
 									aria-current={active ? 'page' : undefined}
 									aria-busy={opening ? 'true' : undefined}
 								>
-									<span>{chat.title}</span>
-									{opening ? <span className="side-nav__chat-status">Opening…</span> : null}
+									{/* The unsent chat's placeholder is chrome, not a name the server
+									    gave anything, so it reads in the student's language. Every
+									    other title here was typed by a student or written by the
+									    server and is left exactly as it is stored. */}
+									<span>{chat.title === UNSENT_CHAT_TITLE ? t.newChat : chat.title}</span>
+									{opening ? <span className="side-nav__chat-status">{t.opening}</span> : null}
 								</button>
 
 								{stored && !opening ? (
@@ -378,7 +389,7 @@ function NavContent({
 										<button
 											type="button"
 											className="side-nav__row-icon"
-											aria-label={`Rename ${chat.title}`}
+											aria-label={t.renameChat(chat.title)}
 											disabled={busy || pendingId !== null}
 											onClick={() => startRename(chat)}
 										>
@@ -392,7 +403,7 @@ function NavContent({
 										<button
 											type="button"
 											className="side-nav__row-icon side-nav__row-icon--danger"
-											aria-label={`Delete ${chat.title}`}
+											aria-label={t.deleteChat(chat.title)}
 											disabled={busy || pendingId !== null}
 											onClick={() => {
 												setRowError(null);
@@ -415,13 +426,11 @@ function NavContent({
 				</ul>
 
 				{historyLoading ? (
-					<p className="side-nav__history-note">Loading your chats…</p>
+					<p className="side-nav__history-note">{t.loadingChats}</p>
 				) : null}
 
 				{!historyLoading && !historyError && stored.length === 0 ? (
-					<p className="side-nav__history-note">
-						Chats you send are saved here, and stay on your account.
-					</p>
+					<p className="side-nav__history-note">{t.noStoredChats}</p>
 				) : null}
 
 				{historyError ? (
@@ -442,7 +451,7 @@ function NavContent({
 
 			{userEmail ? (
 				<div className="side-nav__account">
-					<p className="side-nav__account-label">Signed in</p>
+					<p className="side-nav__account-label">{t.signedIn}</p>
 					<p className="side-nav__account-email" title={userEmail}>
 						{userEmail}
 					</p>
@@ -454,39 +463,39 @@ function NavContent({
 								onClick={onLogout}
 								disabled={busy}
 							>
-								Sign out
+								{t.signOut}
 							</PressableButton>
 							{/*
-							  A gear, not a currency symbol. The panel behind it is a demo instrument
-							  for sponsors, and a dollar sign in a student's sidebar advertises that
-							  this app has a price - the opposite of what this surface should say to
-							  the student it is for. Discreet at a glance; the label names it for
-							  anyone who looks, hovers, or is listening to a screen reader.
+							  A gear, and now it means what a gear means. It was drawn as one already
+							  - a dollar sign in a student's sidebar advertises that this app has a
+							  price, which is the opposite of what this surface should say to the
+							  student it is for - and behind it there is a settings panel rather than
+							  a single sponsor instrument. It is UNCONDITIONAL: the language picker
+							  inside belongs to the student, so a deployment with the cost model
+							  switched off still has settings, minus that section.
 							*/}
-							{onOpenCost ? (
-								<button
-									type="button"
-									className="side-nav__cost"
-									onClick={onOpenCost}
-									aria-label="Cost analysis"
-									title="Cost analysis"
+							<button
+								type="button"
+								className="side-nav__settings"
+								onClick={onOpenSettings}
+								aria-label={t.settings}
+								title={t.settings}
+							>
+								<svg
+									viewBox="0 0 24 24"
+									width="17"
+									height="17"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="1.7"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									aria-hidden="true"
 								>
-									<svg
-										viewBox="0 0 24 24"
-										width="17"
-										height="17"
-										fill="none"
-										stroke="currentColor"
-										strokeWidth="1.7"
-										strokeLinecap="round"
-										strokeLinejoin="round"
-										aria-hidden="true"
-									>
-										<circle cx="12" cy="12" r="3" />
-										<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-									</svg>
-								</button>
-							) : null}
+									<circle cx="12" cy="12" r="3" />
+									<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+								</svg>
+							</button>
 						</div>
 					) : null}
 				</div>
@@ -513,6 +522,7 @@ const SWIPE_CLOSE_VELOCITY = 380;
  * the interface decided to play at them.
  */
 export function SideNav(props: SideNavProps) {
+	const t = useStrings();
 	const reduceMotion = usePrefersReducedMotion();
 	const slide = reduceMotion
 		? { duration: 0 }
@@ -541,7 +551,7 @@ export function SideNav(props: SideNavProps) {
 						<motion.button
 							type="button"
 							className="side-nav__backdrop"
-							aria-label="Close navigation"
+							aria-label={t.closeNavigation}
 							onClick={props.onClose}
 							initial={{ opacity: 0 }}
 							animate={{ opacity: 1 }}

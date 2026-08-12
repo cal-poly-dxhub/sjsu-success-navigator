@@ -1784,12 +1784,17 @@ def test_config_json_names_the_history_endpoint_the_frontend_reads():
 def test_the_cost_panel_is_gated_by_config_and_leaves_no_trace_when_off():
     """`cost_model.enabled: false` must remove the key from config.json entirely.
 
-    THE OMISSION IS THE GATE. The frontend renders the control only when `costModel` is
-    present (lib/runtimeConfig.ts), so this is the whole mechanism by which the panel can be
-    switched off without a code change - which is what has to hold before Okta federation
-    starts provisioning SJSU students into this pool just in time. A student must not be
-    shown what the system costs to run, and "the component checks a flag" is a weaker
-    guarantee than "the data never reaches the browser".
+    THE OMISSION IS THE GATE, and what it gates is now the cost SECTION rather than the gear
+    in the sidebar. This test used to say the control itself was absent without `costModel`,
+    which was true when the gear opened the cost panel and nothing else; the gear now opens a
+    settings panel whose first control is the student's own language, so it is there in every
+    deployment and the cost breakdown inside it is not (components/SettingsPanel.tsx).
+
+    None of that weakens what is asserted here, which is about the DATA and not the UI: with
+    the panel off, no rate and no measured figure reaches the browser at all. A student must
+    not be shown what the system costs to run - which is what has to hold before Okta
+    federation starts provisioning SJSU students into this pool just in time - and "the
+    component checks a flag" is a weaker guarantee than "the file never contains it".
     """
     config = copy.deepcopy(load_config())
     config["cost_model"]["enabled"] = False
@@ -1817,6 +1822,34 @@ def test_the_cost_panel_is_gated_by_config_and_leaves_no_trace_when_off():
     # world-readable, so a leftover block would publish the figures anyway.
     assert "generation_input_per_1m" not in text
     assert '"chatApiUrl"' in text, "turning the panel off must not disturb the rest"
+
+
+def test_settings_survives_the_cost_model_being_off():
+    """The other half of the gate above, and the half that changed: with no `costModel`, the
+    student must still have the gear.
+
+    It is checked at the PROP, because that is where the old behaviour lived. `onOpenCost`
+    was optional and ChatApp passed it only when a cost model had been stamped, so the whole
+    control disappeared with the panel - and the language picker now behind that gear belongs
+    to the student, not to the sponsor the cost figures are for. A required prop cannot be
+    the undefined that used to hide the button.
+
+    A source-text assertion is a blunt instrument and this is the one thing it is good at:
+    pinning a decision that is otherwise recorded only in a comment. It says nothing about
+    how the panel renders - that was checked in a browser, in both languages, with the cost
+    model absent."""
+    side_nav = (
+        Path(__file__).resolve().parents[3] / "frontend" / "src" / "components" / "SideNav.tsx"
+    ).read_text()
+    assert "onOpenSettings: () => void;" in side_nav, (
+        "SideNav must take onOpenSettings as a REQUIRED prop. Making it optional again is "
+        "how the gear went missing whenever cost_model.enabled was false."
+    )
+    # The name survives in the doc comment that explains the change, which is the point of
+    # that comment; what must not come back is the optional prop or a call that passes it.
+    assert "onOpenCost?:" not in side_nav and "onOpenCost={" not in side_nav, (
+        "the old optional cost-panel prop must not come back alongside the settings one"
+    )
 
 
 def test_the_cloudfront_origin_joins_the_api_cors_allowlist_as_a_token():

@@ -931,8 +931,10 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     Returns None when the block is absent or `enabled` is false, and the stack then omits
     `costModel` from config.json entirely - which is the whole gate. The frontend renders
-    the control only when the key is present, so turning the panel off is a config edit
-    rather than a code change. That matters for the Okta federation landing next: it
+    the cost section inside its settings panel only when the key is present, so turning the
+    breakdown off is a config edit rather than a code change. The settings panel around it
+    is not gated by this and never was meant to be - it holds the language picker, which is
+    for the student. That matters for the Okta federation landing next: it
     provisions any SJSU student just in time, and this surface must not show them what the
     system costs to run.
 

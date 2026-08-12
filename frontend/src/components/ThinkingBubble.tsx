@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { useStrings } from '../lib/i18n';
 import './ThinkingBubble.css';
 
 const THINKING_MAX_DOTS = 6;
@@ -7,6 +8,7 @@ const THINKING_DOT_COUNT = THINKING_MAX_DOTS + 1;
 const THINKING_FRAME_MS = 420;
 
 export function ThinkingBubble() {
+	const t = useStrings();
 	const reduceMotion = usePrefersReducedMotion();
 	const [dotCount, setDotCount] = useState(0);
 
@@ -23,7 +25,7 @@ export function ThinkingBubble() {
 	return (
 		<div className="thinking-bubble" aria-hidden="true">
 			<p className="thinking-bubble__label">
-				Thinking
+				{t.thinking}
 				<span className="thinking-bubble__dots" aria-hidden="true">
 					{dots}
 				</span>
