@@ -162,28 +162,35 @@ the weighting does not change is a turn with no cards, where the prose is
 necessarily the whole answer; the prompt says so explicitly, because a teaser
 bubble above an empty space is this balance's failure mode.
 
-## The two marks
+## The marks
 
-The model may write **bold** and unordered bullet lists, in the prose and inside
-a `<desc>` alike, and nothing else: no headings, no ordered lists, no tables, no
-images, no typed links. The permission and the ban both live in the system
-prompt and are modelled in its examples.
+Four constructs render, in the prose and inside a `<desc>` alike: `**bold**`,
+`*italic*`, bulleted lists and numbered lists. Nothing else: no headings, no
+tables, no images, no typed links, no raw HTML.
 
-The ban is the half that matters. Only these two render, so anything else
-reaches the student as the literal characters the model typed, and a typed link
-is the sharper case: it is a destination nobody resolved, which is exactly what
-`ref` exists to make unrepresentable. Bullets earn their place on a routing card,
-where the office's email and phone go at the foot of the description, because a
-card that names the right office and leaves its number to be hunted down is the
-partial answer the 2026-08-10 eval kept scoring.
+The ban is the half that matters. Only these render, so anything else reaches
+the student as the literal characters the model typed, and a typed link is the
+sharper case: it is a destination nobody resolved, which is exactly what `ref`
+exists to make unrepresentable. No mark the renderer can express carries a URL,
+and that is the property a fifth construct has to preserve to be allowed in.
 
-**Newlines do not survive a `<desc>`.** `_first_field` collapses all whitespace
-to single spaces (so does `_capped`), which is what makes the caps measure the
-string the student reads. Bold is unaffected. A bulleted list is not: written
-inside a description it arrives at the frontend on one line, where a renderer
-keyed on line starts sees no list. Prose keeps its newlines and renders bullets
-correctly. Closing that gap is a change to this module's field reader, which the
-prompt cannot do from its side.
+Bullets earn their place on a routing card, where the office's email and phone
+go at the foot of the description, because a card that names the right office
+and leaves its number to be hunted down is the partial answer the 2026-08-10
+eval kept scoring. Numbers earn theirs on a process answer: "how do I apply to
+EOP" is a sequence, and a paragraph of it is a sequence the student has to
+rebuild before they can follow it.
+
+**What the PROMPT permits is a separate number.** The renderer's four are a
+ceiling, not an instruction. The system prompt still offers exactly two marks
+and bans numbered lists by name (app/prompts.py, Formatting), so numbered steps
+and italics reach a student only when the model writes them regardless - which
+it does, which is why they used to arrive as literal `1.` and `*this*`. Widening
+the prompt is a prompt decision and is taken on its own.
+
+`<desc>` keeps its line breaks, which is what lets a list of either kind survive
+the parser: a list is lines that start with a marker, and every other field is
+still collapsed to one line. See Formatting inside a description.
 
 ## Length caps
 
@@ -243,14 +250,16 @@ anything worth a mid-thought cut.
 
 ## Formatting inside a description
 
-Two marks render in model-authored text, in the prose and inside a `<desc>` alike: `**bold**`
-and a bulleted list, one item per line, each line starting with `- `. Nothing else. The
-display parser is two constructs wide on purpose rather than a markdown library with a
-sanitizer bolted on, because the one construct this path must never gain is a link: the model
-is never shown a URL, so a model-authored URL is unrepresentable, and the renderer should stay
-unable to express one rather than be taught to and then policed
+Four marks render in model-authored text, in the prose and inside a `<desc>` alike:
+`**bold**`, `*italic*`, a bulleted list (one item per line, each line starting with `- `) and
+a numbered list (`1. ` or `1) `, and the first number is the one shown). Nothing else. The
+display parser is hand-written and construct-by-construct on purpose rather than a markdown
+library with a sanitizer bolted on, because the one construct this path must never gain is a
+link: the model is never shown a URL, so a model-authored URL is unrepresentable, and the
+renderer should stay unable to express one rather than be taught to and then policed
 (`frontend/src/lib/messageFormat.ts`). Unsupported syntax renders as its own characters, so
-nothing the model types can silently disappear.
+nothing the model types can silently disappear - an unmatched `**` is a pair of asterisks on
+screen, not a run of text that vanished looking for its closer.
 
 This is a prompt knob like the editorial balance is: the tag contract does not change, and
 nothing on the wire says whether a description is bulleted.

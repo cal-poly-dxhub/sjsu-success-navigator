@@ -34,8 +34,26 @@
 	list-style: disc outside;
 }
 
+/*
+ * Numbers instead of discs, and a wider gutter: a marker is "10." rather than one glyph, and
+ * at 1.2rem the second digit sits under the text of the item above it.
+ */
+.formatted-message__list--ordered {
+	padding-left: 1.6rem;
+	list-style: decimal outside;
+}
+
 .formatted-message__item::marker {
 	color: var(--accent-blue);
+}
+
+/*
+ * Explicit rather than left to the UA sheet: a bubble or card may set `font-style` on the
+ * block, and an <em> that inherits it renders as unmarked text - the mark silently gone
+ * instead of visibly wrong.
+ */
+.formatted-message em {
+	font-style: italic;
 }
 
 .formatted-message__item + .formatted-message__item {

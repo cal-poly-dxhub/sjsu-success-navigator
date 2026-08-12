@@ -5,8 +5,8 @@ import './FormattedMessage.css';
 
 /**
  * Model-authored reply text on screen: the prose above and below the cards, and a card's
- * description. Bold and unordered bullets render; everything else is its own characters
- * (docs/cards-v2.md and lib/messageFormat.ts for why the parser is two constructs wide).
+ * description. Bold, italics, bullets and numbered steps render; everything else is its own
+ * characters (docs/cards-v2.md and lib/messageFormat.ts for what the parser knows).
  *
  * Every piece of model text below reaches the DOM as a React text node, so it is escaped
  * before it is anything else and a reply containing markup is read, not run. There is no
@@ -17,13 +17,17 @@ import './FormattedMessage.css';
 function Spans({ spans }: { spans: MessageSpan[] }) {
 	return (
 		<>
-			{spans.map((span, index) =>
-				span.bold ? (
-					<strong key={index}>{span.text}</strong>
+			{spans.map((span, index) => {
+				// Both marks nest rather than picking one: `**bold *and* italic**` is a
+				// phrase inside an emphasised phrase, and dropping either would render text
+				// the model marked up as text it did not.
+				const text = span.italic ? <em>{span.text}</em> : span.text;
+				return span.bold ? (
+					<strong key={index}>{text}</strong>
 				) : (
-					<Fragment key={index}>{span.text}</Fragment>
-				),
-			)}
+					<Fragment key={index}>{text}</Fragment>
+				);
+			})}
 		</>
 	);
 }
@@ -45,21 +49,39 @@ export function FormattedMessage({ text, reveal }: FormattedMessageProps) {
 
 	return (
 		<div className="formatted-message">
-			{shown.map((block, index) =>
-				block.kind === 'list' ? (
-					<ul key={index} className="formatted-message__list">
-						{block.items.map((item, itemIndex) => (
-							<li key={itemIndex} className="formatted-message__item">
-								<Spans spans={item} />
-							</li>
-						))}
-					</ul>
+			{shown.map((block, index) => {
+				if (block.kind === 'paragraph') {
+					return (
+						<p key={index} className="formatted-message__para">
+							<Spans spans={block.spans} />
+						</p>
+					);
+				}
+
+				const items = block.items.map((item, itemIndex) => (
+					<li key={itemIndex} className="formatted-message__item">
+						<Spans spans={item} />
+					</li>
+				));
+
+				// A real <ol>, so the numbers are the browser's: they stay in step when a
+				// step wraps, and a screen reader announces a list of four rather than four
+				// sentences that happen to open with a digit. `start` carries the model's
+				// own first number for the same reason it is parsed at all.
+				return block.ordered ? (
+					<ol
+						key={index}
+						start={block.start}
+						className="formatted-message__list formatted-message__list--ordered"
+					>
+						{items}
+					</ol>
 				) : (
-					<p key={index} className="formatted-message__para">
-						<Spans spans={block.spans} />
-					</p>
-				),
-			)}
+					<ul key={index} className="formatted-message__list">
+						{items}
+					</ul>
+				);
+			})}
 		</div>
 	);
 }
