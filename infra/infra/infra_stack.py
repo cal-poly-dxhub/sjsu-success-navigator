@@ -2202,19 +2202,27 @@ class NavigatorStack(Stack):
                 ),
             )
 
-            # AUTHORIZER RESULT CACHING OFF. API Gateway caches a REQUEST authorizer's answer
-            # against its identity source for 300 seconds by default - and the identity
-            # source here is the token itself, so a cached Allow would keep admitting a
-            # token for five minutes after it expired. A connect happens once per
-            # connection, so the cache saves almost nothing and costs exactly that.
+            # THERE IS NO AUTHORIZER RESULT CACHE TO CONFIGURE HERE, and the absence of the
+            # property IS the setting. `AuthorizerResultTtlInSeconds` is documented as
+            # "Supported only for HTTP API Lambda authorizers"
+            # (AWS::ApiGatewayV2::Authorizer, checked 2026-08-12), and API Gateway does not
+            # merely ignore it on this protocol - it refuses the resource:
             #
-            # Reached by walking the tree rather than through the binder: a
-            # WebSocketLambdaAuthorizer is a BINDER, not a construct - the CfnAuthorizer it
-            # describes is created when the $connect route binds it - so there is no
-            # `.node` on the object above to escape-hatch through.
-            for child in streaming_api.node.find_all():
-                if isinstance(child, apigwv2.CfnAuthorizer):
-                    child.authorizer_result_ttl_in_seconds = 0
+            #   AuthorizerResultTtlInSeconds cannot be set for WEBSOCKET protocol Apis.
+            #   (Service: AmazonApiGatewayV2; Status Code: 400; BadRequestException)
+            #
+            # That is a real CREATE_FAILED from a real deploy (2026-08-12), and it happens
+            # for the value 0 as loudly as for 300, so this cannot be a smaller number - it
+            # has to be no property at all. An earlier revision walked the construct tree
+            # and set it to 0 to disable caching; that is the line that failed to deploy.
+            # CDK itself never emits it here: WebSocketLambdaAuthorizer takes no TTL
+            # argument, only HttpLambdaAuthorizer does, so nothing is being suppressed by
+            # leaving it out. Whether API Gateway caches a WebSocket authorizer's answer at
+            # all is not documented either way; what is certain is that there is no knob,
+            # so the token in the identity source is not protected by one. What bounds the
+            # exposure instead is the connection model: the authorizer runs at the
+            # handshake, and app/ws_authorizer.py verifies the signature and the expiry on
+            # every one of them.
 
             # PUSHING BACK DOWN THE CONNECTION. Both functions send frames - the route one
             # for a guardrail block or a rate-limit refusal, the worker for the whole

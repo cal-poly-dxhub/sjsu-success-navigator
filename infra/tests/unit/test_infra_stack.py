@@ -70,6 +70,53 @@ def _resource_named(template: Template, type_name: str, logical_id_prefix: str) 
     return next(iter(found.values()))
 
 
+def _api_logical_id(template: Template, protocol: str) -> str:
+    """The logical id of the one API of a protocol - "HTTP" or "WEBSOCKET".
+
+    THERE ARE TWO API GATEWAY v2 APIs IN THE DEFAULT TEMPLATE NOW. config.yaml commits
+    `streaming.enabled: true`, so the WebSocket API and its own authorizer, stage, routes
+    and integrations are in every synth below - and `_resource` (exactly one of a type)
+    can no longer address any of them.
+
+    Selected by ProtocolType rather than by logical-id prefix, because the protocol is what
+    the assertions actually mean: "the API students POST to" and "the API they open a
+    socket to" are different things, and a rename of either construct must not silently
+    re-point a test at the other one.
+    """
+    apis = {
+        lid: r
+        for lid, r in template.find_resources("AWS::ApiGatewayV2::Api").items()
+        if r["Properties"]["ProtocolType"] == protocol
+    }
+    assert len(apis) == 1, f"expected exactly one {protocol} API, found {sorted(apis)}"
+    return next(iter(apis))
+
+
+def _api_resources(template: Template, type_name: str, api_logical_id: str) -> dict:
+    """Every resource of an apigatewayv2 type that hangs off one API, by its ApiId Ref."""
+    return {
+        lid: r
+        for lid, r in template.find_resources(type_name).items()
+        if r["Properties"].get("ApiId") == {"Ref": api_logical_id}
+    }
+
+
+def _http_api(template: Template) -> dict:
+    """The HTTP API's own Properties - the /chat API, not the streaming socket."""
+    return template.find_resources("AWS::ApiGatewayV2::Api")[
+        _api_logical_id(template, "HTTP")
+    ]["Properties"]
+
+
+def _http_api_resource(template: Template, type_name: str) -> dict:
+    """The one resource of a type belonging to the HTTP API, with its raw template entry."""
+    found = _api_resources(template, type_name, _api_logical_id(template, "HTTP"))
+    assert len(found) == 1, (
+        f"expected exactly one {type_name} on the HTTP API, found {sorted(found)}"
+    )
+    return next(iter(found.values()))
+
+
 def test_config_loads_with_expected_sections():
     config = load_config()
     for key in (
@@ -391,7 +438,7 @@ def test_both_layers_are_built_for_the_functions_runtime_and_architecture():
 @functools.lru_cache(maxsize=1)
 @functools.lru_cache(maxsize=1)
 def _synth_outdir() -> Path:
-    """A real synth of the default (streaming-off) stack, cached.
+    """A real synth of the stack config.yaml describes, cached. Streaming is ON in it.
 
     Its own function so the assertions that need the staged FILES and the ones that need
     the stamped config.json share one synth - each of these costs a deps-layer bundle and
@@ -1129,8 +1176,14 @@ def test_the_api_serves_exactly_the_five_routes_the_handler_implements():
     patterns) are additions to that list, so the assertion is the exact set - which still
     fails on a route nobody meant to add, and additionally fails if one of these is dropped
     or renamed. The strings are the route keys app/handler.lambda_handler dispatches on, so a
-    rename on either side breaks here rather than at runtime as a 404."""
-    routes = _template().find_resources("AWS::ApiGatewayV2::Route")
+    rename on either side breaks here rather than at runtime as a 404.
+
+    Scoped to the HTTP API, which is not a relaxation: the WebSocket API's three route keys
+    are a different set on a different protocol, asserted in the streaming section."""
+    template = _template()
+    routes = _api_resources(
+        template, "AWS::ApiGatewayV2::Route", _api_logical_id(template, "HTTP")
+    )
     assert {route["Properties"]["RouteKey"] for route in routes.values()} == {
         "POST /chat",
         "GET /conversations",
@@ -1145,9 +1198,16 @@ def test_every_route_is_jwt_gated():
     an open paid endpoint. The reads spend none - and are gated just as hard for a different
     reason: the `sub` claim IS the DynamoDB partition key, so an ungated read would have
     nobody to attribute and the handler's only alternative would be trusting a user id off
-    the wire. Asserted over ALL routes rather than an allowlist, so a route added later is
-    covered by this test on the day it is added."""
-    routes = _template().find_resources("AWS::ApiGatewayV2::Route")
+    the wire. Asserted over ALL of this API's routes rather than an allowlist, so a route
+    added later is covered by this test on the day it is added.
+
+    ALL of THIS API's routes: a WebSocket API cannot use a JWT authorizer at all, and its
+    own gate ($connect, CUSTOM, one Lambda) is asserted in the streaming section. Widening
+    this loop to both APIs would not catch more, it would just fail on the socket."""
+    template = _template()
+    routes = _api_resources(
+        template, "AWS::ApiGatewayV2::Route", _api_logical_id(template, "HTTP")
+    )
     assert routes, "the API has no routes at all"
     for logical_id, route in routes.items():
         assert route["Properties"]["AuthorizationType"] == "JWT", logical_id
@@ -1159,20 +1219,26 @@ def test_the_history_reads_are_served_by_the_chat_function():
     rule that every partition key comes from the JWT claim, and two copies of that rule is
     one too many."""
     template = _template()
-    integrations = template.find_resources("AWS::ApiGatewayV2::Integration")
+    http_api = _api_logical_id(template, "HTTP")
+    integrations = _api_resources(template, "AWS::ApiGatewayV2::Integration", http_api)
     assert len(integrations) == 1, (
         "every route should share the one chat integration; a second one means a route "
         "was pointed somewhere else"
     )
     integration_id = next(iter(integrations))
-    for route in template.find_resources("AWS::ApiGatewayV2::Route").values():
+    for route in _api_resources(template, "AWS::ApiGatewayV2::Route", http_api).values():
         assert integration_id in json.dumps(route["Properties"]["Target"])
 
 
 def test_the_authorizer_is_native_and_reads_the_authorization_header():
     """A native JWT authorizer - no authorizer Lambda, so nothing to cold-start and none
-    of our code in the auth decision."""
-    authorizer = _resource(_template(), "AWS::ApiGatewayV2::Authorizer")["Properties"]
+    of our code in the auth decision.
+
+    That claim is about THIS door only. The socket's door is a Lambda, because a WebSocket
+    API cannot use the native JWT authorizer - see the streaming section."""
+    authorizer = _http_api_resource(_template(), "AWS::ApiGatewayV2::Authorizer")[
+        "Properties"
+    ]
     assert authorizer["AuthorizerType"] == "JWT"
     assert authorizer["IdentitySource"] == ["$request.header.Authorization"]
 
@@ -1200,7 +1266,7 @@ def test_the_authorizer_audience_carries_both_app_clients():
     dropping the eval client here breaks the harness at the gateway with a CORS-less 401,
     and dropping the web client breaks every student."""
     template = _template()
-    authorizer = _resource(template, "AWS::ApiGatewayV2::Authorizer")["Properties"]
+    authorizer = _http_api_resource(template, "AWS::ApiGatewayV2::Authorizer")["Properties"]
     assert authorizer["JwtConfiguration"]["Audience"] == [
         {"Ref": _client_logical_id(template, "ChatWebClient")},
         {"Ref": _client_logical_id(template, "ChatEvalClient")},
@@ -1211,12 +1277,12 @@ def test_authorization_is_in_the_cors_allow_headers():
     """The frontend sets Authorization from JavaScript, which makes every /chat call
     preflighted. Without this the request dies at the OPTIONS and the symptom is a CORS
     error, which reads like a config problem rather than the auth problem it is."""
-    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    api = _http_api(_template())
     assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
 
 
 def test_cors_never_allows_a_wildcard_origin():
-    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    api = _http_api(_template())
     assert "*" not in api["CorsConfiguration"]["AllowOrigins"]
 
 
@@ -1228,7 +1294,7 @@ def test_the_stage_throttle_renders_cloudformation_property_names():
     from infra.config import resolve_http_api
 
     expected = resolve_http_api(load_config())
-    settings = _resource(_template(), "AWS::ApiGatewayV2::Stage")["Properties"][
+    settings = _http_api_resource(_template(), "AWS::ApiGatewayV2::Stage")["Properties"][
         "DefaultRouteSettings"
     ]
     assert settings["ThrottlingRateLimit"] == expected["throttling_rate_limit"]
@@ -1692,8 +1758,9 @@ def test_config_json_names_the_history_endpoint_the_frontend_reads():
         "region",
     } <= keys, "these are exactly the keys frontend/src/lib/runtimeConfig.ts requires"
     # A subset rather than an equality, because `costModel` and its nested blocks legitimately
-    # sit alongside them when the cost panel is on. Nothing else may: an unexpected key here
-    # is a value that reached a world-readable file without anybody deciding it should.
+    # sit alongside them when the cost panel is on, and `streamingApiUrl` when the socket is.
+    # Nothing else may: an unexpected key here is a value that reached a world-readable file
+    # without anybody deciding it should.
     assert keys - {
         "chatApiUrl",
         "conversationsApiUrl",
@@ -1701,7 +1768,17 @@ def test_config_json_names_the_history_endpoint_the_frontend_reads():
         "userPoolClientId",
         "loginDomain",
         "region",
-    } <= {"costModel", "asOf", "region", "currency", "measuredAt", "rates", "measured", "baseline"}
+    } <= {
+        "costModel",
+        "asOf",
+        "region",
+        "currency",
+        "measuredAt",
+        "rates",
+        "measured",
+        "baseline",
+        "streamingApiUrl",
+    }
 
 
 def test_the_cost_panel_is_gated_by_config_and_leaves_no_trace_when_off():
@@ -1745,7 +1822,7 @@ def test_the_cost_panel_is_gated_by_config_and_leaves_no_trace_when_off():
 def test_the_cloudfront_origin_joins_the_api_cors_allowlist_as_a_token():
     """The app is served from the distribution, so the browser sends that origin on every
     /chat call. Resolved at deploy, never hardcoded."""
-    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    api = _http_api(_template())
     origins_rendered = json.dumps(api["CorsConfiguration"]["AllowOrigins"])
     assert "SiteDistribution" in origins_rendered
     assert "*" not in api["CorsConfiguration"]["AllowOrigins"]
@@ -1755,7 +1832,7 @@ def test_the_amended_cors_block_keeps_the_authorization_header():
     """The escape hatch REPLACES the whole CORS block, so dropping a header here would
     break every /chat call at the preflight - with a CORS error, which reads like a config
     problem rather than the auth problem it would be."""
-    api = _resource(_template(), "AWS::ApiGatewayV2::Api")["Properties"]
+    api = _http_api(_template())
     assert "Authorization" in api["CorsConfiguration"]["AllowHeaders"]
     # PATCH and DELETE are the rename and delete routes. Both are cross-origin and both
     # carry Authorization, so both are preflighted: dropping either here fails the OPTIONS
@@ -1922,11 +1999,18 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
 
 # --- WebSocket streaming API (config.yaml `streaming`) ------------------------------------
 #
-# The whole surface is gated, and it ships OFF - so the default template above proves the
-# absent case and every assertion here needs its own synth with the key set. Both directions
-# are tested against REAL templates rather than by reading the code, for the reason the Okta
-# gate's test gives: a resource that gets created anyway with a defaulted value reads fine in
-# a diff and is a live endpoint in the account.
+# The whole surface is gated. It used to ship OFF, which let the default template above stand
+# in for the absent case; config.yaml now commits it ON, so BOTH directions need their own
+# synth with the key set explicitly, and neither may be inferred from what config.yaml
+# happens to say this week. Both are tested against REAL templates rather than by reading the
+# code, for the reason the Okta gate's test gives: a resource that gets created anyway with a
+# defaulted value reads fine in a diff and is a live endpoint in the account.
+#
+# ONE PROPERTY IN HERE HAS ALREADY FAILED A DEPLOY. `AuthorizerResultTtlInSeconds` synthesized
+# cleanly, passed the assertion that pinned it, and was refused by API Gateway with a 400 -
+# see test_the_connect_authorizer_carries_no_result_ttl and the sweep beside it. Synth is not
+# a validator of L1 property values, and neither is an assertion that only repeats what synth
+# emitted.
 
 
 @functools.lru_cache(maxsize=1)
@@ -1934,6 +2018,28 @@ def _streaming_config() -> dict:
     config = copy.deepcopy(load_config())
     config["streaming"]["enabled"] = True
     return config
+
+
+@functools.lru_cache(maxsize=1)
+def _streaming_off_config() -> dict:
+    config = copy.deepcopy(load_config())
+    config["streaming"]["enabled"] = False
+    return config
+
+
+@functools.lru_cache(maxsize=1)
+def _streaming_off_outdir() -> Path:
+    """One real synth with streaming OFF, for the assertions that need the STAGED files.
+
+    Its own synth because config.yaml no longer supplies this direction. The template-level
+    half of the gate is cheap enough to build twice inline (below); config.json is not - it
+    is written into a BucketDeployment asset, so the only way to see what the browser would
+    receive is to stage it."""
+    outdir = tempfile.mkdtemp()
+    app = cdk.App(outdir=outdir)
+    NavigatorStack(app, "SjsuNavigatorStack", config=_streaming_off_config())
+    app.synth()
+    return Path(outdir)
 
 
 @functools.lru_cache(maxsize=1)
@@ -2024,15 +2130,24 @@ def test_no_streaming_resources_exist_when_the_key_is_absent():
             if lid.startswith("ConnectAuthorizerDepsLayer")
         ] == []
 
-        # And nothing tells the browser a socket exists.
-        assert "streamingApiUrl" not in json.dumps(rendered)
+    # And nothing tells the browser a socket exists. Read off the STAGED config.json, which
+    # is the fix for an assertion that could not fail: this used to be
+    # `"streamingApiUrl" not in json.dumps(rendered)`, and that key NEVER appears in a
+    # template either way - Source.json_data writes it into a BucketDeployment asset and
+    # leaves a `<<marker>>` behind. It passed with streaming on, off, and would have passed
+    # with the gate deleted entirely.
+    assert "streamingApiUrl" not in _stamped_config_json(_streaming_off_outdir())
 
 
 def test_the_config_json_names_the_socket_only_when_streaming_is_on():
     """THE OMISSION IS THE GATE, and here it decides the browser's TRANSPORT rather than
     hiding a control: the frontend opens a socket only when this key is present, so a build
-    that never receives it cannot reach the streaming path at all."""
-    assert "streamingApiUrl" not in _stamped_config_json(_synth_outdir())
+    that never receives it cannot reach the streaming path at all.
+
+    The off side comes from its own synth rather than from `_synth_outdir()`. config.yaml
+    commits streaming ON now, so the default synth proves the ON direction twice over and
+    the OFF direction not at all."""
+    assert "streamingApiUrl" not in _stamped_config_json(_streaming_off_outdir())
 
     # Read as TEXT, not parsed: Source.jsonData stamps deploy-time markers where the tokens
     # go, so the staged file is deliberately not valid JSON until CloudFormation resolves
@@ -2076,9 +2191,125 @@ def test_only_connect_is_authorized_and_it_reads_the_token_from_the_query_string
     assert len(request_authorizers) == 1
     authorizer = request_authorizers[0]
     assert authorizer["IdentitySource"] == ["route.request.querystring.token"]
-    # CACHING OFF. The identity source is the token, so a cached Allow keeps admitting a
-    # token after it expires - for the default 300 seconds.
-    assert authorizer["AuthorizerResultTtlInSeconds"] == 0
+
+
+def _websocket_authorizer(template: Template) -> dict:
+    """The socket's $connect authorizer: the one REQUEST authorizer on the WebSocket API."""
+    found = _api_resources(
+        template,
+        "AWS::ApiGatewayV2::Authorizer",
+        _api_logical_id(template, "WEBSOCKET"),
+    )
+    assert len(found) == 1, sorted(found)
+    return next(iter(found.values()))["Properties"]
+
+
+def test_the_connect_authorizer_carries_no_result_ttl():
+    """THE PROPERTY THAT ROLLED BACK A DEPLOY. `AuthorizerResultTtlInSeconds` is documented
+    as "Supported only for HTTP API Lambda authorizers" (AWS::ApiGatewayV2::Authorizer), and
+    API Gateway does not ignore it on the other protocol - it refuses the resource:
+
+        AuthorizerResultTtlInSeconds cannot be set for WEBSOCKET protocol Apis.
+        (Service: AmazonApiGatewayV2; Status Code: 400; BadRequestException)
+
+    ABSENT, NOT ZERO. The stack used to set it to 0 to disable caching, which is exactly the
+    template that failed: the value is not read at all, so 0 is rejected as loudly as 300.
+    A test asserting `== 0` therefore passed on a template that could not deploy, which is
+    why this one asserts the KEY is gone rather than what it holds.
+
+    This assertion has been run against a template carrying the property (it fails: 'the
+    property that rolled back the deploy is back'), not only against one without it."""
+    assert "AuthorizerResultTtlInSeconds" not in _websocket_authorizer(_streaming_template()), (
+        "the property that rolled back the deploy is back on the $connect authorizer"
+    )
+
+
+# Properties AWS documents as HTTP-API-only, read off the AWS::ApiGatewayV2::* CloudFormation
+# reference on 2026-08-12 - every property of Api, Authorizer, Route, Integration and Stage
+# (plus the RouteSettings sub-type) was checked, and these are the ones whose text restricts
+# them to HTTP APIs. Route and Stage are in the table with EMPTY sets on purpose: neither has
+# an HTTP-only property, and an empty set records that the resource was checked and had none,
+# where omitting it would look the same as forgetting it.
+#
+# Quotes, so the next reader does not have to re-derive them:
+#   Api.CorsConfiguration                    "A CORS configuration. Supported only for HTTP APIs."
+#   Api.BasePath / Body / BodyS3Location     "Supported only for HTTP APIs."
+#   Api.CredentialsArn / RouteKey / Target   quick create, "Supported only for HTTP APIs."
+#   Authorizer.AuthorizerResultTtlInSeconds  "Supported only for HTTP API Lambda authorizers."
+#   Authorizer.AuthorizerPayloadFormatVersion "the payload sent to an HTTP API Lambda authorizer"
+#   Authorizer.EnableSimpleResponses         "Supported only for HTTP APIs."
+#   Authorizer.JwtConfiguration              "Supported only for HTTP APIs."
+#   Integration.ConnectionId                 "the VPC link for a private integration. Supported only for HTTP APIs."
+#   Integration.IntegrationSubtype           "Supported only for HTTP API AWS_PROXY integrations."
+#   Integration.PayloadFormatVersion         "Required for HTTP APIs." (and only meaningful there)
+#   Integration.ResponseParameters           "Supported only for HTTP APIs."
+#   Integration.TlsConfig                    "Supported only for HTTP APIs."
+_HTTP_ONLY_PROPERTIES = {
+    "AWS::ApiGatewayV2::Api": {
+        "BasePath",
+        "Body",
+        "BodyS3Location",
+        "CorsConfiguration",
+        "CredentialsArn",
+        "RouteKey",
+        "Target",
+    },
+    "AWS::ApiGatewayV2::Authorizer": {
+        "AuthorizerPayloadFormatVersion",
+        "AuthorizerResultTtlInSeconds",
+        "EnableSimpleResponses",
+        "JwtConfiguration",
+    },
+    "AWS::ApiGatewayV2::Integration": {
+        "ConnectionId",
+        "IntegrationSubtype",
+        "PayloadFormatVersion",
+        "ResponseParameters",
+        "TlsConfig",
+    },
+    "AWS::ApiGatewayV2::Route": set(),
+    "AWS::ApiGatewayV2::Stage": set(),
+}
+
+
+def test_no_websocket_resource_carries_an_http_only_property():
+    """THE CLASS THE TTL BELONGED TO, rather than the one property that got caught.
+
+    API Gateway v2 shares five CloudFormation resource types across two protocols and
+    rejects, at CREATE, the properties that belong to the other one. CDK will not stop this:
+    the L1s emit whatever they are handed, an escape hatch reaches past the L2s that would
+    know better, and synth stays clean either way - which is precisely how the TTL got to a
+    deploy. So every property on every resource of the WebSocket API is checked against the
+    documented HTTP-only set.
+
+    Also asserts the two HTTP-only properties the HTTP API legitimately carries, because a
+    table of forbidden names that matches nothing anywhere is a table nobody would notice
+    going stale."""
+    template = _streaming_template()
+    websocket_api = _api_logical_id(template, "WEBSOCKET")
+
+    checked = 0
+    for type_name, forbidden in _HTTP_ONLY_PROPERTIES.items():
+        resources = _api_resources(template, type_name, websocket_api)
+        if type_name == "AWS::ApiGatewayV2::Api":
+            resources = {websocket_api: template.find_resources(type_name)[websocket_api]}
+        assert resources, f"no {type_name} found on the WebSocket API"
+        for logical_id, resource in resources.items():
+            checked += 1
+            present = forbidden & set(resource["Properties"])
+            assert not present, (
+                f"{logical_id} ({type_name}) carries {sorted(present)}, which API Gateway "
+                f"accepts only for HTTP-protocol APIs and refuses with a 400 on WEBSOCKET"
+            )
+    # The API, its authorizer, three routes, three integrations and the stage.
+    assert checked == 9, checked
+
+    # The control: the same names ARE expected over on the HTTP side, so the table above is
+    # spelling them the way CloudFormation does.
+    assert "CorsConfiguration" in _http_api(template)
+    assert "PayloadFormatVersion" in _http_api_resource(
+        template, "AWS::ApiGatewayV2::Integration"
+    )["Properties"]
 
 
 def test_the_connect_authorizer_validates_against_the_same_pool_and_clients_as_the_http_api():
@@ -2483,9 +2714,18 @@ def test_the_inherited_gav_pieces_that_are_load_bearing_are_still_here():
     # The PROMPT_ATTACK input screen and its pinned version.
     assert len(template.find_resources("AWS::Bedrock::Guardrail")) == 1
     assert len(template.find_resources("AWS::Bedrock::GuardrailVersion")) == 1
-    # The Cognito gate on the billable route.
+    # The Cognito gate on the billable route. NARROWED, not dropped, when streaming was
+    # committed on: there are two authorizers in this template now, and exactly one of
+    # them is the native JWT gate in front of POST /chat. The other is the socket's
+    # $connect Lambda, which is this same pool checked by our own code.
     assert len(template.find_resources("AWS::Cognito::UserPool")) == 1
-    assert len(template.find_resources("AWS::ApiGatewayV2::Authorizer")) == 1
+    jwt_authorizers = [
+        lid
+        for lid, r in template.find_resources("AWS::ApiGatewayV2::Authorizer").items()
+        if r["Properties"]["AuthorizerType"] == "JWT"
+    ]
+    assert len(jwt_authorizers) == 1, jwt_authorizers
+    assert _http_api_resource(template, "AWS::ApiGatewayV2::Authorizer")
     # The seed-list layer: the crawl list cannot travel in an env var (Lambda's 4 KB
     # aggregate cap), so this is the mechanism, not a gav leftover.
     _resource_named(template, "AWS::Lambda::LayerVersion", "ScraperSeedListLayer")
