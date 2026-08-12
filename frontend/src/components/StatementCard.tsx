@@ -1,4 +1,5 @@
 import type { StatementCard as StatementCardData } from '../types/chat';
+import { FormattedMessage } from './FormattedMessage';
 import { PressableButton } from './PressableButton';
 import './StatementCard.css';
 
@@ -13,7 +14,11 @@ export function StatementCard({ card, onFollowup }: StatementCardProps) {
 			<header className="statement-card__header">
 				<h2 className="statement-card__title">{card.title}</h2>
 			</header>
-			<p className="statement-card__body">{card.body}</p>
+			{/* The description is model-authored, so it formats like the prose around it.
+			    The title is not: it is one line, and a heading has nothing to bold. */}
+			<div className="statement-card__body">
+				<FormattedMessage text={card.body} />
+			</div>
 			<div className="statement-card__actions">
 				{card.actions.map((action, index) => {
 					if (action.type === 'source') {

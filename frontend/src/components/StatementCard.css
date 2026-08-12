@@ -105,6 +105,16 @@
 	text-wrap: pretty;
 }
 
+/*
+ * The description renders through FormattedMessage, which carries the bubble's leading by
+ * default. The card sets its own, so it says so rather than inheriting a number chosen for
+ * a different box.
+ */
+.statement-card__body .formatted-message__para,
+.statement-card__body .formatted-message__item {
+	line-height: var(--card-body-lh);
+}
+
 .statement-card__actions {
 	position: relative;
 	z-index: 1;
