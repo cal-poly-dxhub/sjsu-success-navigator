@@ -260,10 +260,15 @@ def test_validate_config_covers_the_card_caps(config):
 
 def test_chat_resolves_the_loop_caps(config):
     """Camp's values, but knobs rather than literals: the iteration cap is what stops a
-    runaway tool-use loop inside a 29-second budget."""
+    runaway tool-use loop inside a 29-second budget.
+
+    max_history_messages went 12 -> 24 in 0016e76 (twelve exchanges rather than six), which
+    is why this literal moved with it. Restated here rather than read back out of the
+    config: this number is billed in input tokens on EVERY turn, so a change to it should
+    have to be made twice, deliberately, and show up in a diff as this line."""
     chat = resolve_chat(config)
     assert chat["max_converse_iterations"] == 6
-    assert chat["max_history_messages"] == 12
+    assert chat["max_history_messages"] == 24
 
 
 def test_chat_resolves_the_read_endpoint_caps(config):
@@ -1137,11 +1142,18 @@ def test_the_okta_side_attribute_name_is_configurable_but_never_blank(config):
 
 def test_streaming_is_off_unless_the_block_says_otherwise(config):
     """THE GATE. Absent, empty or `enabled: false` all resolve to None, and the stack then
-    synthesizes no WebSocket API at all. Off is one state, and it is the shipped default -
-    this lands dark so it is turned on deliberately rather than by merging."""
+    synthesizes no WebSocket API at all. Off is one state, reached three ways.
+
+    This used to also assert that config.yaml itself ships `enabled: false`. It no longer
+    does - the repo now commits streaming ON so the next deploy exercises it - so that line
+    would be asserting a decision rather than a mechanism. What matters here, and what this
+    still pins, is that the RESOLVER defaults to off: the day someone deletes the block,
+    the WebSocket API goes with it rather than defaulting itself back on."""
     from infra.config import resolve_streaming
 
-    assert resolve_streaming(load_config()) is None, "streaming must ship disabled"
+    assert load_config()["streaming"]["enabled"] is True, (
+        "sanity: this file's fixtures are the real config.yaml, which commits streaming on"
+    )
 
     for mutate in (
         lambda c: c.pop("streaming"),
