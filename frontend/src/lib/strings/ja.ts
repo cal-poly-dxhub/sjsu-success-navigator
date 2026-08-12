@@ -54,7 +54,7 @@ export const ja: Strings = {
 	yourMessage: 'あなたのメッセージ',
 	thinking: '考え中',
 	waitingForSammy: 'Sammy の返答を待っています',
-	stageRetrieving: 'キャンパスのリソースを調べています…',
+	stageRetrieving: 'キャンパスのリソースを調べています',
 
 	chatsLoadFailedWith: (message: string) => `チャットを読み込めませんでした: ${message}`,
 	chatsLoadFailed: 'チャットを読み込めませんでした。',

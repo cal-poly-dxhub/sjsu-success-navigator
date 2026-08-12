@@ -36,19 +36,6 @@
 	flex-direction: column;
 }
 
-/*
- * What the server says it is doing while no text has arrived yet - the second or two a
- * retrieval takes. Quiet on purpose: it is a caption under the thinking bubble, not a
- * message, and it is replaced by the reply itself the moment prose starts arriving.
- */
-.conversation-exchange__stage {
-	margin: 0.4rem 0 0 0.25rem;
-	font-size: 0.8125rem;
-	line-height: 1.3;
-	color: var(--text-muted);
-	font-style: italic;
-}
-
 .conversation-turn__cards {
 	width: 100%;
 	min-width: 0;

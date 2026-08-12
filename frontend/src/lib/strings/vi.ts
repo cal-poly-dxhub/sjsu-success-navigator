@@ -56,7 +56,7 @@ export const vi: Strings = {
 	yourMessage: 'Tin nhắn của bạn',
 	thinking: 'Đang suy nghĩ',
 	waitingForSammy: 'Đang chờ Sammy trả lời',
-	stageRetrieving: 'Đang tìm trong các nguồn hỗ trợ của trường…',
+	stageRetrieving: 'Đang tìm trong các nguồn hỗ trợ của trường',
 
 	chatsLoadFailedWith: (message: string) =>
 		`Không thể tải các cuộc trò chuyện của bạn: ${message}`,

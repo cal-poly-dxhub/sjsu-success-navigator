@@ -54,7 +54,7 @@ export const zhHans: Strings = {
 	yourMessage: '你的消息',
 	thinking: '思考中',
 	waitingForSammy: '正在等待 Sammy 的回复',
-	stageRetrieving: '正在查找校园资源…',
+	stageRetrieving: '正在查找校园资源',
 
 	chatsLoadFailedWith: (message: string) => `无法加载你的对话：${message}`,
 	chatsLoadFailed: '无法加载你的对话。',

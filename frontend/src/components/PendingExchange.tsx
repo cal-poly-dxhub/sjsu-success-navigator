@@ -23,7 +23,9 @@ type PendingExchangeProps = {
 };
 
 /**
- * What the status line says. Server stages are a closed set; anything else says nothing.
+ * What the indicator says instead of "Thinking". Server stages are a closed set; anything
+ * else leaves the default alone. No trailing ellipsis on any of these, in any language: the
+ * indicator animates its own dots, and a stage that brought its own would read as two.
  *
  * A function of the catalogue rather than a constant, because the STAGE is the server's word
  * and the SENTENCE is ours: `retrieving` is a wire value that never gets translated, and what
@@ -53,22 +55,17 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 		>
 			<UserPrompt text={prompt} />
 			<div className="conversation-exchange__response conversation-exchange__response--pending">
-				{preview ? (
-					// Once prose is arriving it types in place, in the bubble the finished turn
-					// will occupy. No intro delay: the student has been waiting already.
-					<ConversationalBubble text={preview} introDelayMs={0} />
-				) : (
-					<div className="conversational-bubble-wrap">
-						<div className="conversational-bubble">
-							<ThinkingBubble />
-						</div>
-					</div>
-				)}
-				{!preview && label ? (
-					<p className="conversation-exchange__stage" aria-live="polite">
-						{label}
-					</p>
-				) : null}
+				{/*
+				 * ONE BUBBLE FOR THE WHOLE WAIT. It opens holding the indicator and ends
+				 * holding the reply: the prose types in place, where the finished turn's own
+				 * bubble will be, instead of a second bubble arriving under the first. No
+				 * intro delay - the student has been waiting already.
+				 */}
+				<ConversationalBubble
+					text={preview}
+					introDelayMs={0}
+					placeholder={<ThinkingBubble label={label} />}
+				/>
 			</div>
 		</motion.article>
 	);

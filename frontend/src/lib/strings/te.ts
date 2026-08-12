@@ -54,7 +54,7 @@ export const te: Strings = {
 	yourMessage: 'మీ సందేశం',
 	thinking: 'ఆలోచిస్తోంది',
 	waitingForSammy: 'Sammy సమాధానం కోసం వేచి ఉంది',
-	stageRetrieving: 'క్యాంపస్ వనరులలో వెతుకుతోంది…',
+	stageRetrieving: 'క్యాంపస్ వనరులలో వెతుకుతోంది',
 
 	chatsLoadFailedWith: (message: string) => `మీ చాట్‌లను లోడ్ చేయలేకపోయాం: ${message}`,
 	chatsLoadFailed: 'మీ చాట్‌లను లోడ్ చేయలేకపోయాం.',

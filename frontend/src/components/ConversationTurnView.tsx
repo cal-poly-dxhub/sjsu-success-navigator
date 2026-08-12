@@ -14,6 +14,12 @@ import './ConversationTurnView.css';
 type ConversationTurnViewProps = {
 	turn: ConversationTurn;
 	isActive: boolean;
+	/**
+	 * Whether this turn is taking the pending exchange's place, and therefore inherits a
+	 * bubble that is already on screen rather than opening one. See ConversationalBubble's
+	 * `animateIn`.
+	 */
+	continuesPending?: boolean;
 	introDelayMs?: number;
 	onTypingChange?: (typing: boolean) => void;
 	onPhaseChange: (turnId: string, phase: RagPhase | 'done') => void;
@@ -23,6 +29,7 @@ type ConversationTurnViewProps = {
 export function ConversationTurnView({
 	turn,
 	isActive,
+	continuesPending = false,
 	introDelayMs = 0,
 	onTypingChange,
 	onPhaseChange,
@@ -125,6 +132,10 @@ export function ConversationTurnView({
 						// preview stopped instead of replaying it.
 						introDelayMs={turn.revealedChars ? 0 : introDelayMs}
 						startAt={turn.revealedChars ?? 0}
+						// The same reasoning for the bubble as for the prose inside it: it is
+						// the same bubble the student has been watching, so it does not open
+						// a second time.
+						animateIn={!continuesPending}
 						onTypingChange={onTypingChange}
 						onTypingComplete={revealCards}
 					/>

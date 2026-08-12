@@ -143,6 +143,17 @@ export default function ChatApp() {
 	const [pendingPreview, setPendingPreview] = useState('');
 	const [pendingStage, setPendingStage] = useState<string | null>(null);
 	/**
+	 * The turn that replaced a pending exchange, so the feed knows its bubble is not a new
+	 * one. A pending exchange holds a bubble from the moment it opens - the indicator lives
+	 * in it - and the turn built from the reply renders in its place, in the same commit. The
+	 * turn is still arriving and still types itself out; what this records is that its bubble
+	 * has already made its entrance and must not make another over prose already on screen.
+	 *
+	 * Set for every turn that resolves one, streamed or buffered, including a failure. Never
+	 * set for the welcome turn, which opens the only bubble on a fresh screen.
+	 */
+	const [continuedTurnId, setContinuedTurnId] = useState<string | null>(null);
+	/**
 	 * Whether this deployment has a socket at all - i.e. whether the stack stamped
 	 * `streamingApiUrl` into config.json. False until config.json has been read, so the
 	 * first turn on a cold page uses POST /chat rather than waiting on a fetch to find out.
@@ -398,6 +409,7 @@ export default function ChatApp() {
 
 			setTalkToPersonAvailable(next.talkToPersonAvailable ?? true);
 			setPendingPrompt(null);
+			setContinuedTurnId(turn.id);
 			setTurns((current) => {
 				const nextTurns = appendConversationTurn(current, turn);
 				updateChat(activeChatId, nextTurns);
@@ -481,6 +493,7 @@ export default function ChatApp() {
 			setPendingPreview('');
 			setPendingStage(null);
 			const turn = createConversationTurn(message, { query });
+			setContinuedTurnId(turn.id);
 			setTurns((current) => {
 				const nextTurns = appendConversationTurn(current, turn);
 				updateChat(activeChatId, nextTurns);
@@ -756,6 +769,7 @@ export default function ChatApp() {
 									pendingPrompt={pendingPrompt}
 									pendingPreview={pendingPreview}
 									pendingStage={pendingStage}
+									continuedTurnId={continuedTurnId}
 									introDelayMs={speechUsesIntro ? SPEECH_INTRO_DELAY_MS : 0}
 									onTypingChange={setIsTalking}
 									onPhaseChange={handlePhaseChange}

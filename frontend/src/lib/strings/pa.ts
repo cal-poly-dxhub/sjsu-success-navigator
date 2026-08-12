@@ -54,7 +54,7 @@ export const pa: Strings = {
 	yourMessage: 'ਤੁਹਾਡਾ ਸੁਨੇਹਾ',
 	thinking: 'ਸੋਚ ਰਿਹਾ ਹਾਂ',
 	waitingForSammy: 'Sammy ਦੇ ਜਵਾਬ ਦੀ ਉਡੀਕ ਹੈ',
-	stageRetrieving: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤਾਂ ਵਿੱਚ ਲੱਭਿਆ ਜਾ ਰਿਹਾ ਹੈ…',
+	stageRetrieving: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤਾਂ ਵਿੱਚ ਲੱਭਿਆ ਜਾ ਰਿਹਾ ਹੈ',
 
 	chatsLoadFailedWith: (message: string) => `ਤੁਹਾਡੀਆਂ ਗੱਲਬਾਤਾਂ ਲੋਡ ਨਹੀਂ ਹੋ ਸਕੀਆਂ: ${message}`,
 	chatsLoadFailed: 'ਤੁਹਾਡੀਆਂ ਗੱਲਬਾਤਾਂ ਲੋਡ ਨਹੀਂ ਹੋ ਸਕੀਆਂ।',

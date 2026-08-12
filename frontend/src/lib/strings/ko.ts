@@ -54,7 +54,7 @@ export const ko: Strings = {
 	yourMessage: '내 메시지',
 	thinking: '생각 중',
 	waitingForSammy: 'Sammy의 답변을 기다리는 중',
-	stageRetrieving: '캠퍼스 자원을 찾아보는 중…',
+	stageRetrieving: '캠퍼스 자원을 찾아보는 중',
 
 	chatsLoadFailedWith: (message: string) => `대화를 불러오지 못했어요: ${message}`,
 	chatsLoadFailed: '대화를 불러오지 못했어요.',
