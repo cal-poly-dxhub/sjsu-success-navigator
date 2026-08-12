@@ -124,3 +124,44 @@ def test_the_exemption_list_takes_more_than_one_client(monkeypatch):
     assert load_settings().rate_limit_exempt_client_ids == frozenset(
         {"eval-client", "second-client"}
     )
+
+
+# --- the escalate-to-human path ---------------------------------------------------------
+
+
+def test_the_escalation_recipient_defaults_to_empty(monkeypatch):
+    """EMPTY IS THE GATE, and it has to be, for the same reason DAILY_MESSAGE_LIMIT's zero
+    is: the stack omits every ESCALATION_* variable when no recipient is configured, so an
+    unset one must mean off. An address defaulted here would be a wiring mistake quietly
+    routing students' messages to a mailbox nobody in config.yaml chose."""
+    _set_identity(monkeypatch)
+    for key in ("ESCALATION_RECIPIENT", "ESCALATION_SUBJECT", "ESCALATION_MAX_CHARS"):
+        monkeypatch.delenv(key, raising=False)
+
+    settings = load_settings()
+
+    assert settings.escalation_recipient == ""
+    assert settings.escalation_max_chars == 1200
+
+
+def test_the_escalation_wiring_is_read_from_the_environment(monkeypatch):
+    _set_identity(monkeypatch)
+    monkeypatch.setenv("ESCALATION_RECIPIENT", " sjsucares@sjsu.edu ")
+    monkeypatch.setenv("ESCALATION_SUBJECT", "A student would like to talk with someone")
+    monkeypatch.setenv("ESCALATION_MAX_CHARS", "900")
+
+    settings = load_settings()
+
+    assert settings.escalation_recipient == "sjsucares@sjsu.edu"
+    assert settings.escalation_subject == "A student would like to talk with someone"
+    assert settings.escalation_max_chars == 900
+
+
+def test_a_blank_subject_falls_back_rather_than_shipping_an_empty_line(monkeypatch):
+    """A deploy that set the address and dropped this variable would otherwise put an empty
+    subject in front of a staff mailbox, which is the one line they triage on."""
+    _set_identity(monkeypatch)
+    monkeypatch.setenv("ESCALATION_RECIPIENT", "sjsucares@sjsu.edu")
+    monkeypatch.setenv("ESCALATION_SUBJECT", "   ")
+
+    assert load_settings().escalation_subject.strip() != ""

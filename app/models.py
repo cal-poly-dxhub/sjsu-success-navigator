@@ -62,6 +62,27 @@ class SafetyHandoff(BaseModel):
     contacts: list[SafetyContact]
 
 
+class EmailDraft(BaseModel):
+    """A message to a human, assembled server-side and sent by nobody but the student.
+
+    THREE STRINGS AND NO SEND. This is what the browser hands to the student's own mail
+    client (a mailto), so `to` is the deploy-configured recipient, `subject` is fixed, and
+    `body` is the model's prose plus the two lines app/escalation.py adds. There is no
+    `from`: the message leaves from whatever address the student's mail client is signed in
+    as, which is the entire reason this path needs no verified sending identity.
+
+    It carries no id and no conversation reference, deliberately. Everything in here is
+    text the student reads on screen before pressing send, so anything that could not be
+    shown to them has no business being in it.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    to: str
+    subject: str
+    body: str
+
+
 class ChatResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -86,6 +107,12 @@ class ChatResponse(BaseModel):
         alias="statementBatches",
     )
     safety_handoff: SafetyHandoff | None = Field(default=None, alias="safetyHandoff")
+    # The email draft this turn offers to send to a human, or None - which is every turn
+    # the model did not tag, every deployment with no recipient configured, and every
+    # safety turn (the panel is the handoff there, and it owns the whole message under it).
+    # Assembled once at parse time and stored with the turn, so a reopened conversation
+    # renders the same bytes rather than rebuilding them from a config that may have moved.
+    escalation: EmailDraft | None = None
     talk_to_person_available: bool = Field(
         default=True,
         alias="talkToPersonAvailable",
@@ -175,6 +202,9 @@ class ConversationMessage(BaseModel):
     role: Literal["user", "assistant"]
     text: str
     cards: list[StatementCard] = Field(default_factory=list)
+    # The draft this turn offered, as it was assembled when the turn happened. Stored
+    # rather than rebuilt for the reason the cards are: it is what the student saw.
+    escalation: EmailDraft | None = None
     created_at: str | None = Field(default=None, alias="createdAt")
 
 

@@ -30,6 +30,7 @@ from botocore.config import Config
 
 from settings import Settings
 from campus_time import campus_context_line
+from escalation import ESCALATION_FALLBACK_TEXT, build_email_draft
 from history import StoredMessage
 from models import ChatRequest, ChatResponse
 from cards import (
@@ -675,7 +676,23 @@ def _response_from_text(
     """
     parsed = parse_model_response(text)
 
+    # The offer, built once, here. A SAFETY TURN NEVER CARRIES ONE: the panel is the handoff
+    # and it owns everything under the message, so an offer to email an office would sit
+    # between a student in crisis and the numbers they need. The prompt says so and this
+    # says so again, beside the card drop, because both are the same rule about what a
+    # safety turn is allowed to contain. apply_safety_handoff_to_response drops it on the
+    # other route into a safety turn - prose that names crisis lines without the tag.
+    escalation = (
+        None
+        if parsed.needs_safety
+        else build_email_draft(parsed.escalation_prose, settings=settings)
+    )
+
     if parsed.needs_safety:
+        if parsed.escalation_prose is not None:
+            logger.info(
+                "chat route=safety escalation=dropped (a safety turn carries no offer)"
+            )
         # A safety turn carries no cards by contract. Any the model emitted anyway are
         # dropped deliberately, so this must NOT take the zero-card fallback below - that
         # would fold the card text back into the bubble. An empty prose falls back to the
@@ -701,14 +718,27 @@ def _response_from_text(
             prose, trailing = strip_card_tags(text), ""
 
     if not prose and not trailing:
-        logger.warning("Model produced no usable text for query=%r", query[:80])
-        prose = _NO_OUTPUT_TEXT
+        if escalation is not None:
+            # A reply that was NOTHING BUT an escalation block. The block's content is an
+            # email and is removed from the bubble, so there is no prose left to introduce
+            # the draft - and the loop's "I ran out of time" line below would be a false
+            # account of a turn that wrote the message it was asked for.
+            logger.warning(
+                "The model wrote an escalation block and no prose for query=%r; "
+                "introducing the draft with the server's own line.",
+                query[:80],
+            )
+            prose = ESCALATION_FALLBACK_TEXT
+        else:
+            logger.warning("Model produced no usable text for query=%r", query[:80])
+            prose = _NO_OUTPUT_TEXT
 
     batches = [create_statement_batch(cards, query)] if cards else []
     response = ChatResponse(
         conversationalText=prose,
         trailingText=trailing or None,
         statementBatches=batches or None,
+        escalation=escalation,
         talkToPersonAvailable=True,
     )
     # The whole message is screened, both sides of the split: a hotline named under the

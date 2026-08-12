@@ -41,6 +41,24 @@ export type SafetyHandoff = {
 };
 
 /**
+ * A message to a human, assembled server-side and sent by the student themselves.
+ *
+ * THESE ARE THE EXACT BYTES that go to the mail client, and they are the bytes on screen:
+ * the component renders `to`, `subject` and `body` as selectable text and hands the same
+ * three strings to `mailtoDraft`. Nothing in the browser writes, edits or extends a draft -
+ * a preview that differed from what was sent would be worse than no preview.
+ *
+ * There is no `from`: the message leaves from whatever address the student's mail client is
+ * signed in as, which is why a staff reply reaches them and why this path needs no verified
+ * sending identity anywhere in the stack.
+ */
+export type EmailDraft = {
+	to: string;
+	subject: string;
+	body: string;
+};
+
+/**
  * What ONE turn billed, as the server counted it (app/usage.py).
  *
  * Present on every reply the handler produces, including a guardrail block, which billed a
@@ -90,6 +108,14 @@ export type ChatResponse = {
 	trailingText?: string;
 	statementBatches?: StatementBatch[];
 	safetyHandoff?: SafetyHandoff;
+	/**
+	 * The email draft this turn offers to send to a human, or absent.
+	 *
+	 * Absent is every turn the model did not tag, every deployment with no recipient
+	 * configured, and every safety turn - the panel is the handoff there, and it owns the
+	 * whole message under it.
+	 */
+	escalation?: EmailDraft;
 	talkToPersonAvailable?: boolean;
 	/**
 	 * What this turn cost in billable units. Optional because a deployment older than the
@@ -117,6 +143,8 @@ export type StoredMessage = {
 	role: 'user' | 'assistant';
 	text: string;
 	cards: StatementCard[];
+	/** The draft this turn offered, as it was assembled then - not rebuilt from live config. */
+	escalation?: EmailDraft;
 	createdAt?: string;
 };
 
@@ -175,6 +203,11 @@ export type ConversationTurn = {
 	trailingText?: string;
 	cards: StatementCard[];
 	safetyHandoff?: SafetyHandoff;
+	/**
+	 * The email draft this turn offered. Rendered under everything else, and never on a
+	 * turn that carries a safetyHandoff - the server drops one before the other can exist.
+	 */
+	escalation?: EmailDraft;
 	/** Active RAG flow phase; talk-only turns stay conversational. */
 	phase: RagPhase | 'done';
 	/**

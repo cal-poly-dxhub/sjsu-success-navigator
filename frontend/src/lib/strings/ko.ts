@@ -98,6 +98,20 @@ export const ko: Strings = {
 		},
 	},
 
+	escalationAria: '담당자에게 보낼 이메일 초안',
+	escalationHeadline: '이 내용을 담당자에게 보내세요',
+	escalationNote:
+		'본인의 이메일 앱에서 열리기 때문에 답장도 바로 본인에게 옵니다. 학교 이메일 주소로 보내지는지 확인해 주세요.',
+	escalationTo: '받는 사람',
+	escalationSubject: '제목',
+	escalationOpen: '내 이메일 앱에서 열기',
+	escalationCopied: '복사됨',
+	escalationCopy: '메시지 복사하기',
+	escalationClipboardBlocked:
+		'브라우저가 클립보드 사용을 허용하지 않아 메시지를 대신 선택해 두었어요. 복사해서 새 이메일에 붙여넣어 주세요.',
+	escalationTooLong:
+		'이 초안은 너무 길어서 이메일 앱이 자동으로 열리지 않아요. 복사해서 새 이메일에 붙여넣어 주세요.',
+
 	settingsClose: '설정 닫기',
 	close: '닫기',
 	languageLabel: '언어',

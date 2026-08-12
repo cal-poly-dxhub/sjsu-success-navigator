@@ -106,6 +106,20 @@ export const es: Strings = {
 		},
 	},
 
+	escalationAria: 'Borrador de correo para una persona',
+	escalationHeadline: 'Envía esto a una persona',
+	escalationNote:
+		'Esto se abre en tu propia aplicación de correo, así la respuesta te llega directamente a ti. Comprueba que se envíe desde tu dirección de la universidad.',
+	escalationTo: 'Para',
+	escalationSubject: 'Asunto',
+	escalationOpen: 'Abrir en mi aplicación de correo',
+	escalationCopied: 'Copiado',
+	escalationCopy: 'Copiar el mensaje',
+	escalationClipboardBlocked:
+		'Tu navegador no nos dejó usar el portapapeles, así que el mensaje quedó seleccionado: cópialo y pégalo en un correo nuevo.',
+	escalationTooLong:
+		'Este borrador es demasiado largo para abrir tu aplicación de correo automáticamente. Cópialo y pégalo en un correo nuevo.',
+
 	settingsClose: 'Cerrar la configuración',
 	close: 'Cerrar',
 	languageLabel: 'Idioma',

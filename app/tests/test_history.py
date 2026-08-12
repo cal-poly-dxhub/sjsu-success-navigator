@@ -818,3 +818,72 @@ def test_a_failed_connection_delete_is_left_to_the_ttl(monkeypatch):
     store.close_connection(user_id=_SUB, connection_id="abc")
 
     assert fake.deletes, "it still attempted the delete"
+
+
+# --- the escalation draft --------------------------------------------------------------
+
+
+def test_an_assistant_message_carries_its_escalation_draft(table):
+    draft = {"to": "sjsucares@sjsu.edu", "subject": "S", "body": "B"}
+    table.store.append_message(
+        user_id=_SUB,
+        conversation_id=_CONV,
+        role="assistant",
+        text="That one needs a person.",
+        escalation=draft,
+    )
+    assert table.puts[0]["Item"]["escalation"] == draft
+
+
+def test_a_reply_with_no_offer_stores_no_escalation_attribute(table):
+    """Same rule as the cards beside it: an absent attribute says the turn made no offer,
+    where an empty map would say it made one and it was blank."""
+    table.store.append_message(
+        user_id=_SUB, conversation_id=_CONV, role="assistant", text="Here you go."
+    )
+    assert "escalation" not in table.puts[0]["Item"]
+
+
+def test_the_display_read_fetches_the_draft_and_the_context_read_does_not(table):
+    """The two projections again. A draft is display-only, exactly like a card: the model
+    is fed message text and never handed back what it offered last time."""
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "That one needs a person.",
+            "escalation": {"to": "sjsucares@sjsu.edu", "subject": "S", "body": "B"},
+            "createdAt": "2026-08-10T18:04:00Z",
+        }
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+    assert messages[0].escalation == {
+        "to": "sjsucares@sjsu.edu",
+        "subject": "S",
+        "body": "B",
+    }
+    assert "#escalation" in table.queries[0]["ProjectionExpression"]
+
+    table.queries.clear()
+    table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=12)
+    assert "escalation" not in table.queries[0]["ProjectionExpression"]
+
+
+def test_a_stored_message_with_no_draft_reads_back_as_none(table):
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "Peer Connections runs drop-in tutoring.",
+            "createdAt": "2026-08-10T18:04:00Z",
+        }
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+
+    assert messages[0].escalation is None

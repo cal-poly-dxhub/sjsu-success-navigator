@@ -159,6 +159,14 @@ export default function ChatApp() {
 	 * first turn on a cold page uses POST /chat rather than waiting on a fetch to find out.
 	 */
 	const [streamingReady, setStreamingReady] = useState(false);
+	/**
+	 * Whether this deployment has a mailbox to escalate to (config.json's
+	 * escalationRecipient). False until config.json has been read, and false for good in a
+	 * deployment that configured none - which is what keeps the component out of the page
+	 * rather than out of view. The server holds the other end of the same gate: with no
+	 * recipient the system prompt never mentions the tag, so no reply carries a draft.
+	 */
+	const [escalationEnabled, setEscalationEnabled] = useState(false);
 	const [showSjsuCaresModal, setShowSjsuCaresModal] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
 	/**
@@ -182,6 +190,10 @@ export default function ChatApp() {
 				// THE ABSENCE OF THE URL IS THE GATE. With streaming off the stack stamps no
 				// key, so there is nothing here to open and every turn takes POST /chat.
 				setStreamingReady(Boolean(config.streamingApiUrl));
+				// And again for the escalation path. The recipient itself is not used to
+				// address anything here - a draft carries its own destination, as it was
+				// addressed when the turn happened - so its PRESENCE is all this reads.
+				setEscalationEnabled(Boolean(config.escalationRecipient));
 			})
 			.catch(() => {
 				/* No cost panel and no socket. The chat surfaces its own config failures. */
@@ -354,6 +366,9 @@ export default function ChatApp() {
 				cards: incomingCards,
 				trailingText: next.trailingText,
 				safetyHandoff: next.safetyHandoff,
+				// The draft the server assembled for THIS turn, carried straight onto it. The
+				// component renders these bytes; nothing here builds, edits or addresses one.
+				escalation: next.escalation,
 				query,
 				// What a streamed preview already typed out, so the finished turn picks up
 				// where it stopped instead of replaying prose the student has read. This is
@@ -774,6 +789,7 @@ export default function ChatApp() {
 									onTypingChange={setIsTalking}
 									onPhaseChange={handlePhaseChange}
 									onFollowup={handleFollowup}
+									escalationEnabled={escalationEnabled}
 								/>
 							) : null}
 						</motion.div>

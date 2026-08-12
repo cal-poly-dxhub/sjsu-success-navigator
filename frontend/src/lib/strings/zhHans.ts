@@ -98,6 +98,19 @@ export const zhHans: Strings = {
 		},
 	},
 
+	escalationAria: '发给工作人员的邮件草稿',
+	escalationHeadline: '把这封邮件发给工作人员',
+	escalationNote:
+		'邮件会在你自己的邮箱应用中打开，回复会直接回到你这里。请确认是用你的学校邮箱地址发送的。',
+	escalationTo: '收件人',
+	escalationSubject: '主题',
+	escalationOpen: '在我的邮箱应用中打开',
+	escalationCopied: '已复制',
+	escalationCopy: '复制这条消息',
+	escalationClipboardBlocked:
+		'你的浏览器不允许我们使用剪贴板，所以内容已为你选中：复制后粘贴到一封新邮件里。',
+	escalationTooLong: '这份草稿太长，无法自动打开你的邮箱应用。请复制后粘贴到一封新邮件里。',
+
 	settingsClose: '关闭设置',
 	close: '关闭',
 	languageLabel: '语言',

@@ -102,6 +102,20 @@ export const vi: Strings = {
 		},
 	},
 
+	escalationAria: 'Thư nháp gửi tới một người',
+	escalationHeadline: 'Gửi nội dung này tới một người',
+	escalationNote:
+		'Thư sẽ mở trong ứng dụng email của chính bạn, nên hồi âm sẽ đến thẳng với bạn. Hãy kiểm tra lại rằng thư được gửi từ địa chỉ email trường của bạn.',
+	escalationTo: 'Đến',
+	escalationSubject: 'Tiêu đề',
+	escalationOpen: 'Mở trong ứng dụng email của tôi',
+	escalationCopied: 'Đã sao chép',
+	escalationCopy: 'Sao chép tin nhắn',
+	escalationClipboardBlocked:
+		'Trình duyệt của bạn không cho phép dùng bộ nhớ tạm, nên nội dung đã được bôi đen sẵn: hãy sao chép và dán vào một email mới.',
+	escalationTooLong:
+		'Thư nháp này quá dài để tự động mở ứng dụng email của bạn. Hãy sao chép và dán vào một email mới.',
+
 	settingsClose: 'Đóng cài đặt',
 	close: 'Đóng',
 	languageLabel: 'Ngôn ngữ',

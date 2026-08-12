@@ -124,6 +124,28 @@ export const en = {
 		},
 	},
 
+	// The escalate-to-human draft. The OTHER way to a person: where the panel above hands
+	// over a phone number, this hands over a message the student sends themselves, from
+	// their own address. Nothing here is sent by the app, and none of these strings is the
+	// draft - the To line, the subject and the body come off the server with the turn and
+	// are shown in whatever language the model wrote them in, exactly as stored.
+	escalationAria: 'Email draft for a person',
+	escalationHeadline: 'Send this to a person',
+	escalationNote:
+		"This opens in your own email app, so a reply comes straight back to you. Double check it's being sent from your school address.",
+	// The two mail headers, labelling the server's values beside them.
+	escalationTo: 'To',
+	escalationSubject: 'Subject',
+	escalationOpen: 'Open in my email app',
+	escalationCopied: 'Copied',
+	escalationCopy: 'Copy the message',
+	// Both are states a real draft reaches, so both say what to do next rather than what
+	// broke: the clipboard the browser refused, and the draft too long for a mailto link.
+	escalationClipboardBlocked:
+		'Your browser would not let us use the clipboard, so the message is selected instead: copy it and paste it into a new email.',
+	escalationTooLong:
+		'This draft is too long to open your email app automatically. Copy it and paste it into a new email instead.',
+
 	// Settings.
 	settingsClose: 'Close settings',
 	close: 'Close',

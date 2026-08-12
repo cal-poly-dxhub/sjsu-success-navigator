@@ -148,6 +148,23 @@ class Settings:
     card_desc_max_chars: int = 600
     card_followup_max_chars: int = 120
 
+    # THE ESCALATION RECIPIENT, and its EMPTINESS IS THE FEATURE'S GATE (config.yaml
+    # `escalation`). The stack omits the variable entirely when no address is configured,
+    # so an unset value has to mean off - the same shape as daily_message_limit above, and
+    # for a sharper reason: with no address there is nothing to write to, so prompts.py
+    # never tells the model the tag exists and escalation.py builds no draft even if it
+    # emits one anyway. Off is one state with one spelling.
+    escalation_recipient: str = ""
+    # The subject every draft carries. A default rather than a blank, because a deploy that
+    # sets the address and drops this variable would otherwise put an empty subject line in
+    # front of a staff mailbox; it matches config.yaml's value, as the other behavioural
+    # defaults here do.
+    escalation_subject: str = "A student would like to talk with someone"
+    # The draft prose's guard cap. Unlike every cap in `cards`, hitting it DROPS the offer
+    # rather than truncating it (app/escalation.py): a half-sentence email is worse than no
+    # email, and the student would not see what was cut until it had been sent.
+    escalation_max_chars: int = 1200
+
 
 def load_settings() -> Settings:
     """Build Settings from the environment. Raises SettingsError on missing identity."""
@@ -181,4 +198,12 @@ def load_settings() -> Settings:
         card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 90),
         card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 600),
         card_followup_max_chars=_int("CARD_FOLLOWUP_MAX_CHARS", 120),
+        # Absent means the escalation path is off, which is why this is not _required even
+        # though it is an address rather than a tuning knob.
+        escalation_recipient=(os.environ.get("ESCALATION_RECIPIENT") or "").strip(),
+        escalation_subject=(
+            (os.environ.get("ESCALATION_SUBJECT") or "").strip()
+            or "A student would like to talk with someone"
+        ),
+        escalation_max_chars=_int("ESCALATION_MAX_CHARS", 1200),
     )

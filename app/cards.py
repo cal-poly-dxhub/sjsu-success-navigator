@@ -38,6 +38,15 @@ flattening its newlines into spaces turns a list the model wrote into one long s
 dashes in it. Indentation is still collapsed: a model that indents its bullets under <desc>
 is formatting its XML, not asking for leading space on screen.
 
+THE ESCALATION TAG IS PARSED HERE AND ASSEMBLED ELSEWHERE. `<escalate_to_human>` carries
+PROSE ONLY - no id, no recipient, no attributes - so a model-chosen destination is
+unrepresentable in exactly the way a model-authored URL is. This module finds the block,
+takes its text out of the prose the student reads (the content is a draft email, not
+bubble copy), and hands it to app/escalation.py, which owns the address, the subject, the
+cap and the decision to offer at all. One block per turn: a second is ignored and logged,
+because a turn produces one offer and picking among two would be this module inventing an
+editorial rule.
+
 AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
 reason is observability: a card that renders without its source button is a visible symptom,
 where a silently dropped card is a student seeing three cards instead of four and nobody
@@ -98,6 +107,15 @@ _SAFETY_TAG_RE = re.compile(r"<safety\s*/?>", re.IGNORECASE)
 # is removed from the prose: the keys are instructions to the server, not text for the student.
 _SAFETY_BLOCK_RE = re.compile(r"<safety\s*>(.*?)</safety\s*>", re.DOTALL | re.IGNORECASE)
 _SAFETY_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
+# The escalate-to-human block: <escalate_to_human>prose</escalate_to_human>. NO ATTRIBUTE
+# GROUP, unlike the card pattern, and that is the contract rather than an omission - the
+# block carries prose and nothing else, so there is no `to`, no id and no attribute for a
+# model-chosen destination to arrive in. Its content is the body of an email, so it is
+# removed WHOLE from the prose the student reads (see _clean_prose), the way a safety
+# block's keys are: it is addressed to the mail client, not to the chat bubble.
+_ESCALATION_BLOCK_RE = re.compile(
+    r"<escalate_to_human\s*>(.*?)</escalate_to_human\s*>", re.DOTALL | re.IGNORECASE
+)
 
 
 def _field_re(name: str) -> re.Pattern[str]:
@@ -114,14 +132,14 @@ _FOLLOWUP_RE = _field_re("followup")
 # eat legitimate content the model might write about, and the guarantee needed here is only
 # that OUR tags never surface.
 _ANY_KNOWN_TAG_RE = re.compile(
-    r"</?\s*(?:card|title|desc|followup|safety)\b[^>]*/?>",
+    r"</?\s*(?:card|title|desc|followup|safety|escalate_to_human)\b[^>]*/?>",
     re.IGNORECASE,
 )
 
 # The same vocabulary again, as literals rather than a pattern, for preview_safe_prefix
 # below. Derived from one tuple so the two can never come to disagree about what one of
 # this contract's tags looks like.
-_TAG_NAMES = ("card", "title", "desc", "followup", "safety")
+_TAG_NAMES = ("card", "title", "desc", "followup", "safety", "escalate_to_human")
 _TAG_OPENINGS = tuple(
     f"<{slash}{name}" for name in _TAG_NAMES for slash in ("", "/")
 )
@@ -273,6 +291,11 @@ class ParsedResponse:
     # Prose the model wrote AFTER its last card block, which renders BELOW the grid. Empty
     # for the ordinary reply that ends with its cards.
     trailing_prose: str = ""
+    # The <escalate_to_human> block's prose, or None when the model emitted no tag. NOT a
+    # draft: nothing here knows the recipient, the subject or the cap, which is
+    # app/escalation.py's job. An empty string is a tag the model opened and left empty,
+    # which is a different fault from not offering at all and is logged as one there.
+    escalation_prose: str | None = None
 
     @property
     def needs_safety(self) -> bool:
@@ -322,7 +345,33 @@ def parse_model_response(text: str) -> ParsedResponse:
         cards=cards,
         safety_keys=_safety_keys_in(lead, trailing),
         trailing_prose=_clean_prose(trailing),
+        escalation_prose=_escalation_prose_in(lead, trailing),
     )
+
+
+def _escalation_prose_in(*parts: str) -> str | None:
+    """The one escalate-to-human block's prose, read from both sides of the split.
+
+    Both sides for the reason _safety_keys_in reads both: an offer written under the cards
+    is still an offer, and the split point is about where prose renders, not about which
+    tags count. Called with the card blocks already removed, so a stray tag inside a card
+    body cannot conjure a draft.
+
+    ONE BLOCK PER TURN. A second is ignored and logged rather than merged or preferred: a
+    turn makes one offer, and choosing between two would put an editorial rule in a parser.
+    Line breaks are kept, exactly as <desc> keeps them - the content is the body of an
+    email, and a paragraph break the model wrote is one a person will read.
+    """
+    contents = [content for part in parts for content in _ESCALATION_BLOCK_RE.findall(part)]
+    if not contents:
+        return None
+    if len(contents) > 1:
+        logger.warning(
+            "The model emitted %s escalate_to_human blocks; keeping the first and "
+            "ignoring the rest. One turn makes one offer.",
+            len(contents),
+        )
+    return _collapse_keeping_line_breaks(normalise_dashes(contents[0]))
 
 
 def _safety_keys_in(*parts: str) -> tuple[str, ...] | None:
@@ -410,8 +459,12 @@ def _clean_prose(text: str) -> str:
 
     Safety blocks go WHOLE, content included, before the tag sweep: their content is resource
     keys addressed to the server, and a fallback path that only stripped the tags would leak
-    "crisis-988, caps" into the bubble as text."""
+    "crisis-988, caps" into the bubble as text. An escalation block goes the same way and for
+    the same kind of reason - its content is the body of an email the student has not sent
+    yet, so leaving it in the bubble would say the message twice and say it as if it had
+    already gone."""
     stripped = _SAFETY_BLOCK_RE.sub("\n\n", text)
+    stripped = _ESCALATION_BLOCK_RE.sub("\n\n", stripped)
     stripped = _ANY_KNOWN_TAG_RE.sub("", stripped)
     stripped = normalise_dashes(stripped)
     stripped = _BLANK_LINES_RE.sub("\n\n", stripped)

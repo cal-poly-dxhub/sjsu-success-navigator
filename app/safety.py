@@ -195,7 +195,14 @@ def apply_safety_handoff_to_response(
     dropped are what trailing prose renders under, so leaving the split would put half the
     message below the panel - and the panel sits directly under the message it belongs to,
     never buried inside it. That placement is a safety property, so it is enforced here,
-    beside the card drop, rather than left to the caller."""
+    beside the card drop, rather than left to the caller.
+
+    THE ESCALATION OFFER GOES WITH THEM, for the same reason and on the same line. A safety
+    turn's answer is the panel; an email draft under it would put a message the student has
+    to write, and wait on, between them and a number that answers now. The orchestrator
+    already skips building one when the model tagged the turn itself, so what this catches
+    is the other route in - prose that names crisis lines without the tag, where the model
+    thought it was writing an ordinary reply and offered to email an office."""
     if response.safety_handoff is not None:
         return response
 
@@ -212,10 +219,14 @@ def apply_safety_handoff_to_response(
         if part and part.strip()
     )
 
+    if response.escalation is not None:
+        logger.info("Dropping an escalation offer from a safety turn.")
+
     return response.model_copy(
         update={
             "safety_handoff": handoff,
             "statement_batches": None,
+            "escalation": None,
             "conversational_text": whole_message,
             "trailing_text": None,
         }

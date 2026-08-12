@@ -67,6 +67,7 @@ from models import (
     ConversationResponse,
     ConversationSummary,
     ConversationTitleResponse,
+    EmailDraft,
     StatementCard,
 )
 from orchestrator import run_chat
@@ -351,6 +352,19 @@ def name_new_conversation(
     return title
 
 
+def _stored_escalation(response):
+    """This turn's email draft as it will be stored, or None.
+
+    Stored beside the cards and for the same reason: it is what the student was shown. A
+    reopened conversation re-renders these exact bytes rather than reassembling them from
+    today's config, so a recipient that changes next month does not rewrite what an old
+    turn offered.
+    """
+    if response.escalation is None:
+        return None
+    return response.escalation.model_dump(by_alias=True)
+
+
 def run_turn(request, user_id, deadline, context=None, usage=None):
     """One turn against the store, in the order docs/accounts-and-storage.md fixes.
 
@@ -421,6 +435,7 @@ def run_turn(request, user_id, deadline, context=None, usage=None):
             # goes back to the model on the next turn is this text and nothing else.
             text=join_prose(response.conversational_text, response.trailing_text),
             cards=_stored_cards(response),
+            escalation=_stored_escalation(response),
         )
     except Exception:
         logger.exception("Could not record the assistant's reply; returning it anyway")
@@ -553,9 +568,10 @@ def post_chat(event, context):
     # reading only the FIRST statement batch. The counts say strictly more and cannot go
     # stale against the response shape.
     logger.info(
-        "chat cards=%s safety=%s calls=%s in=%s out=%s",
+        "chat cards=%s safety=%s escalation=%s calls=%s in=%s out=%s",
         sum(len(batch.cards) for batch in (response.statement_batches or [])),
         response.safety_handoff is not None,
+        response.escalation is not None,
         usage.model_calls,
         usage.input_tokens,
         usage.output_tokens,
@@ -579,6 +595,22 @@ def _display_cards(stored):
         except Exception:
             logger.warning("Skipping a stored card that no longer fits the card contract")
     return cards
+
+
+def _display_escalation(stored):
+    """A stored email draft, re-validated through the live contract. None if it no longer fits.
+
+    Same posture as _display_cards above: a draft written by an older version of this code
+    costs the reopened turn its offer, never the whole conversation. The student can still
+    ask again, which is the recoverable half of that failure.
+    """
+    if not stored:
+        return None
+    try:
+        return EmailDraft.model_validate(stored)
+    except Exception:
+        logger.warning("Skipping a stored escalation draft that no longer fits its contract")
+        return None
 
 
 def get_conversations(event):
@@ -659,6 +691,7 @@ def get_conversation(event):
                 role=message.role,
                 text=message.text,
                 cards=_display_cards(message.cards),
+                escalation=_display_escalation(message.escalation),
                 createdAt=message.created_at,
             )
             for message in messages

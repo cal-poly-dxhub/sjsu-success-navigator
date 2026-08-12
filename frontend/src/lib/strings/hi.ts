@@ -99,6 +99,20 @@ export const hi: Strings = {
 		},
 	},
 
+	escalationAria: 'किसी व्यक्ति को भेजने के लिए ईमेल का मसौदा',
+	escalationHeadline: 'इसे किसी व्यक्ति को भेजें',
+	escalationNote:
+		'यह आपके अपने ईमेल ऐप में खुलेगा, इसलिए जवाब सीधे आपके पास आएगा। जाँच लें कि यह आपके कॉलेज के पते से भेजा जा रहा है।',
+	escalationTo: 'प्रति',
+	escalationSubject: 'विषय',
+	escalationOpen: 'मेरे ईमेल ऐप में खोलें',
+	escalationCopied: 'कॉपी हो गया',
+	escalationCopy: 'संदेश कॉपी करें',
+	escalationClipboardBlocked:
+		'आपके ब्राउज़र ने क्लिपबोर्ड इस्तेमाल नहीं करने दिया, इसलिए संदेश चुन दिया गया है: उसे कॉपी करके एक नए ईमेल में पेस्ट कर दें।',
+	escalationTooLong:
+		'यह मसौदा इतना लंबा है कि आपका ईमेल ऐप अपने आप नहीं खुल सकता। इसे कॉपी करके एक नए ईमेल में पेस्ट कर दें।',
+
 	settingsClose: 'सेटिंग्स बंद करें',
 	close: 'बंद करें',
 	languageLabel: 'भाषा',

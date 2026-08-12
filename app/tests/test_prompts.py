@@ -332,3 +332,81 @@ def test_the_prompt_tells_the_model_where_the_answer_goes():
     assert "The cards carry the answer. The prose introduces them." in prompt
     # The carve-out that keeps a zero-card turn from becoming a teaser above empty space.
     assert "When you emit no cards, the prose is the whole answer" in prompt
+
+
+# --- the escalation section -----------------------------------------------------------
+
+
+def test_the_escalation_section_is_absent_when_no_recipient_is_configured():
+    """ABSENT, not disabled. Teaching a tag whose output the server would drop spends
+    tokens on every turn to produce an offer no student can see - and the model would be
+    holding a contract this deployment cannot honour."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "escalate_to_human" not in prompt
+    assert "escalation" not in prompt.lower()
+
+
+def test_the_escalation_section_appears_once_a_recipient_exists():
+    prompt = build_system_prompt(_settings(escalation_recipient="sjsucares@sjsu.edu"))
+
+    assert "<escalate_to_human>" in prompt
+    assert "at most ONCE in a turn" in prompt
+
+
+def test_the_prompt_never_names_the_recipient():
+    """The model does not choose, or know, where a draft goes. Putting the address in the
+    prompt would invite it to write one into prose, where nobody resolved it - the same
+    failure the card ref contract exists to prevent."""
+    prompt = build_system_prompt(_settings(escalation_recipient="sjsucares@sjsu.edu"))
+
+    assert "sjsucares@sjsu.edu" not in prompt
+
+
+def test_the_escalation_cap_is_interpolated_rather_than_written_out():
+    """The same one-value rule the card caps follow: the number the model is told is the
+    number app/escalation.py applies. A literal would drift silently."""
+    prompt = build_system_prompt(
+        _settings(escalation_recipient="a@b.edu", escalation_max_chars=1234)
+    )
+
+    assert "1234 characters" in prompt
+
+
+def test_the_section_states_that_going_over_drops_the_offer():
+    """This cap behaves the opposite way to every other cap the model is told about, so it
+    has to say so: the card contract's habit is to write to the ceiling and let the server
+    tidy up, and here the tidying would be half a message to a stranger."""
+    prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
+
+    assert "dropped entirely rather than shortened" in prompt
+
+
+def test_the_section_bans_an_offer_on_a_safety_turn():
+    prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
+
+    assert "Never offer it on a turn where you emit a safety block." in prompt
+
+
+def test_the_section_names_all_three_triggers():
+    """CAPABILITY, SENSITIVITY, AND BEING ASKED. The first shipped alone and it was the wrong
+    half of the feature's own reason for existing: sponsors asked for a SENSITIVE turn to
+    reach a person, and "no page answers this" tells the model not to offer to a student who
+    is embarrassed about a bill the website does document."""
+    prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
+
+    assert "already tried the destinations you gave them" in prompt
+    assert "personal or high-stakes enough that a person should read it" in prompt
+    assert "They ASK to talk to a person. Always offer then" in prompt
+
+
+def test_asking_for_a_person_also_points_at_the_pill():
+    """The one thing the model may name on screen, and the reason it is allowed: the pill is
+    a SECOND way to reach a human, faster than a message somebody has to read, and a student
+    who asked for a person should be given both rather than whichever we prefer."""
+    prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
+
+    assert '"Talk to a person" in the bottom right reaches SJSU Cares' in prompt
+    # The display ban is unchanged for everything else, and the exception says so in the
+    # same breath rather than leaving the two rules to be reconciled by the model.
+    assert "Do not describe the draft, how it opens, or what it looks like on screen" in prompt

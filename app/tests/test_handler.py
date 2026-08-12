@@ -997,3 +997,81 @@ def test_the_loop_is_handed_the_same_tally_the_guardrail_wrote_to(bedrock, loop,
     handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None)
 
     assert loop.calls[0]["usage"].guardrail_content_units == 1
+
+
+# --- the escalate-to-human draft ------------------------------------------------------
+#
+# The handler's whole part in this path is two things: read the return address off the
+# VALIDATED claim set and never off the body, and store the assembled draft so a reopened
+# conversation renders the bytes the student was actually shown.
+
+_DRAFT = {
+    "to": "sjsucares@sjsu.edu",
+    "subject": "A student would like to talk with someone",
+    "body": (
+        "Hi, I have a hold I cannot clear.\n\n"
+        "I wrote this draft with the help of the SJSU Student Success Navigator."
+    ),
+}
+
+
+def test_the_assistant_message_stores_the_draft_beside_its_cards(bedrock, store, monkeypatch):
+    """Stored rather than reproducible, unlike the safety panel: the draft was assembled
+    from deploy config and from the address on the token that turn was sent with, so
+    re-deriving it later would render what those say today."""
+    from models import EmailDraft
+
+    monkeypatch.setattr(
+        handler,
+        "run_chat",
+        _FakeLoop(
+            ChatResponse(
+                conversationalText="That one needs a person.",
+                escalation=EmailDraft(**_DRAFT),
+            )
+        ),
+    )
+
+    handler.lambda_handler(_event(json.dumps({"query": "who can help?"})), None)
+
+    assert store.appended[1]["escalation"] == _DRAFT
+
+
+def test_a_turn_with_no_offer_stores_no_escalation_attribute(bedrock, store, loop):
+    """None rather than an empty dict, for the same reason a cardless reply stores no
+    `cards` key: an empty one would claim the turn offered something it did not."""
+    handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None)
+
+    assert store.appended[1]["escalation"] is None
+
+
+def test_a_reopened_conversation_re_renders_its_stored_draft(store):
+    """The acceptance criterion for history: the draft comes back off the record, through
+    the same contract the live turn returns, so a conversation reopened next week shows the
+    same message the student read when it was written."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed("user", "who can help?"),
+        displayed("assistant", "That one needs a person.", escalation=dict(_DRAFT)),
+    ]
+
+    body = _body(handler.lambda_handler(conversation_event("01J8ZK9V6H7Q2R3T4W5X6Y7Z8A"), None))
+
+    assert body["messages"][1]["escalation"] == _DRAFT
+    assert body["messages"][0]["escalation"] is None
+
+
+def test_a_stored_draft_that_no_longer_fits_the_contract_is_dropped_not_fatal(store, caplog):
+    """Same posture as a stale card: the conversation opens without one offer rather than
+    not opening at all."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed("assistant", "Here you go.", escalation={"subject": "no to, no body"})
+    ]
+
+    body = _body(handler.lambda_handler(conversation_event("01J8ZK9V6H7Q2R3T4W5X6Y7Z8A"), None))
+
+    assert body["messages"][0]["escalation"] is None
+    assert "escalation draft" in caplog.text
