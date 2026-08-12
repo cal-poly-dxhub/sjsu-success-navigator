@@ -1050,3 +1050,86 @@ def test_a_non_integer_limit_is_rejected(bad):
     else:
         with pytest.raises(ValueError, match="must be an integer"):
             resolve_rate_limit(config)
+
+
+# --- Okta federation ---------------------------------------------------------------------
+
+
+def test_the_committed_config_federates_okta_under_the_role_name(config):
+    """The committed file carries a metadata URL, so the provider is on - and it resolves to
+    the ROLE name, never an org's. `Okta` is not a knob (see the next test)."""
+    from infra.config import OKTA_PROVIDER_NAME, resolve_okta
+
+    okta = resolve_okta(config)
+    assert okta is not None
+    assert okta["provider_name"] == "Okta" == OKTA_PROVIDER_NAME
+    assert okta["metadata_url"].startswith("https://")
+    assert okta["metadata_url"].endswith("/sso/saml/metadata")
+    assert okta["email_attribute"] == "email"
+
+
+def test_the_provider_name_is_not_reachable_from_config(config):
+    """RENAMING IS A MIGRATION, NOT A RENAME: a federated user's Cognito username is
+    `<providerName>_<nameid>`, so a different name mints new `sub` values - the DynamoDB
+    partition key - and orphans every conversation the old identities wrote. ProviderName is
+    also the resource's physical id, so CloudFormation replaces rather than updates it.
+
+    So the name is a module constant and config cannot reach it. A key that looks like it
+    might is ignored, which is the property worth pinning: the day somebody adds
+    `provider_name: SJSU` to config.yaml, this is what says no."""
+    from infra.config import resolve_okta
+
+    config["okta"]["provider_name"] = "SJSU"
+    config["okta"]["name"] = "SJSU"
+    assert resolve_okta(config)["provider_name"] == "Okta"
+
+
+def test_no_metadata_url_means_no_identity_provider(config):
+    """THE ABSENCE IS THE GATE, in the shape resolve_cost_model already uses. Three ways to
+    say "local accounts only", all of them valid configs rather than errors: no block, no
+    key, or an empty value left behind by somebody clearing it."""
+    from infra.config import resolve_okta
+
+    for mutate in (
+        lambda c: c.pop("okta"),
+        lambda c: c["okta"].pop("metadata_url"),
+        lambda c: c["okta"].update(metadata_url=""),
+        lambda c: c["okta"].update(metadata_url="   "),
+        lambda c: c["okta"].update(metadata_url=None),
+    ):
+        candidate = copy.deepcopy(config)
+        mutate(candidate)
+        assert resolve_okta(candidate) is None, candidate.get("okta")
+        # And the whole synth-time gate still passes - off is not a half-configured stack.
+        validate_config(candidate)
+
+
+def test_a_plain_http_metadata_url_fails_at_synth(config):
+    """Cognito fetches this document itself and trusts the signing certificate inside it, so
+    http would be a forgeable trust anchor for every assertion. Cognito rejects it at
+    CreateIdentityProvider; this moves the failure to synth, before a half-updated stack."""
+    from infra.config import resolve_okta
+
+    config["okta"]["metadata_url"] = "http://integrator-6509951.okta.com/sso/saml/metadata"
+    with pytest.raises(ValueError, match="https"):
+        resolve_okta(config)
+
+
+def test_the_okta_side_attribute_name_is_configurable_but_never_blank(config):
+    """Orgs spell the email claim differently - a SAML namespace URI, `emailAddress` - so the
+    name is config. An EMPTY one is an error rather than a silent fall back to the default:
+    the failure it would cause is a federated account with no address on it, which surfaces
+    as a blank sidebar label rather than as a broken deploy."""
+    from infra.config import resolve_okta
+
+    config["okta"]["email_attribute"] = (
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+    )
+    assert resolve_okta(config)["email_attribute"].endswith("emailaddress")
+
+    del config["okta"]["email_attribute"]
+    assert resolve_okta(config)["email_attribute"] == "email", "omitted means the default"
+
+    config["okta"]["email_attribute"] = "  "
+    with pytest.raises(ValueError, match="email_attribute"):
+        resolve_okta(config)

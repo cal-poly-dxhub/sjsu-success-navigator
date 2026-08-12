@@ -145,6 +145,29 @@ _DYNAMODB_TABLE_NAME_MAX = 255
 # role in infra_stack.py), so the distinction is resolved here, once.
 _INFERENCE_PROFILE_PREFIXES = ("us", "eu", "apac", "us-gov")
 
+# THE SAML PROVIDER'S NAME, AND THE ONE VALUE IN THIS FILE THAT IS NOT A KNOB. It is named
+# for the provider's ROLE in this pool, never for whose Okta org is behind it, so the same
+# name serves the rehearsal org today and SJSU's tenant later with only the metadata URL
+# changing.
+#
+# RENAMING IT IS NOT A RENAME, IT IS A MIGRATION. A federated user's Cognito username is
+# `<providerName>_<nameid>`, so a different name mints a NEW user - new `sub`, which is the
+# DynamoDB partition key (docs/accounts-and-storage.md, Storage) - and orphans every
+# conversation the old identity wrote. There is no CloudFormation update path either:
+# ProviderName is the identity provider's physical id, so an edit REPLACES the resource.
+#
+# It lives here rather than inline in the stack for the same reason every other name does
+# (see the naming convention at the top of this file): one place it is spelled. It is a
+# constant rather than a config key because it is the one thing that must NOT differ between
+# the rehearsal org and SJSU's - a config key is an invitation to set it to "SJSU".
+OKTA_PROVIDER_NAME = "Okta"
+
+# The Okta-side attribute this pool maps to `email`. A DEFAULT rather than a required key:
+# `email` is the usual name, and an org that spells it otherwise (a SAML namespace URI, or
+# `emailAddress`) sets `okta.email_attribute` instead of editing code. Cognito takes the
+# USERNAME from NameID, so username is deliberately not mappable and not mapped.
+_DEFAULT_OKTA_EMAIL_ATTRIBUTE = "email"
+
 
 def load_config(path: Optional[Path] = None) -> Dict[str, Any]:
     """Parse config.yaml into a dict. Defaults to the repo-root config.yaml."""
@@ -1028,6 +1051,73 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The `okta` block: the SAML identity provider federated into the chat user pool.
+
+    Returns None when the block is absent or `metadata_url` is absent/empty, and the stack
+    then creates no identity provider at all and leaves the human app client on COGNITO
+    alone - which is the whole gate, the same shape resolve_cost_model uses. THE ABSENCE IS
+    THE GATE, not a flag beside the value: a URL is the only thing a provider cannot be
+    built without, so there is no state where the key is filled in and the provider is off.
+
+    OFF IS NOT AN ERROR. A deployment with no metadata URL is the local-accounts-only stack
+    that exists today, so an absent block must not fail `cdk synth`. THE SAME KEY SET THREE
+    WAYS is the point: empty for local-only, one org's URL for a federation rehearsal,
+    SJSU's later - all without a code change.
+
+    A METADATA URL RATHER THAN AN UPLOADED FILE, deliberately. Cognito re-fetches a URL on
+    its own, so the IdP's signing certificate rotating on the Okta side is not an outage
+    waiting on somebody to notice and re-upload a file.
+
+    The Okta-side attribute NAME is config because it genuinely differs between orgs; what
+    it maps TO is not, because that is this pool's own `email` attribute.
+    """
+    okta_cfg = config.get("okta")
+    if not okta_cfg:
+        return None
+    if not isinstance(okta_cfg, dict):
+        raise ValueError("okta must be a mapping.")
+
+    metadata_url = okta_cfg.get("metadata_url")
+    if metadata_url is None or (isinstance(metadata_url, str) and not metadata_url.strip()):
+        return None
+    if not isinstance(metadata_url, str):
+        raise ValueError(
+            f"okta.metadata_url must be a string URL (got {metadata_url!r}). Leave it out "
+            "or empty to run on local accounts with no identity provider."
+        )
+    metadata_url = metadata_url.strip()
+    # HTTPS ONLY, and not merely on principle: Cognito fetches this document itself, and it
+    # carries the signing certificate every assertion is verified against. Over http that
+    # fetch is a trivially forgeable trust anchor for the whole federation. Cognito rejects
+    # a non-https URL at CreateIdentityProvider, so this moves the failure to synth.
+    if not metadata_url.startswith("https://"):
+        raise ValueError(
+            f"okta.metadata_url must be an https:// URL (got {metadata_url!r}). Cognito "
+            "fetches this document itself and trusts the signing certificate in it, so "
+            "plain http would be a forgeable trust anchor - and Cognito rejects it anyway."
+        )
+
+    # Absent means `email`, which is what an Okta org usually calls it. Present means the
+    # deployer looked; an empty string means they half-looked, and that is an error rather
+    # than a silent fall back to the default - an unmapped email is a federated account with
+    # no address on it, which shows up as a blank sidebar label rather than as a failure.
+    email_attribute = okta_cfg.get("email_attribute", _DEFAULT_OKTA_EMAIL_ATTRIBUTE)
+    if not isinstance(email_attribute, str) or not email_attribute.strip():
+        raise ValueError(
+            f"okta.email_attribute must be a non-empty string (got {email_attribute!r}); "
+            f"omit the key entirely to accept the default {_DEFAULT_OKTA_EMAIL_ATTRIBUTE!r}."
+        )
+
+    return {
+        # Not read from config - see OKTA_PROVIDER_NAME. Returned here so the stack takes
+        # the name from the same resolved block as everything else about the provider.
+        "provider_name": OKTA_PROVIDER_NAME,
+        "metadata_url": metadata_url,
+        "email_attribute": email_attribute.strip(),
+    }
+
+
 def validate_config(config: Dict[str, Any]) -> None:
     """Run every validator, discarding the results.
 
@@ -1062,6 +1152,10 @@ def validate_config(config: Dict[str, Any]) -> None:
     # but an ENABLED block with a bad rate still fails synth here, before any construct
     # exists, rather than reaching a browser as $NaN.
     resolve_cost_model(config)
+    # Same shape: None when there is no metadata URL, which is the local-accounts-only
+    # deployment and not an error. A URL that IS set gets checked here rather than at
+    # CreateIdentityProvider, which is a mid-update deploy failure.
+    resolve_okta(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:

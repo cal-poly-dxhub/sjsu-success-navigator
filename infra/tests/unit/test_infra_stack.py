@@ -1064,6 +1064,7 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
         resolve_generation,
         resolve_guardrail,
         resolve_knowledge_base,
+        resolve_okta,
         resolve_scraper,
         resolve_vector_store,
     )
@@ -1087,6 +1088,11 @@ def test_no_global_name_is_hardcoded_in_the_stack_source():
         # granted model and the invoked model drift apart.
         resolve_guardrail(config)["name"],
         resolve_generation(config)["model_id"],
+        # The Okta metadata URL names somebody's ORG. Inline it and the three settings this
+        # one key exists to serve - local-only, the rehearsal tenant, SJSU's - stop being a
+        # config edit. (The provider NAME is the deliberate opposite: a constant in
+        # infra/config.py that config cannot reach, because it must not differ between them.)
+        *([resolve_okta(config)["metadata_url"]] if resolve_okta(config) else []),
     ):
         assert name not in source, (
             f"{name!r} is hardcoded in infra_stack.py - it must come from config.yaml"
@@ -1340,6 +1346,101 @@ def test_the_eval_client_is_password_auth_with_no_oauth():
     }
     assert client["AllowedOAuthFlowsUserPoolClient"] is False
     assert "CallbackURLs" not in client
+
+
+def test_the_okta_provider_is_saml_over_a_metadata_url_and_sp_initiated_only():
+    """The provider the committed config.yaml turns on, pinned property by property.
+
+    THE NAME IS THE ONE THAT MATTERS. A federated user's Cognito username is
+    `<providerName>_<nameid>`, so renaming this mints new `sub` values - the DynamoDB
+    partition key (docs/accounts-and-storage.md) - and orphans every conversation the old
+    identities wrote. It is `Okta`, for the provider's ROLE, so the rehearsal org and SJSU's
+    tenant share it and neither is named here.
+
+    A METADATA URL, NOT AN UPLOADED DOCUMENT: Cognito re-fetches a URL, so a signing
+    certificate rotating on the Okta side is not an outage waiting on a manual re-upload.
+
+    IDP-INITIATED OFF, explicitly rather than by default. An unsolicited assertion is bound
+    to no request this app issued, which is a login-CSRF primitive; every sign-in here starts
+    at /oauth2/authorize."""
+    from infra.config import resolve_okta
+
+    okta = resolve_okta(load_config())
+    assert okta is not None, "the committed config.yaml is expected to carry a metadata URL"
+
+    idp = _resource(_template(), "AWS::Cognito::UserPoolIdentityProvider")["Properties"]
+    assert idp["ProviderName"] == "Okta"
+    assert idp["ProviderType"] == "SAML"
+    assert idp["ProviderDetails"]["MetadataURL"] == okta["metadata_url"]
+    assert idp["ProviderDetails"]["IDPInit"] is False
+    assert "MetadataFile" not in idp["ProviderDetails"]
+    # ONE mapping: the Okta-side name from config, onto this pool's own `email`.
+    assert idp["AttributeMapping"] == {"email": okta["email_attribute"]}
+    # NOT an omission - Cognito derives the username from the SAML NameID and rejects a
+    # mapping for it outright. A mapped username would also be a second identity key beside
+    # the one `sub` is minted from.
+    assert "username" not in idp["AttributeMapping"]
+    assert json.dumps(idp["UserPoolId"]) == json.dumps(
+        {"Ref": _logical_id(_template(), "AWS::Cognito::UserPool")}
+    )
+
+
+def test_only_the_human_client_offers_okta_and_it_waits_for_the_provider():
+    """Two halves, and both are load-bearing.
+
+    THE EVAL CLIENT MUST NOT GAIN IT. CDK fills an omitted SupportedIdentityProviders from
+    every provider REGISTERED ON THE POOL, so before this was pinned, creating the Okta
+    provider silently attached it to the machine client too - a client whose only caller
+    authenticates a password headlessly and has no browser to redirect.
+
+    THE WEB CLIENT MUST WAIT FOR IT. The provider is named as the literal string "Okta"
+    rather than a Ref, so CloudFormation sees no reference between the two and would be free
+    to create the client first, failing the update with "identity provider does not exist"."""
+    template = _template()
+    web = _resource_named(
+        template, "AWS::Cognito::UserPoolClient", "ChatUserPoolChatWebClient"
+    )
+    evaluator = _resource_named(
+        template, "AWS::Cognito::UserPoolClient", "ChatUserPoolChatEvalClient"
+    )
+
+    assert web["Properties"]["SupportedIdentityProviders"] == ["COGNITO", "Okta"], (
+        "COGNITO stays beside Okta - dropping it would strand every local account already "
+        "issued behind an IdP that does not know them"
+    )
+    assert evaluator["Properties"]["SupportedIdentityProviders"] == ["COGNITO"]
+
+    idp_logical_id = _logical_id(template, "AWS::Cognito::UserPoolIdentityProvider")
+    assert idp_logical_id in (web.get("DependsOn") or []), web.get("DependsOn")
+
+
+def test_no_identity_provider_exists_without_a_metadata_url():
+    """THE OTHER DIRECTION, and the one that has to keep working: with no `okta` block the
+    stack must synthesize the local-accounts-only pool it has today - no identity provider
+    at all, and the human client back to COGNITO alone.
+
+    Asserted against a real second synth rather than by reading the code, because the failure
+    it guards is a construct that gets created anyway with an empty or defaulted URL - which
+    reads fine in the diff and is a deploy failure (or worse, a live provider nobody meant to
+    create) in the account."""
+    config = copy.deepcopy(load_config())
+    del config["okta"]
+
+    template = Template.from_stack(
+        NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config)
+    )
+    assert template.find_resources("AWS::Cognito::UserPoolIdentityProvider") == {}
+
+    web = _resource_named(
+        template, "AWS::Cognito::UserPoolClient", "ChatUserPoolChatWebClient"
+    )
+    assert web["Properties"]["SupportedIdentityProviders"] == ["COGNITO"]
+    assert web.get("DependsOn") is None
+    # The rest of the auth wiring is untouched: turning federation off is not a different
+    # stack, it is the same one without a provider.
+    assert web["Properties"]["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]
+    assert len(template.find_resources("AWS::Cognito::UserPoolClient")) == 2
+    assert "Okta" not in json.dumps(template.to_json())
 
 
 def test_the_managed_login_domain_exists_and_names_no_account():

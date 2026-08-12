@@ -321,6 +321,31 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       still up and a blip must not become an outage of a product that receives disclosures. The
       gate is the cost panel's: absent or 0 omits the environment variable entirely, so "off"
       has one spelling.
+- [x] Okta federates into the chat user pool, behind one config key
+      (docs/accounts-and-storage.md, Auth: "Okta is attached last"). A Cognito SAML identity
+      provider created ONLY when `okta.metadata_url` is set - absent or empty and no provider
+      is synthesized at all, the human client offers COGNITO alone, and the local accounts an
+      administrator issues keep working. THE ABSENCE IS THE GATE, the shape the cost panel
+      already uses, and one key covers all three settings: local-only, a rehearsal Okta org,
+      SJSU's tenant. THE PROVIDER NAME IS `Okta` AND IS NOT A KNOB (a constant in
+      infra/config.py, and a config key that looks like it might reach it is ignored): a
+      federated user's Cognito username is `<providerName>_<nameid>`, so a rename mints new
+      `sub` values - the DynamoDB partition key - and orphans every conversation the old
+      identities wrote, with no update path, since ProviderName is the resource's physical id.
+      It names the provider's ROLE, never an org, which is what lets the rehearsal tenant and
+      SJSU's share it. A METADATA URL rather than an uploaded file, so Cognito re-fetches it
+      and a certificate rotation on the Okta side is not an outage; https enforced at synth
+      because Cognito trusts the signing certificate inside that document. ONE attribute
+      mapping - the Okta-side name from config (orgs spell it differently; defaults to
+      `email`) onto this pool's own `email` - and no username mapping, which Cognito rejects
+      anyway because it takes the username from NameID. IdP-initiated sign-in is OFF
+      explicitly: an unsolicited assertion is bound to no request this app issued. THE
+      FINDING WORTH KEEPING: CDK fills an omitted `SupportedIdentityProviders` from every
+      provider registered on the POOL, so creating the provider silently attached Okta to the
+      machine client too - both clients now pin the property, and the human client carries an
+      explicit DependsOn because it names the provider as a literal string rather than a Ref.
+      No frontend change: managed login renders the federated button itself, and
+      `beginSignIn` pins no `identity_provider` parameter (checked, unchanged).
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

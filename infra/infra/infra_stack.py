@@ -77,6 +77,7 @@ from infra.config import (
     resolve_guardrail,
     resolve_http_api,
     resolve_knowledge_base,
+    resolve_okta,
     resolve_rate_limit,
     resolve_request,
     resolve_retrieval,
@@ -1348,6 +1349,50 @@ class NavigatorStack(Stack):
             ),
         )
 
+        # THE OKTA SAML IDENTITY PROVIDER, created ONLY when config.yaml carries a metadata
+        # URL. resolve_okta returns None otherwise and everything below falls back to
+        # COGNITO alone, so the local-accounts deployment that exists today synthesizes an
+        # identical pool. Same gating shape as the cost panel: the absence of a value is the
+        # switch, not a flag beside it.
+        #
+        # THE PROVIDER NAME IS `Okta` AND MUST NEVER CHANGE (infra/config.py,
+        # OKTA_PROVIDER_NAME). A federated user's Cognito username is
+        # `<providerName>_<nameid>`, so renaming it mints a new user with a new `sub` - the
+        # DynamoDB partition key - and orphans every conversation the old identity wrote.
+        # ProviderName is also the resource's physical id, so CloudFormation REPLACES rather
+        # than updates it. It is named for the provider's role, never for whose org is
+        # behind it, which is what lets the rehearsal tenant and SJSU's share it.
+        #
+        # SP-INITIATED ONLY. `idp_initiated=False` is passed explicitly rather than left to
+        # the default: IdP-initiated SAML has no request for the response to be bound to, so
+        # an unsolicited assertion is accepted on its own, which is a login-CSRF primitive.
+        # Every sign-in here starts at /oauth2/authorize, so nothing needs it.
+        okta_cfg = resolve_okta(config)
+        okta_provider = None
+        if okta_cfg is not None:
+            okta_provider = cognito.UserPoolIdentityProviderSaml(
+                self,
+                "OktaIdentityProvider",
+                user_pool=auth_pool,
+                name=okta_cfg["provider_name"],
+                # A URL, not a file: Cognito re-fetches it, so the IdP's signing certificate
+                # rotating on the Okta side is not an outage waiting on a manual re-upload.
+                metadata=cognito.UserPoolIdentityProviderSamlMetadata.url(
+                    okta_cfg["metadata_url"]
+                ),
+                idp_initiated=False,
+                # ONE MAPPING, and the two halves come from different places on purpose: the
+                # Okta-side attribute name is config (orgs spell it differently), and what it
+                # maps to is this pool's own standard `email`.
+                #
+                # NO USERNAME MAPPING, which is not an omission - Cognito derives the
+                # username from the SAML NameID and does not accept a mapping for it. An
+                # attempt to map one is rejected at CreateIdentityProvider.
+                attribute_mapping=cognito.AttributeMapping(
+                    email=cognito.ProviderAttribute.other(okta_cfg["email_attribute"]),
+                ),
+            )
+
         # TWO APP CLIENTS ON ONE POOL, because the two callers cannot share one.
         #
         # THE WEB CLIENT: authorization code flow with PKCE, through the hosted endpoints
@@ -1362,12 +1407,34 @@ class NavigatorStack(Stack):
         # split: leaving one enabled would let a form quietly reappear that federated users
         # could never sign in through, which is the exact dead end this change exists to
         # avoid.
+        #
+        # THIS is the client Okta attaches to, and the only one - see the eval client below.
         web_client = auth_pool.add_client(
             "ChatWebClient",
             generate_secret=False,
             # Pinned to refresh-only through the L1 below rather than set here - see the
             # note after this construct.
             auth_flows=cognito.AuthFlow(),
+            # SPELLED OUT IN BOTH DIRECTIONS, never left to the default, and this is the
+            # same class of finding as ExplicitAuthFlows below. CDK fills an omitted
+            # SupportedIdentityProviders from every provider REGISTERED ON THE POOL, so
+            # leaving it out would attach Okta to whichever clients happened not to name a
+            # list - a property that changes when an unrelated construct is added elsewhere.
+            #
+            # COGNITO stays in the list beside Okta rather than being replaced by it: local
+            # accounts are how this stack is administered and evaluated, and dropping them
+            # the moment federation lands would strand every account created so far behind
+            # an IdP that does not know them.
+            supported_identity_providers=[
+                cognito.UserPoolClientIdentityProvider.COGNITO,
+                *(
+                    [cognito.UserPoolClientIdentityProvider.custom(
+                        okta_cfg["provider_name"]
+                    )]
+                    if okta_cfg is not None
+                    else []
+                ),
+            ],
             o_auth=cognito.OAuthSettings(
                 flows=cognito.OAuthFlows(
                     authorization_code_grant=True,
@@ -1413,6 +1480,15 @@ class NavigatorStack(Stack):
         # authenticated through the redirect.
         web_client.node.default_child.explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
 
+        # ORDERING, DECLARED RATHER THAN INFERRED. The provider is named in the list above
+        # as the LITERAL string "Okta", not as a Ref, so CloudFormation sees no reference
+        # between these two resources and is free to create the client first - which fails
+        # the update with "identity provider Okta does not exist". A literal is worth that
+        # explicit edge: it keeps the one name that can never change spelled where a reader
+        # (and a test) can see it, instead of behind a token.
+        if okta_provider is not None:
+            web_client.node.add_dependency(okta_provider)
+
         # THE EVAL CLIENT: password auth, no OAuth, no callback URLs. eval/run_eval.py runs
         # headless - there is no browser to redirect and no human to click - so the one
         # thing the web client deliberately cannot do is the only thing this one does.
@@ -1426,6 +1502,16 @@ class NavigatorStack(Stack):
             generate_secret=False,
             # No secret, so the harness's one unsigned InitiateAuth needs no SECRET_HASH.
             auth_flows=cognito.AuthFlow(user_password=True),
+            # COGNITO ALONE, PINNED, and this line is load-bearing rather than decorative.
+            # CDK defaults an omitted SupportedIdentityProviders to every provider REGISTERED
+            # ON THE POOL, so creating the Okta provider above silently added it to this
+            # client (verified against a synthesized template, not assumed). This is the
+            # machine account's client: it authenticates a password against a local user and
+            # has no browser to redirect, so a federated provider on it is reachable by
+            # nobody and widens the client for nothing.
+            supported_identity_providers=[
+                cognito.UserPoolClientIdentityProvider.COGNITO
+            ],
             access_token_validity=Duration.days(1),
             refresh_token_validity=Duration.days(1),
             id_token_validity=Duration.days(1),
