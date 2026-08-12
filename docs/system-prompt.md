@@ -34,9 +34,15 @@ Formatting
   eval kept dropping. The example carries an email and a location rather than a
   phone number, because a digit typed into the prompt is a hardcoded number and
   this file has none; the rule invites the phone all the same
-- KNOWN GAP: cards._first_field collapses whitespace, so newlines inside a
-  <desc> do not survive the parser and bullets there arrive as one line. Bold is
-  unaffected, and prose keeps its newlines. See docs/cards-v2.md, The two marks
+- THE RENDERER IS NOW WIDER THAN THIS FILE: italics and numbered lists render as
+  well, in the prose and inside a <desc> alike (docs/cards-v2.md, The marks). The
+  prompt above is unchanged and still offers two marks and still bans numbered
+  lists, which is a decision to take on its own rather than a gap to patch: what
+  changed is only that a model writing either one anyway is no longer read out to
+  the student as literal `1.` and `*asterisks*`
+- the old KNOWN GAP here is closed: cards._first_field keeps line breaks inside a
+  <desc> (keep_line_breaks=True), so a list written in a description survives to
+  the browser as a list. Every other field is still collapsed to one line
 
 When to use a card
 - one card for every place you are sending them, and no destination lives only
