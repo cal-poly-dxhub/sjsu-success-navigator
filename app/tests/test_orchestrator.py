@@ -6,6 +6,7 @@ what cannot be checked against a real account anyway.
 """
 
 import copy
+from datetime import datetime, timezone
 
 import pytest
 
@@ -444,7 +445,12 @@ def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypat
     changed topic" to the user message, so clicking Tell me more could not produce cards while
     typing the same words could. The flag stays on the wire contract; it must not change a
     single byte of what the model is sent. Compared as whole message lists, history included,
-    because the suppression note lived inside the last one."""
+    because the suppression note lived inside the last one.
+
+    The moment is pinned rather than read twice: the messages now carry a clock reading, and
+    two runs either side of a minute boundary would differ for a reason that has nothing to
+    do with the flag being tested."""
+    moment = datetime(2026, 8, 12, 3, 14, tzinfo=timezone.utc)
     history = [
         stored("user", "where do I get tutoring?"),
         stored("assistant", "Peer Connections runs drop-in tutoring."),
@@ -456,7 +462,10 @@ def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypat
         fake = _FakeBedrock([_text_turn("Here you go.")])
         monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
         orchestrator.run_chat(
-            ChatRequest(query=query, followup=followup), _SETTINGS, history=history
+            ChatRequest(query=query, followup=followup),
+            _SETTINGS,
+            history=history,
+            now=moment,
         )
         sent.append(fake.kwargs["messages"])
 
@@ -1011,3 +1020,120 @@ def test_the_guardrail_reaches_the_model_call_only_when_asked_and_only_in_sync_m
 
     _, unscreened = _streaming_loop(monkeypatch, [_text_events("Plain.")])
     assert "guardrailConfig" not in unscreened.kwargs
+
+
+# --- the campus clock ---------------------------------------------------------------------
+
+# 03:14 UTC on a Wednesday is 8:14pm the previous TUESDAY in San Jose. Every test below
+# drives that instant, because it is the shape of the bug: Lambda's clock would have the
+# model telling a student who is awake and typing that it is the middle of the night.
+_LAMBDA_UTC_INSTANT = datetime(2026, 8, 12, 3, 14, tzinfo=timezone.utc)
+_CAMPUS_READING = "Tuesday, August 11, 2026 at 8:14 PM PDT (America/Los_Angeles)"
+
+
+def _user_turn(messages):
+    """The last user message: the turn the model is being asked to answer.
+
+    Not messages[-1] - the primed search's toolResult is a user-role message and lands
+    after it (see _prime_first_search) - so this looks for the one carrying text.
+    """
+    texts = [
+        message["content"][0]["text"]
+        for message in messages
+        if message["role"] == "user" and "text" in message["content"][0]
+    ]
+    return texts[-1]
+
+
+def test_the_model_is_told_the_campus_local_time(monkeypatch, no_retrieval):
+    """The whole feature, in one assertion. The time is server-derived and campus-local:
+    the request carries a conversation id and message text and nothing else, so there is no
+    client-supplied clock to spoof, and the zone is San Jose's rather than the one the
+    function happens to run in."""
+    fake = _FakeBedrock([_text_turn("Here you go.")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="is the pantry open?"), _SETTINGS, now=_LAMBDA_UTC_INSTANT
+    )
+
+    sent = _user_turn(fake.kwargs["messages"])
+    assert sent.startswith(f"Current date and time on campus: {_CAMPUS_READING}.")
+    assert "3:14 AM" not in sent, "the UTC clock must not reach the model"
+
+
+def test_every_model_call_in_the_turn_carries_the_same_time(monkeypatch):
+    """A turn that searches again makes a second Converse call, and the loop appends to the
+    SAME message list, so the stamp is read once and carried by all of them. Two readings
+    inside one turn would be a model watching the clock jump mid-answer."""
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+    fake = _FakeBedrock([_retrieval_turn(), _text_turn("Found it.")])
+    seen = []
+    fake._on_call = lambda: seen.append(_user_turn(fake.kwargs["messages"]))
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="pantry hours?"), _SETTINGS, now=_LAMBDA_UTC_INSTANT
+    )
+
+    assert fake.calls == 2
+    assert len(seen) == 2 and seen[0] == seen[1]
+    assert all(_CAMPUS_READING in text for text in seen)
+
+
+def test_the_students_own_words_are_not_touched_by_the_stamp(monkeypatch, no_retrieval):
+    """The line is a projection, not an edit. What the student typed reaches the model whole
+    and unprefixed, under its own label, which is also what the handler stored."""
+    fake = _FakeBedrock([_text_turn("ok")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="where is the food pantry?"), _SETTINGS, now=_LAMBDA_UTC_INSTANT
+    )
+
+    assert "Student message:\nwhere is the food pantry?" in _user_turn(fake.kwargs["messages"])
+
+
+def test_earlier_turns_are_never_backfilled_with_a_timestamp(monkeypatch, no_retrieval):
+    """Stored history is copied through untouched. Stamping a read-back message with the
+    CURRENT time would tell the model that Tuesday's question arrived just now, and the
+    stored row does not carry the time it really arrived at."""
+    fake = _FakeBedrock([_text_turn("ok")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="and financial aid?"),
+        _SETTINGS,
+        history=[stored("user", "where do I get tutoring?"), stored("assistant", "Peer Connections.")],
+        now=_LAMBDA_UTC_INSTANT,
+    )
+
+    messages = fake.kwargs["messages"]
+    assert messages[0]["content"][0]["text"] == "where do I get tutoring?"
+    assert messages[1]["content"][0]["text"] == "Peer Connections."
+    assert str(messages).count("Current date and time on campus") == 1
+
+
+def test_a_turn_with_no_clock_still_reaches_the_model(monkeypatch, no_retrieval):
+    """A runtime with no tz database costs the line and nothing else: the message is exactly
+    what it was before this feature existed, rather than a turn that fails or one carrying a
+    UTC time dressed up as campus time."""
+    monkeypatch.setattr(orchestrator, "campus_context_line", lambda moment: "")
+    fake = _FakeBedrock([_text_turn("ok")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(ChatRequest(query="hi"), _SETTINGS)
+
+    assert _user_turn(fake.kwargs["messages"]) == "Student message:\nhi\n\nWrite your reply."
+
+
+def test_an_absent_moment_is_read_from_the_clock(monkeypatch, no_retrieval):
+    """Every caller passes None - the handler and the stream worker both do - so the default
+    path is the deployed one, and it has to produce a line."""
+    fake = _FakeBedrock([_text_turn("ok")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(ChatRequest(query="hi"), _SETTINGS)
+
+    assert "Current date and time on campus:" in _user_turn(fake.kwargs["messages"])
+    assert "(America/Los_Angeles)" in _user_turn(fake.kwargs["messages"])

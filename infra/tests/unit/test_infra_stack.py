@@ -1076,6 +1076,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
     twice would be a second copy to drift."""
     listing = _staged_listing("ChatFunction")
     assert listing == [
+        "campus_time.py",
         "cards.py",
         "handler.py",
         "history.py",

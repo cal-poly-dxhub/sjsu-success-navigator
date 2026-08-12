@@ -22,12 +22,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Any, Protocol, Sequence
 
 import boto3
 from botocore.config import Config
 
 from settings import Settings
+from campus_time import campus_context_line
 from history import StoredMessage
 from models import ChatRequest, ChatResponse
 from cards import (
@@ -109,6 +111,7 @@ def run_chat(
     usage: TurnUsage | None = None,
     stream: "StreamSink | None" = None,
     guardrail_config: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> ChatResponse:
     """Run the Converse tool-use loop under TWO independent caps.
 
@@ -150,6 +153,13 @@ def run_chat(
     default and the deployed setting; when it is set it is always `sync` mode (the caller
     cannot spell `async` - see app/streaming.py), because async releases text to the student
     before it has been scanned, which is not a screen.
+
+    `now` is the instant this turn happens at, stamped into the user message the model is
+    shown (app/campus_time.py). None reads the clock, which is what every caller does; it
+    is an argument at all so a test can pin the moment instead of racing it. ONE instant is
+    read per turn and it is read here, so every Converse call in the loop below - the first
+    one and any the tool escape hatch adds - carries the same time rather than drifting
+    across a long turn.
     """
     client = _bedrock_client(settings.bedrock_region)
 
@@ -159,7 +169,7 @@ def run_chat(
     # The id-to-URL map for this turn. Built here, never persisted, and the only thing that
     # can put a URL on a card - which is what makes a model-invented URL unrepresentable.
     sources = TurnSources()
-    messages = _build_converse_messages(request, history, settings)
+    messages = _build_converse_messages(request, history, settings, now)
     system_prompt = build_system_prompt(settings)
     last_text = ""
 
@@ -518,6 +528,7 @@ def _build_converse_messages(
     request: ChatRequest,
     history: Sequence[StoredMessage],
     settings: Settings,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Stored history plus this turn's message, in a shape Converse will accept.
 
@@ -532,6 +543,13 @@ def _build_converse_messages(
     Trimming here as well as in the query is not a second opinion about the window: it is
     what makes this function total. A caller that hands over more than the configured window
     gets it trimmed rather than silently billed for it.
+
+    THE TIME STAMP GOES ON THIS TURN AND NO OTHER. The history loop below copies stored
+    text through untouched, so an earlier message never acquires a timestamp it did not
+    have: the only thing the stored row records is when it was written, and stamping a
+    read-back message with the CURRENT time would tell the model a message from Tuesday
+    arrived just now. What the model gets is one clock reading, attached to the one turn
+    that is actually happening at it.
     """
     messages: list[dict[str, Any]] = []
 
@@ -542,7 +560,7 @@ def _build_converse_messages(
         messages.append({"role": item.role, "content": [{"text": text}]})
 
     messages.append(
-        {"role": "user", "content": [{"text": _build_user_message(request)}]}
+        {"role": "user", "content": [{"text": _build_user_message(request, now)}]}
     )
 
     messages = _merge_consecutive_roles(messages)
@@ -577,8 +595,22 @@ def _merge_consecutive_roles(
     return merged
 
 
-def _build_user_message(request: ChatRequest) -> str:
+def _build_user_message(request: ChatRequest, now: datetime | None = None) -> str:
     """The user turn handed to the model. It does NOT read `request.followup`.
+
+    It opens with the campus-local time (app/campus_time.py), and that line is the whole
+    of this feature's plumbing. It sits HERE rather than in the system prompt because the
+    prompt is a pure function of Settings and stays cacheable and testable that way, and
+    because the time is a fact about this turn rather than a standing instruction.
+
+    IT IS ADDED TO THE MODEL'S COPY AND NOWHERE ELSE. The student's message is written to
+    DynamoDB by the handler before this function is ever called, from `request.query`
+    directly, so nothing built here can reach the stored row or the display read that
+    serves the browser. The student's own words stay exactly that on both.
+
+    The line is above the message rather than below it so the student's text is the last
+    thing before the instruction, and so no prefix of what they wrote is ever run together
+    with server-authored text.
 
     This used to append a "the student clicked a follow-up, emit no cards" note, which is
     why clicking Tell me more never produced cards while typing the same question did. A
@@ -595,7 +627,10 @@ def _build_user_message(request: ChatRequest) -> str:
     `followup` stays on the wire contract (models.ChatRequest, and the frontend still sets
     it) but no longer reaches the prompt from here.
     """
+    time_line = campus_context_line(now)
     return (
+        f"{time_line}\n\n" if time_line else ""
+    ) + (
         f"Student message:\n{request.query.strip()}"
         "\n\n"
         "Write your reply."
