@@ -130,7 +130,7 @@ chat:
   # not turns: 12 is six exchanges. It used to trim a transcript the CLIENT posted; the
   # transcript is the server's now (docs/accounts-and-storage.md, Turn lifecycle), so this
   # bounds a read rather than distrusting a payload. Still a paid-token control either way.
-  max_history_messages: 12
+  max_history_messages: 24
   # The two READ endpoints' caps (GET /conversations and GET /conversations/{id}), and
   # deliberately separate numbers from max_history_messages above. That one is the window
   # the MODEL is shown, paid for in tokens on every single turn, so it is small on purpose.
@@ -230,7 +230,7 @@ chat_history:
 # code POST /chat runs, and arrive in one final message carrying exactly the payload
 # POST /chat would have returned. The browser renders that, not the preview.
 streaming:
-  enabled: false
+  enabled: true
   # How many characters accumulate before a delta is pushed. EVERY PUSH IS A BILLABLE
   # API Gateway message, so this is a cost control rather than a feel knob: one message per
   # token would multiply the message count by the token count for nothing a reader can see,
