@@ -383,6 +383,47 @@ def test_the_assistant_message_stores_prose_and_resolved_cards(bedrock, store, m
     assert written["cards"][0]["sourceUrl"] == "https://www.sjsu.edu/tutoring/index.php"
 
 
+def test_the_campus_time_reaches_the_model_and_never_the_stored_message(
+    bedrock, store, monkeypatch
+):
+    """THE TWO HALVES OF THE FEATURE, PINNED TOGETHER, through the real loop rather than a
+    stand-in: what the model is handed carries the campus clock, and what DynamoDB gets is
+    the student's own words with nothing added.
+
+    The stored row is the one the display read serves back to the browser
+    (docs/accounts-and-storage.md, Turn lifecycle), so a stamp that leaked into it would be
+    a student seeing server text quoted back as something they typed.
+    """
+    import orchestrator
+
+    class _FakeConverse:
+        def converse(self, **kwargs):
+            self.kwargs = kwargs
+            return {
+                "output": {
+                    "message": {"role": "assistant", "content": [{"text": "It opens at ten."}]}
+                },
+                "stopReason": "end_turn",
+            }
+
+    fake = _FakeConverse()
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+
+    query = "is the food pantry open right now?"
+    response = handler.lambda_handler(_event(json.dumps({"query": query})), None)
+    assert response["statusCode"] == 200
+
+    sent = str(fake.kwargs["messages"])
+    assert "Current date and time on campus:" in sent
+    assert "(America/Los_Angeles)" in sent
+
+    assert store.appended[0]["role"] == "user"
+    assert store.appended[0]["text"] == query, "the stored message is the student's own words"
+    assert "America/Los_Angeles" not in store.appended[0]["text"]
+    assert "Current date and time" not in str(store.appended)
+
+
 def test_a_guardrail_block_records_nothing(monkeypatch, store):
     """A blocked message never became a turn. Storing it would smuggle the attack text into
     the history the model reads on the NEXT turn, past the screen that just caught it."""
