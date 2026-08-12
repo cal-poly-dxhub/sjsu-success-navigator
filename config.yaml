@@ -92,11 +92,13 @@ cards:
   # carries a small integer id; the model cites ids and never sees or writes a URL.
   max_retrieval_results: 6
   # A GUARD against a runaway response, not an editorial budget. The editorial judgement -
-  # two sentences, the destination plus the one specific that matters - lives in the system
-  # prompt and its canonical examples, which is the layer that actually steers the model.
-  # This ceiling sits roughly 3x above that target, so the server truncating (logged at
-  # WARNING in cards.py) means the prompt or the model is broken, not that a normal answer
-  # ran a few words long.
+  # one or two short sentences, the destination plus the one specific that matters, plus the
+  # office's contacts as bullets when a result carries them - lives in the system prompt and
+  # its canonical examples, which is the layer that actually steers the model. This ceiling
+  # sits several times above that target, so the server truncating (logged at WARNING in
+  # cards.py) means the prompt or the model is broken, not that a normal answer ran a few
+  # words long. The target came down without it: a guard follows the steer down only if you
+  # want variance cut again, which is the bug this number was raised to stop.
   #
   # It was 180, sized to the two-sentence target itself, and against a real model that put
   # an ellipsis on nearly every card: the model routinely wrote a little past the target and

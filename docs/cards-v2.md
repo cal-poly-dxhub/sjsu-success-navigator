@@ -149,8 +149,11 @@ balance is:
 Where it sits now: in the cards. Anything that sends a student somewhere, or
 that tells them about a source we ingested, is a card, and each one carries a
 real description rather than a bare source link - the destination, the specifics
-that make it usable, the next step. The prose is two or three lines saying what
-kinds of options exist and pointing at the cards below.
+that make it usable, the next step. The prose is one or two lines saying what
+kinds of options exist and pointing at the cards below, and the balance is
+measurable rather than aspirational: in every worked example that emits cards,
+the titles and descriptions outweigh the prose on both sides of the grid, and a
+unit test asserts it so a rewrite cannot drift the weight back into the bubble.
 
 The first shipped balance was the other one - prose answering directly in a few
 sentences, cards carrying per-source detail - and moving it took a prompt
@@ -205,6 +208,14 @@ shortened where it can be measured, never hidden by the layout.
   before the card leaves the backend) is a WARNING-logged bug, not a daily
   event - an ellipsis on screen means something is broken, and the frontend
   still renders whatever it receives without clipping.
+- Which is why lowering the target does NOT lower the cap. The target came down
+  to one or two short sentences and the guards stayed where they were, so the
+  gap between steer and guard widened from roughly 3x to closer to 5x. That is
+  the intended direction: a wider gap absorbs more ordinary variance before
+  anything is cut. The pair of numbers that has to stay in step is the stated
+  target and the example descriptions, not the target and the cap - the examples
+  sat at the old target, so moving the target alone would have left the model
+  copying the length it was shown. Both moved in the same commit.
 - Cap violation rate is an eval metric. If the model overruns often, either the
   prompt or the cap is wrong, and the fixture run says which.
 
@@ -221,10 +232,10 @@ ellipsis. A cap sized AT the steered length converts ordinary variance into
 routine truncation, and a card whose last sentence is missing is a worse card
 than one that runs a sentence long.
 
-So the two jobs are now in separate places. The prompt still steers to two
-sentences - its stated shape and its examples are unchanged in intent - and the
-cap moved to roughly 3x that target, where the only thing it can catch is a
-runaway response shipping an essay into a card. At 600 an ellipsis means a bug,
+So the two jobs are now in separate places. The prompt steers to one or two
+short sentences, plus a contact list on the cards that have one, and the cap
+sits several times above that, where the only thing it can catch is a runaway
+response shipping an essay into a card. At 600 an ellipsis means a bug,
 and cards.py logs every hit at WARNING so the bug is diagnosable rather than
 quietly absorbed by the UI. Title moved 60 to 90 on the same reasoning, its
 one-line derivation retired: titles wrap, so the layout was never protecting

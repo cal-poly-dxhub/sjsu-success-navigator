@@ -95,19 +95,42 @@ def test_every_canonical_example_sits_under_its_cap():
             assert len(text) <= cap, f"<{field}> example is {len(text)} chars, cap {cap}: {text!r}"
 
 
-def test_the_card_descriptions_in_the_examples_carry_real_substance():
-    """The weighting the prompt asks for: cards hold the answer, prose introduces them. A
-    one-line description is the shape that weighting exists to move away from, so the
-    examples must not model it - they are what the model copies.
+def test_the_card_descriptions_in_the_examples_sit_in_the_stated_band():
+    """The examples teach a LENGTH, and it is the stated target that moves with them.
 
-    The examples teach a LENGTH, not just an upper bound: two sentences at roughly 150-175
-    characters. The cap is a guard sitting far above that, so it holds no floor of its own -
-    an example rewritten short would quietly re-teach the one-line card even though nothing
-    about it violates a cap. This assertion is the floor."""
+    A floor, because the weighting the prompt asks for is cards-hold-the-answer and a
+    one-line description is the shape that weighting exists to move away from. A ceiling,
+    because the guard cap is several times the target and therefore enforces nothing
+    editorial: an example that drifts back to the old length re-teaches it while violating
+    nothing. The band is one or two short sentences, plus a contact list on the card that
+    has one, which is the outlier at the top of the range."""
     descs = _examples(build_system_prompt(_SETTINGS), "desc")
 
     for desc in descs:
-        assert len(desc) >= 150, f"a thin <desc> example undercuts the weighting: {desc!r}"
+        assert len(desc) >= 110, f"a thin <desc> example undercuts the weighting: {desc!r}"
+        assert len(desc) <= 200, (
+            f"a <desc> example at {len(desc)} chars re-teaches the length this band replaced: "
+            f"{desc!r}"
+        )
+
+
+def test_the_cards_carry_the_majority_of_each_worked_reply():
+    """Shorter replies must get shorter by moving text INTO the cards, not by thinning them.
+    Measured on what the student actually reads: titles and descriptions against the prose on
+    both sides of the grid. The follow-up is a hidden button prompt, so it is not in the
+    count. Examples with no cards are the case where the prose is necessarily the whole
+    answer, and they are excluded rather than failed."""
+    for block in _EXAMPLE_BLOCK_RE.findall(build_system_prompt(_SETTINGS)):
+        reply = block.split("[your reply]", 1)[1]
+        card_text = sum(
+            len(text) for field in ("title", "desc") for text in _FIELD_RE[field].findall(reply)
+        )
+        if not card_text:
+            continue
+        prose = len(_CARD_BLOCK_RE.sub("", reply).strip())
+        assert card_text > prose, (
+            f"an example puts more text in its prose ({prose}) than in its cards ({card_text})"
+        )
 
 
 def test_the_prompt_permits_bold_and_bulleted_lists_in_both_places():
