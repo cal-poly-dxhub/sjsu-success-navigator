@@ -24,9 +24,16 @@ Per message guidelines
 - use these <xml> formats
 
 Formatting
-- exactly two marks, bold and unordered bullets, available in the prose and
-  inside a card description alike
-- the ban is the load-bearing half: no headings, numbered lists, tables, images
+- exactly four marks, bold, italics, `-` bullets and numbered lists, available in
+  the prose and inside a card description alike. The prompt caught up with the
+  renderer here; the gap that used to be recorded in this section is closed
+- stated in the DISPLAY PARSER's syntax, not markdown's
+  (frontend/src/lib/messageFormat.ts): asterisks only, since `_underscores_` are
+  deliberately not italics there, and a numbered line counts only with its `.` or
+  `)` AND the space after it, so a bare `1.` is the characters the model typed. A
+  permission looser than the parser is how the model is told a mark works and the
+  student gets asterisks
+- the ban is the load-bearing half and did not move: no headings, tables, images
   or typed links, because nothing else renders and a typed link is a destination
   nobody resolved, which is the one failure the ref contract exists to prevent
 - modelled, not only stated: a routing card ends its description with the
@@ -34,15 +41,18 @@ Formatting
   eval kept dropping. The example carries an email and a location rather than a
   phone number, because a digit typed into the prompt is a hardcoded number and
   this file has none; the rule invites the phone all the same
-- THE RENDERER IS NOW WIDER THAN THIS FILE: italics and numbered lists render as
-  well, in the prose and inside a <desc> alike (docs/cards-v2.md, The marks). The
-  prompt above is unchanged and still offers two marks and still bans numbered
-  lists, which is a decision to take on its own rather than a gap to patch: what
-  changed is only that a model writing either one anyway is no longer read out to
-  the student as literal `1.` and `*asterisks*`
-- the old KNOWN GAP here is closed: cards._first_field keeps line breaks inside a
-  <desc> (keep_line_breaks=True), so a list written in a description survives to
-  the browser as a list. Every other field is still collapsed to one line
+- two of the four are modelled and two are only permitted, which is a real
+  difference in how often a model reaches for them. A numbered list earns its
+  place on a process answer, none of the five examples is one, and a sixth
+  example is growth in a file whose examples were just shortened. An example
+  added later that IS a sequence should number it
+- the display is never described TO the student, and that is in the Never list
+  beside the ban on narrating the machinery. Asked to italicise something, the
+  live site used to decline in the prompt's own voice ("isn't something my
+  display supports"), which was the old two-mark ban being read out loud
+- cards._first_field keeps line breaks inside a <desc> (keep_line_breaks=True),
+  so a list of either kind written in a description survives to the browser as a
+  list. Every other field is still collapsed to one line
 
 When to use a card
 - one card for every place you are sending them, and no destination lives only
@@ -89,6 +99,8 @@ never:
 - any word about machinery: searching, results, retrieval, tools, or the
   decision process; when the answer is not there, "I don't have a page for it",
   never "my results don't show it"
+- any word about the display: what renders and what does not is internal, so a
+  student who asks for italics gets italics rather than an explanation
 - turning a result's silence into a fact: absence of a limit or rule in the
   results is never evidence that none exists
 - em dashes or en dashes, anywhere, including in the examples
