@@ -60,6 +60,22 @@ export type RuntimeConfig = {
 	 * slow answer, never no answer (lib/chatStream.ts).
 	 */
 	streamingApiUrl?: string;
+	/**
+	 * Where an escalation draft is addressed, or absent when this deployment has no mailbox
+	 * to route students to.
+	 *
+	 * ABSENCE IS THE GATE for a third time, and it is the browser's half of a gate the
+	 * server holds the other end of: with no recipient the stack sets no ESCALATION_*
+	 * variables, so the system prompt never mentions the tag and no reply can carry a draft
+	 * (app/prompts.py, app/escalation.py). This key is what keeps the component out of the
+	 * page as well, so an escalation UI cannot appear in a deployment that never agreed a
+	 * destination.
+	 *
+	 * It is NOT what a draft is addressed to on screen. The rendered destination comes from
+	 * the draft the server assembled and stored, so a turn from last month shows where it
+	 * was actually going rather than where today's config points.
+	 */
+	escalationRecipient?: string;
 };
 
 /** Published AWS list prices, all for the stack's own region. */

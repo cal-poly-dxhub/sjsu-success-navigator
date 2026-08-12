@@ -1218,3 +1218,85 @@ def test_the_output_guardrail_switch_is_a_boolean_and_defaults_off(config):
     config["streaming"]["output_guardrail"] = "yes"
     with pytest.raises(ValueError, match="output_guardrail"):
         resolve_streaming(config)
+
+
+# --- Escalate to a human -----------------------------------------------------------------
+
+
+def test_the_committed_config_carries_an_escalation_recipient(config):
+    """The feature is on in the committed file, and it resolves to one plain address."""
+    from infra.config import resolve_escalation
+
+    escalation = resolve_escalation(config)
+    assert escalation is not None
+    assert escalation["recipient"].count("@") == 1
+    assert escalation["subject"]
+    assert escalation["max_chars"] >= 300
+
+
+def test_no_recipient_means_no_escalation_path(config):
+    """THE ABSENCE IS THE GATE, the shape resolve_cost_model and resolve_okta already use,
+    and here it reaches furthest: with no address the chat function gets no ESCALATION_*
+    variables, config.json gets no recipient, and the system prompt never mentions the tag.
+    Four ways to say off, all of them valid configs rather than errors."""
+    from infra.config import resolve_escalation
+
+    for mutate in (
+        lambda c: c.pop("escalation"),
+        lambda c: c["escalation"].pop("recipient"),
+        lambda c: c["escalation"].update(recipient=""),
+        lambda c: c["escalation"].update(recipient="   "),
+        lambda c: c["escalation"].update(recipient=None),
+    ):
+        candidate = copy.deepcopy(config)
+        mutate(candidate)
+        assert resolve_escalation(candidate) is None, candidate.get("escalation")
+        # And the whole synth-time gate still passes: off is not a half-configured stack.
+        validate_config(candidate)
+
+
+@pytest.mark.parametrize(
+    "recipient",
+    [
+        "sjsucares",  # no domain
+        "@sjsu.edu",  # no local part
+        "SJSU Cares <sjsucares@sjsu.edu>",  # a display name pasted in with the address
+        "sjsucares@sjsu.edu, dean@sjsu.edu",  # two mailboxes
+        "sjsucares@sjsu.edu;dean@sjsu.edu",
+    ],
+)
+def test_an_address_a_mail_client_could_not_open_fails_at_synth(config, recipient):
+    """This value goes straight into a mailto the STUDENT's mail client has to open, so a
+    malformed one does not fail a deploy - it fails silently in front of a student, on the
+    one turn that was meant to reach a person. Two mailboxes are their own kind of wrong:
+    every student's message would go to everybody on the list."""
+    from infra.config import resolve_escalation
+
+    config["escalation"]["recipient"] = recipient
+    with pytest.raises(ValueError, match="escalation.recipient"):
+        resolve_escalation(config)
+
+
+def test_a_blank_subject_fails_at_synth(config):
+    """Staff triage on the subject before they read anything else, and it is the same line
+    on every draft - so an empty one is a deploy-time error rather than a blank in an inbox."""
+    from infra.config import resolve_escalation
+
+    config["escalation"]["subject"] = "   "
+    with pytest.raises(ValueError, match="escalation.subject"):
+        resolve_escalation(config)
+
+
+def test_a_dropped_digit_in_the_cap_fails_rather_than_silencing_the_feature(config):
+    """The floor is a dropped-digit detector, like the card caps' - but this cap DROPS the
+    offer instead of shortening it, so 120-for-1200 would take the feature off the air with
+    nothing on screen to say why."""
+    from infra.config import resolve_escalation
+
+    config["escalation"]["max_chars"] = 120
+    with pytest.raises(ValueError, match="max_chars"):
+        resolve_escalation(config)
+
+    config["escalation"]["max_chars"] = True
+    with pytest.raises(ValueError, match="must be an integer"):
+        resolve_escalation(config)

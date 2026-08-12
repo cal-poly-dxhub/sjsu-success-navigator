@@ -270,3 +270,38 @@ def test_the_output_guardrail_can_only_ever_be_synchronous(monkeypatch):
     assert config["streamProcessingMode"] == "sync"
     assert config["guardrailIdentifier"] == stream_worker.SETTINGS.input_guardrail_id
     assert config["guardrailVersion"] == stream_worker.SETTINGS.input_guardrail_version
+
+
+def test_a_streamed_turn_stores_its_draft_beside_its_cards(worker, monkeypatch):
+    """The worker writes the same two records the buffered path does, and the draft is one
+    of the things stored rather than reproduced."""
+    import dataclasses
+
+    from models import ChatResponse, EmailDraft
+
+    monkeypatch.setattr(
+        stream_worker,
+        "run_chat",
+        lambda request, settings, **kwargs: ChatResponse(
+            conversationalText="That one needs a person.",
+            escalation=EmailDraft(to="sjsucares@sjsu.edu", subject="S", body="B"),
+        ),
+    )
+    # Nothing here reads Settings for the draft - the response already carries it - but the
+    # worker is the deployed path, so it runs with the feature configured.
+    monkeypatch.setattr(
+        stream_worker,
+        "SETTINGS",
+        dataclasses.replace(
+            stream_worker.SETTINGS, escalation_recipient="sjsucares@sjsu.edu"
+        ),
+    )
+
+    stream_worker.lambda_handler(_event(), _FakeContext())
+
+    written = worker.store.appended[0]
+    assert written["escalation"] == {
+        "to": "sjsucares@sjsu.edu",
+        "subject": "S",
+        "body": "B",
+    }

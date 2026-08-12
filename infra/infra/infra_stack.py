@@ -72,6 +72,7 @@ from infra.config import (
     resolve_chunking,
     resolve_cost_model,
     resolve_data_source_name,
+    resolve_escalation,
     resolve_generation,
     resolve_cors_allow_origins,
     resolve_guardrail,
@@ -318,6 +319,11 @@ class NavigatorStack(Stack):
         chat_cfg = resolve_chat(config)
         chat_history_cfg = resolve_chat_history(config)
         cards_cfg = resolve_cards(config)
+        # None when no escalation recipient is configured, and the absence then reaches
+        # THREE places from this one value: no ESCALATION_* variables on the chat function,
+        # no escalationRecipient in config.json, and - because the function reads the same
+        # absence - no mention of the tag in the system prompt.
+        escalation_cfg = resolve_escalation(config)
         # None when the per-user daily cap is off. The env var below is then omitted rather
         # than set to zero, which is the same gate the cost panel uses on config.json.
         daily_message_limit = resolve_rate_limit(config)
@@ -1198,6 +1204,22 @@ class NavigatorStack(Stack):
                 if daily_message_limit is not None
                 else {}
             ),
+            # THE ESCALATE-TO-HUMAN PATH, present only when config.yaml names a recipient.
+            # Absent is off, in one spelling, and the function reads it the same way: with
+            # no address app/prompts.py leaves the tag out of the system prompt entirely
+            # and app/escalation.py builds no draft. The recipient is spelled here AND in
+            # config.json below because the two consumers need different halves of it - the
+            # server assembles the message, the browser decides whether the component
+            # exists - and both read this one resolved value.
+            **(
+                {
+                    "ESCALATION_RECIPIENT": escalation_cfg["recipient"],
+                    "ESCALATION_SUBJECT": escalation_cfg["subject"],
+                    "ESCALATION_MAX_CHARS": str(escalation_cfg["max_chars"]),
+                }
+                if escalation_cfg is not None
+                else {}
+            ),
         }
 
         chat_lambda = _lambda.Function(
@@ -1223,6 +1245,7 @@ class NavigatorStack(Stack):
                     "!retrieve.py",
                     "!cards.py",
                     "!safety.py",
+                    "!escalation.py",
                     "!orchestrator.py",
                     "!campus_time.py",
                     "!history.py",
@@ -2057,6 +2080,7 @@ class NavigatorStack(Stack):
                         "!retrieve.py",
                         "!cards.py",
                         "!safety.py",
+                        "!escalation.py",
                         "!orchestrator.py",
                         "!campus_time.py",
                         "!history.py",
@@ -2483,6 +2507,21 @@ function handler(event) {
                         **(
                             {"streamingApiUrl": streaming_api_url}
                             if streaming_api_url is not None
+                            else {}
+                        ),
+                        # Where an escalation draft is addressed, or the key omitted
+                        # entirely when no recipient is configured. THE OMISSION IS THE
+                        # GATE a third time, and what it gates here is whether the
+                        # component exists in the browser at all: with no recipient the
+                        # frontend renders no escalation UI even if a response somehow
+                        # carried a draft (frontend/src/components/ConversationTurnView.tsx).
+                        #
+                        # The address is not secret - it is a published campus mailbox, and
+                        # every draft shows it to the student before they send anything - so
+                        # a world-readable config.json is the right place for it.
+                        **(
+                            {"escalationRecipient": escalation_cfg["recipient"]}
+                            if escalation_cfg is not None
                             else {}
                         ),
                     },

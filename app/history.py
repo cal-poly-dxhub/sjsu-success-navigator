@@ -16,7 +16,8 @@ The item shapes are the doc's, not this module's invention:
     conversation header   pk=USER#<sub>   sk=CONV#<convId>
                           title, createdAt, lastActivityAt, messageCount
     message               pk=USER#<sub>   sk=MSG#<convId>#<ulid>
-                          role, text, cards (URLs already resolved), createdAt
+                          role, text, cards (URLs already resolved),
+                          escalation (the assembled email draft), createdAt
 
 plus two items that are not history at all and share the partition because the partition is
 already the user (app/ratelimit.py and app/streaming.py; claim_message_allowance and
@@ -170,6 +171,9 @@ class DisplayMessage:
     role: str
     text: str
     cards: list[dict[str, Any]]
+    # The email draft this turn offered, as it was assembled then. Display-only, exactly
+    # like the cards beside it: it never goes back to the model.
+    escalation: dict[str, Any] | None
     created_at: str | None
 
 
@@ -226,6 +230,7 @@ class ConversationStore:
         role: str,
         text: str,
         cards: list[dict[str, Any]] | None = None,
+        escalation: dict[str, Any] | None = None,
     ) -> str:
         """Append one message and return its sort key.
 
@@ -237,6 +242,12 @@ class ConversationStore:
         and what the model must never be handed back. It is absent on a user message and on
         an assistant reply that made none - an empty list would claim the model produced a
         card group that it did not.
+
+        `escalation` is the assembled email draft, stored for the OPPOSITE reason the safety
+        panel is not (below): it is not reproducible. It was assembled from a recipient and
+        a subject that live in deploy config and from the address on the token that turn was
+        sent with, so re-deriving it later would render whatever those say today rather than
+        what the student was actually shown. Absent when the turn made no offer.
 
         The safety panel is NOT stored. It is server-authored from the model's keys against
         the table in app/safety.py, so it is reproducible rather than recorded, and the doc
@@ -252,6 +263,8 @@ class ConversationStore:
         }
         if cards:
             item["cards"] = cards
+        if escalation:
+            item["escalation"] = escalation
 
         self._table_resource().put_item(Item=item)
         self._touch_header(
@@ -710,13 +723,14 @@ class ConversationStore:
                 "#role": "role",
                 "#text": "text",
                 "#cards": "cards",
+                "#escalation": "escalation",
                 "#createdAt": "createdAt",
             },
             ExpressionAttributeValues={
                 ":pk": f"USER#{user_id}",
                 ":prefix": f"MSG#{conversation_id}#",
             },
-            ProjectionExpression="sk, #role, #text, #cards, #createdAt",
+            ProjectionExpression="sk, #role, #text, #cards, #escalation, #createdAt",
             ScanIndexForward=False,
             Limit=limit,
             # Same reason as the list above: a student who sends a turn and immediately
@@ -734,11 +748,13 @@ class ConversationStore:
                 )
                 continue
             cards = item.get("cards")
+            escalation = item.get("escalation")
             messages.append(
                 DisplayMessage(
                     role=role,
                     text=text,
                     cards=list(cards) if isinstance(cards, list) else [],
+                    escalation=dict(escalation) if isinstance(escalation, dict) else None,
                     created_at=item.get("createdAt"),
                 )
             )

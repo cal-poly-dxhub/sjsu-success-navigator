@@ -182,6 +182,14 @@ def lambda_handler(event, context):
                 for batch in (response.statement_batches or [])
                 for card in batch.cards
             ],
+            # Stored beside the cards, for the same reason and by the same rule as the
+            # buffered path (app/handler.py, _stored_escalation): a reopened conversation
+            # re-renders the bytes the student was shown rather than reassembling them.
+            escalation=(
+                response.escalation.model_dump(by_alias=True)
+                if response.escalation is not None
+                else None
+            ),
         )
     except Exception:
         logger.exception("Could not record the assistant's reply; sending it anyway")
@@ -214,9 +222,10 @@ def lambda_handler(event, context):
     sink.final(response.model_dump(by_alias=True))
 
     logger.info(
-        "ws turn cards=%s safety=%s calls=%s in=%s out=%s frames=%s gone=%s",
+        "ws turn cards=%s safety=%s escalation=%s calls=%s in=%s out=%s frames=%s gone=%s",
         sum(len(batch.cards) for batch in (response.statement_batches or [])),
         response.safety_handoff is not None,
+        response.escalation is not None,
         usage.model_calls,
         usage.input_tokens,
         usage.output_tokens,

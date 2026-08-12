@@ -22,6 +22,7 @@ export function createConversationTurn(
 		cards?: StatementCard[];
 		trailingText?: string;
 		safetyHandoff?: ChatResponse['safetyHandoff'];
+		escalation?: ChatResponse['escalation'];
 		query?: string;
 		id?: string;
 		createdAt?: number;
@@ -39,6 +40,7 @@ export function createConversationTurn(
 		trailingText: options?.trailingText,
 		cards,
 		safetyHandoff: options?.safetyHandoff,
+		escalation: options?.escalation,
 		query: options?.query,
 		revealedChars: options?.revealedChars,
 		createdAt: options?.createdAt ?? Date.now(),
@@ -114,10 +116,21 @@ export function turnsFromStoredMessages(
 	let pendingQuery: string | undefined;
 	let pendingAt: number | undefined;
 
-	const push = (text: string, options: { cards?: StatementCard[]; createdAt?: number }) => {
+	const push = (
+		text: string,
+		options: {
+			cards?: StatementCard[];
+			escalation?: StoredMessage['escalation'];
+			createdAt?: number;
+		},
+	) => {
 		turns.push(
 			createConversationTurn(text, {
 				cards: options.cards,
+				// The draft as it was assembled when the turn happened, straight off the
+				// stored record. Never rebuilt here: a conversation reopened next month must
+				// show where its message was actually going, not where config points today.
+				escalation: options.escalation,
 				query: pendingQuery,
 				createdAt: pendingAt ?? options.createdAt,
 				id: `${conversationId}-${turns.length}`,
@@ -141,7 +154,11 @@ export function turnsFromStoredMessages(
 			continue;
 		}
 
-		push(message.text, { cards: message.cards, createdAt });
+		push(message.text, {
+			cards: message.cards,
+			escalation: message.escalation,
+			createdAt,
+		});
 	}
 
 	if (pendingQuery !== undefined) push('', {});
@@ -172,6 +189,7 @@ export function turnsFromResponse(response: ChatResponse): ConversationTurn[] {
 		return [
 			createConversationTurn(response.conversationalText, {
 				trailingText: response.trailingText,
+				escalation: response.escalation,
 				phase: 'conversational',
 			}),
 		];
@@ -185,6 +203,9 @@ export function turnsFromResponse(response: ChatResponse): ConversationTurn[] {
 				// The response carries the prose of its LAST turn only, so only that turn
 				// can own the half of it that sits under the cards.
 				trailingText: index === batches.length - 1 ? response.trailingText : undefined,
+				// Same rule as the trailing prose: the response carries ONE turn's offer, and
+				// it belongs to the turn that owns the prose.
+				escalation: index === batches.length - 1 ? response.escalation : undefined,
 				query: batch.query,
 				id: batch.id,
 				createdAt: batch.createdAt,

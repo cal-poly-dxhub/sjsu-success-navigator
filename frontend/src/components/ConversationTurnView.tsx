@@ -6,6 +6,7 @@ import { ConversationalBubble } from './ConversationalBubble';
 import { dealDurationMs } from './CardDeck';
 import { scrollElementToTop } from '../lib/scrollAnchor';
 import { RagGrid } from './StatementStack';
+import { EscalationDraft } from './EscalationDraft';
 import { SafetyHandoff } from './SafetyHandoff';
 import { UserPrompt } from './UserPrompt';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
@@ -24,6 +25,8 @@ type ConversationTurnViewProps = {
 	onTypingChange?: (typing: boolean) => void;
 	onPhaseChange: (turnId: string, phase: RagPhase | 'done') => void;
 	onFollowup: (prompt: string) => void;
+	/** Whether this deployment configured a recipient - see ConversationFeed. */
+	escalationEnabled?: boolean;
 };
 
 export function ConversationTurnView({
@@ -34,6 +37,7 @@ export function ConversationTurnView({
 	onTypingChange,
 	onPhaseChange,
 	onFollowup,
+	escalationEnabled = false,
 }: ConversationTurnViewProps) {
 	const reduceMotion = usePrefersReducedMotion();
 	const hasRag = turn.cards.length > 0;
@@ -41,6 +45,17 @@ export function ConversationTurnView({
 	const cardGroupRef = useRef<HTMLDivElement>(null);
 	const anchoredRef = useRef(false);
 	const trailingText = turn.trailingText?.trim() ? turn.trailingText : '';
+	/**
+	 * TWO GATES, AND THE SECOND ONE IS THE BELT. The server does not put a draft on a turn
+	 * in a deployment with no recipient, and it never puts one on a safety turn - but this
+	 * component is the last thing between a stored draft and a student's screen, so it
+	 * checks both rather than trusting a payload to have been built by today's server. The
+	 * safety half is the one worth being certain about: a draft under a contact panel puts a
+	 * message somebody has to write, and then wait on, between them and a number that
+	 * answers now.
+	 */
+	const escalation =
+		escalationEnabled && !turn.safetyHandoff ? turn.escalation : undefined;
 
 	/**
 	 * IS THIS TURN ARRIVING, and therefore the one thing in this component that decides
@@ -99,6 +114,12 @@ export function ConversationTurnView({
 	// from the server, which only splits a reply around cards, but rendering the text is
 	// the right answer to being handed it anyway: prose is never dropped.
 	const showTrailing = Boolean(trailingText) && (!hasRag || (showCards && dealt));
+
+	// The offer is the last thing in the turn, so it waits for the same thing the trailing
+	// prose waits for: a draft appearing while cards are still in the air would be the one
+	// reflow under a landing group that the deal was built to avoid. An archived or reopened
+	// turn has nothing in flight and shows it immediately.
+	const showEscalation = Boolean(escalation) && (!hasRag || (showCards && dealt));
 
 	// Anchor to the top of the card group the first time it appears, once. Re-anchoring on
 	// every render would fight the student's own scrolling.
@@ -166,6 +187,15 @@ export function ConversationTurnView({
 				{/* Prose the model wrote after its cards, rendered after them. Same two
 				    treatments as the lead-in: typed while the turn is arriving, static
 				    once it is finished. */}
+				{/* Under everything: the prose, the cards it names, and any closing question.
+				    A message to a person is what is left when the pages did not do it, so it
+				    reads last rather than competing with the answer above it. */}
+				{showEscalation && escalation ? (
+					<div className="conversation-turn__escalation">
+						<EscalationDraft draft={escalation} />
+					</div>
+				) : null}
+
 				{showTrailing ? (
 					<div className="conversation-turn__trailing">
 						{isArriving ? (

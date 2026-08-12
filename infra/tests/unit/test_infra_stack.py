@@ -1078,6 +1078,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
     assert listing == [
         "campus_time.py",
         "cards.py",
+        "escalation.py",
         "handler.py",
         "history.py",
         "models.py",
@@ -1779,6 +1780,7 @@ def test_config_json_names_the_history_endpoint_the_frontend_reads():
         "measured",
         "baseline",
         "streamingApiUrl",
+        "escalationRecipient",
     }
 
 
@@ -2947,3 +2949,90 @@ def test_the_rate_counter_needs_no_new_table_and_no_new_grant():
         "AttributeName": "expiresAt",
         "Enabled": True,
     }
+
+
+# --- Escalate to a human ------------------------------------------------------------------
+
+
+def test_the_chat_function_carries_the_escalation_wiring():
+    """The three values that let a turn assemble a draft, reaching the function that does it.
+
+    THE RECIPIENT IS SPELLED IN TWO PLACES ON PURPOSE - here and in config.json - because
+    the two consumers need different halves of the same decision: the server assembles the
+    message, and the browser decides whether the component exists at all. Both come from one
+    resolved value, so they cannot drift.
+    """
+    from infra.config import resolve_escalation
+
+    escalation = resolve_escalation(load_config())
+    env = _resource_named(_template(), "AWS::Lambda::Function", "ChatFunction")["Properties"][
+        "Environment"
+    ]["Variables"]
+
+    assert env["ESCALATION_RECIPIENT"] == escalation["recipient"]
+    assert env["ESCALATION_SUBJECT"] == escalation["subject"]
+    assert env["ESCALATION_MAX_CHARS"] == str(escalation["max_chars"])
+
+
+def test_the_escalation_module_is_in_the_functions_that_import_it():
+    """app/orchestrator.py and app/prompts.py both import escalation.py, so a bundle without
+    it is an ImportError on the first invocation rather than a missing feature. The file
+    lists are explicit (no directory glob), which is exactly why a new module has to be added
+    to them by hand - and why this asserts it was."""
+    template = _template()
+    for function in ("ChatFunction", "ChatStreamWorkerFunction"):
+        resource = _resource_named(template, "AWS::Lambda::Function", function)
+        staged = _staged_asset_dir(function)
+        assert (staged / "escalation.py").exists(), f"{function} cannot import escalation"
+        assert (staged / "orchestrator.py").exists(), resource["Properties"]["Handler"]
+
+
+def test_the_escalation_path_is_gated_by_config_and_leaves_no_trace_when_off():
+    """A blank recipient must remove the whole path: no variables on the function, no key in
+    config.json.
+
+    THE OMISSION IS THE GATE, and it reaches further here than for the cost panel. With no
+    variables the function's own prompt builder leaves the tag out of the system prompt
+    (app/prompts.py), so the model is never taught a contract this deployment cannot honour -
+    which is a stronger guarantee than a component checking a flag.
+    """
+    config = copy.deepcopy(load_config())
+    config["escalation"]["recipient"] = ""
+
+    outdir = tempfile.mkdtemp()
+    app = cdk.App(outdir=outdir)
+    NavigatorStack(app, "SjsuNavigatorStack", config=config)
+    app.synth()
+    template = json.loads((Path(outdir) / "SjsuNavigatorStack.template.json").read_text())
+
+    chat = None
+    for logical_id, resource in template["Resources"].items():
+        if resource["Type"] == "AWS::Lambda::Function" and logical_id.startswith("ChatFunction"):
+            chat = resource
+    assert chat is not None
+    env = chat["Properties"]["Environment"]["Variables"]
+    assert not [key for key in env if key.startswith("ESCALATION_")]
+
+    staged = None
+    for logical_id, resource in template["Resources"].items():
+        if not logical_id.startswith("SiteConfigDeployment"):
+            continue
+        keys = (resource.get("Properties") or {}).get("SourceObjectKeys") or []
+        if len(keys) == 1:
+            staged = Path(outdir) / ("asset." + keys[0].removesuffix(".zip"))
+    assert staged is not None, "the config.json deployment should still exist"
+
+    text = (staged / "config.json").read_text()
+    assert "escalationRecipient" not in text
+    assert '"chatApiUrl"' in text, "turning the path off must not disturb the rest"
+
+
+def test_config_json_publishes_the_escalation_recipient_when_it_is_configured():
+    """The browser needs the address to know the feature exists at all. It is not a secret -
+    it is a published campus mailbox, and every draft shows it to the student before they
+    send anything - so a world-readable file is the right place for it."""
+    from infra.config import resolve_escalation
+
+    staged = (_staged_asset_dir("SiteConfigDeployment") / "config.json").read_text()
+
+    assert resolve_escalation(load_config())["recipient"] in staged

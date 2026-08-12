@@ -128,6 +128,13 @@ _CARD_TITLE_MIN_CHARS = 20
 _CARD_DESC_MIN_CHARS = 100
 _CARD_FOLLOWUP_MIN_CHARS = 20
 
+# The floor on escalation.max_chars, and the same dropped-digit detector one size up: 120
+# is a plausible typo for 1200 and would take the feature off the air rather than shorten
+# anything, because this is the one cap whose violation drops the offer. Three hundred
+# characters is about a paragraph, which is the shortest a message to a person can be and
+# still say what happened. See resolve_escalation.
+_ESCALATION_MIN_CHARS = 300
+
 # DynamoDB table names: 3-255 characters of letters, digits, '_', '-' and '.' (verified
 # against the CreateTable API reference, 2026-08-11). Wider than the S3 Vectors charset -
 # uppercase and underscores are both legal here - which is exactly why it gets its own
@@ -1125,6 +1132,86 @@ def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def resolve_escalation(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The `escalation` block: the email draft a turn can offer to send to a human.
+
+    Returns None when the block is absent or `recipient` is blank, and the stack then sets
+    no ESCALATION_* variables on the chat function and stamps no `escalationRecipient` into
+    config.json. THE ABSENCE IS THE GATE, the shape resolve_cost_model and resolve_okta
+    already use, and here it reaches further than either: with no address the system prompt
+    never mentions the tag (app/prompts.py), so the model is not taught a contract whose
+    output the server would drop, and the browser has no recipient, so the component is not
+    in the page at all.
+
+    OFF IS NOT AN ERROR. A deployment with nowhere to route a student is the honest state of
+    an install that has not agreed a mailbox with the campus yet.
+
+    THE ADDRESS IS VALIDATED SHALLOWLY - one `@`, no whitespace - and deliberately not with
+    a full RFC 5322 pattern. What is being caught is a config mistake that would otherwise
+    surface as a mail client refusing to open in front of a student: an empty local part, a
+    display name pasted in with the address, a stray comma making it two recipients. One
+    recipient, because the draft is addressed to one office.
+
+    `max_chars` is the draft prose's guard, and it is the one cap in this file whose
+    violation DROPS rather than truncates (app/escalation.py), so its floor is generous: a
+    dropped digit here would silently stop the feature working rather than shorten anything.
+    """
+    escalation_cfg = config.get("escalation")
+    if not escalation_cfg:
+        return None
+    if not isinstance(escalation_cfg, dict):
+        raise ValueError("escalation must be a mapping.")
+
+    recipient = escalation_cfg.get("recipient")
+    if recipient is None or (isinstance(recipient, str) and not recipient.strip()):
+        return None
+    if not isinstance(recipient, str):
+        raise ValueError(
+            f"escalation.recipient must be an email address (got {recipient!r}). Leave it "
+            "out or empty to turn the escalate-to-human path off."
+        )
+    recipient = recipient.strip()
+    local, separator, domain = recipient.partition("@")
+    if not separator or not local or not domain or any(c.isspace() for c in recipient):
+        raise ValueError(
+            f"escalation.recipient must be one plain email address (got {recipient!r}): a "
+            "local part, an @, and a domain, with no display name and no second address. "
+            "It is put straight into a mailto the student's mail client has to open."
+        )
+    if "," in recipient or ";" in recipient:
+        raise ValueError(
+            f"escalation.recipient must name ONE mailbox (got {recipient!r}). A draft is "
+            "addressed to one office; a list here would send every student's message to "
+            "everybody on it."
+        )
+
+    subject = escalation_cfg.get("subject")
+    if not isinstance(subject, str) or not subject.strip():
+        raise ValueError(
+            "escalation.subject must be a non-empty string: it is the subject line on "
+            "every draft, and staff triage on it before they read anything else."
+        )
+
+    max_chars = escalation_cfg.get("max_chars")
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int):
+        raise ValueError(
+            f"escalation.max_chars must be an integer (got {max_chars!r})."
+        )
+    if max_chars < _ESCALATION_MIN_CHARS:
+        raise ValueError(
+            f"escalation.max_chars ({max_chars}) is below {_ESCALATION_MIN_CHARS}, which "
+            "is too small to hold a message to a person. Unlike the card caps, going over "
+            "this one DROPS the offer rather than shortening it, so a dropped digit here "
+            "turns the feature off silently instead of truncating anything."
+        )
+
+    return {
+        "recipient": recipient,
+        "subject": subject.strip(),
+        "max_chars": max_chars,
+    }
+
+
 def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The `okta` block: the SAML identity provider federated into the chat user pool.
 
@@ -1235,6 +1322,11 @@ def validate_config(config: Dict[str, Any]) -> None:
     # synth here, where the message can name the key, rather than deploying an endpoint
     # that bills one API Gateway message per token.
     resolve_streaming(config)
+    # Once more: None when no recipient is configured, which is the honest state of an
+    # install that has not agreed a mailbox with the campus yet. A CONFIGURED block with a
+    # malformed address still fails here rather than reaching a student as a mail client
+    # that refuses to open.
+    resolve_escalation(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:

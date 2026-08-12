@@ -23,6 +23,12 @@ type ConversationFeedProps = {
 	onTypingChange?: (typing: boolean) => void;
 	onPhaseChange: (turnId: string, phase: RagPhase | 'done') => void;
 	onFollowup: (prompt: string) => void;
+	/**
+	 * Whether this deployment has anywhere to escalate to (config.json's
+	 * escalationRecipient). Passed down rather than read here so one fetch at the top of the
+	 * app decides it for every turn, exactly as the cost panel's presence is decided.
+	 */
+	escalationEnabled?: boolean;
 };
 
 export function ConversationFeed({
@@ -35,6 +41,7 @@ export function ConversationFeed({
 	onTypingChange,
 	onPhaseChange,
 	onFollowup,
+	escalationEnabled = false,
 }: ConversationFeedProps) {
 	const reduceMotion = usePrefersReducedMotion();
 	const activeId = turns[turns.length - 1]?.id;
@@ -64,6 +71,7 @@ export function ConversationFeed({
 						}
 						onPhaseChange={onPhaseChange}
 						onFollowup={onFollowup}
+						escalationEnabled={escalationEnabled}
 					/>
 				))}
 				{pendingPrompt ? (

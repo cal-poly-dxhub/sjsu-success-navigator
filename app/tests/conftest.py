@@ -316,9 +316,15 @@ def stored(role, text):
     return StoredMessage(role=role, text=text, sort_key=f"MSG#C#{role}-{text[:4]}")
 
 
-def displayed(role, text, cards=None, created_at="2026-08-11T00:00:00Z"):
+def displayed(
+    role, text, cards=None, escalation=None, created_at="2026-08-11T00:00:00Z"
+):
     return DisplayMessage(
-        role=role, text=text, cards=list(cards or []), created_at=created_at
+        role=role,
+        text=text,
+        cards=list(cards or []),
+        escalation=escalation,
+        created_at=created_at,
     )
 
 

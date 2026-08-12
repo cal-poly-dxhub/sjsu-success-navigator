@@ -119,6 +119,49 @@ cards:
   # logged at WARNING.
   followup_max_chars: 120
 
+# --- Escalate to a human (the email draft) --------------------------------------------
+#
+# ONE MORE MODEL TAG, and the only one whose output leaves the app: on a turn that should
+# reach a person, the model writes <escalate_to_human>...</escalate_to_human> and the
+# server assembles a finished email out of it. The student presses one button, their own
+# mail client opens with the draft in it, and they send it themselves.
+#
+# NOTHING SENDS FROM THIS INFRASTRUCTURE. No SES, no verified sending identity, no
+# server-side send path, and the deliberate consequence is that a staff reply goes back to
+# the address the student actually reads - their own - rather than to a no-reply mailbox
+# nobody owns. It also means the last edit is theirs: what we assemble is a draft.
+#
+# THE ABSENCE OF `recipient` IS THE GATE, in the shape cost_model and okta already use.
+# With it blank or the block missing there is no address to write to, so: the system
+# prompt never mentions the tag, the chat function is given no escalation variables, and
+# config.json carries no recipient - which is what keeps the component out of the browser
+# rather than rendering an offer that goes nowhere.
+escalation:
+  # Where the draft is addressed. SJSU Cares is the destination the app already offers as
+  # "Talk to a person" (frontend/src/lib/sjsuCares.ts, verified 2026-08-06), so it is the
+  # same human handoff by another route. Change this line to point the drafts elsewhere;
+  # blank it to take the whole feature off.
+  recipient: sjsucares@sjsu.edu
+  # The subject line, fixed here rather than model-authored. A subject is the one part of
+  # the message staff triage on before reading it, so it says the same thing every time -
+  # and a model-written subject is a second place a hallucinated specific could land.
+  subject: "A student would like to talk with someone"
+  # A GUARD on the draft's prose, and it behaves differently from every cap in `cards`
+  # above: over this, the offer is DROPPED and logged at WARNING, never truncated. A
+  # half-sentence email is worse than no email, and the student cannot see what was cut
+  # until it is already in their outbox.
+  #
+  # Its own number, deliberately exempt from desc_max_chars: a card description is one or
+  # two sentences under a title, and this is a paragraph or two of a message to a person.
+  # Generous against that steer for the same reason the card guards are generous against
+  # theirs - ordinary variance must not trip it.
+  #
+  # It is NOT the mailto budget. The browser measures the PERCENT-ENCODED URL against
+  # ~2,000 characters (Outlook on Windows fails silently past that, and one non-ASCII
+  # character can cost nine), and a draft that passes this cap can still miss that one -
+  # which costs the button, not the draft (frontend/src/lib/mailtoDraft.ts).
+  max_chars: 1200
+
 chat:
   # The agent loop's safety cap on Converse round trips. Camp's value (6), but a config
   # knob rather than a literal default, and the handler LOGS when it hits: camp fell

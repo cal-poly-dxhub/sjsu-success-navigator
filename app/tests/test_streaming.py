@@ -525,3 +525,4 @@ def test_the_final_flush_continues_the_preview_rather_than_restarting_it(monkeyp
     streamed = "".join(f["text"] for f in management.of_type("delta"))
     assert streamed == "Two places can help with that.\n\nand a little more"
     assert management.of_type("delta")[0]["text"] == "Two places can help with that."
+

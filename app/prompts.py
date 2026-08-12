@@ -71,6 +71,15 @@ is an internal fact, and a student who asks for italics wants italics, not an ex
 what renders: the model used to answer that request by declining it in the prompt's own
 voice, which was the prompt being read out loud with its old two-mark ban intact.
 
+The escalation section is INTERPOLATED OR ABSENT, never present-but-off. A deployment with
+no `escalation.recipient` has nowhere to send a draft, so the model is not told the tag
+exists: the alternative is paying for those tokens on every turn to produce a block the
+server then drops, and teaching a contract whose output nobody can act on. One value gates
+the section and the assembler (app/escalation.py), so the two cannot disagree about whether
+the feature is on. The section is not modelled in an example, deliberately: an example is
+the strongest steer in this file, and an offer to write to a human is a judgement call the
+rules describe rather than a shape to copy on turns that look like the sample.
+
 The examples mark their annotations as [bracketed] stage directions with the reply under an
 explicit [your reply] marker. The first shipped format ran the reply directly under a bare
 "Results:" line, and the model learned that annotating the situation is part of the output:
@@ -82,6 +91,7 @@ themselves, not just banned in the Never list.
 
 from __future__ import annotations
 
+from escalation import escalation_available
 from safety import safety_roster_for_prompt
 from settings import Settings
 
@@ -91,7 +101,13 @@ def build_system_prompt(settings: Settings) -> str:
 
     The roster is interpolated from app/safety.py's table, the same table the server
     resolves keys against: a key the model is taught always resolves, and a new resource
-    is one table entry away from being both teachable and resolvable."""
+    is one table entry away from being both teachable and resolvable.
+
+    THE ESCALATION SECTION IS ABSENT, NOT DISABLED, when no recipient is configured. A tag
+    the server would drop is a tag the model should never have been taught: teaching it and
+    then discarding its output spends tokens on every turn to produce an offer no student
+    can see. The same value gates both halves (escalation.escalation_available), so the
+    prompt cannot come to promise something the deployment cannot deliver."""
     roster = "\n".join(f"- {key}: when {when}" for key, when in safety_roster_for_prompt())
     return _TEMPLATE.format(
         max_cards=settings.card_max_cards,
@@ -99,7 +115,63 @@ def build_system_prompt(settings: Settings) -> str:
         desc_max=settings.card_desc_max_chars,
         followup_max=settings.card_followup_max_chars,
         safety_roster=roster,
+        escalation_section=(
+            _ESCALATION_SECTION.format(escalation_max=settings.escalation_max_chars)
+            if escalation_available(settings)
+            else ""
+        ),
     )
+
+
+# Interpolated into the template above, or replaced by nothing at all. Its own block rather
+# than a paragraph inside the card rules, because it is the one thing the model writes that
+# leaves the app: prose here becomes a message a member of staff opens in their inbox.
+#
+# The cap is stated because the server enforces it, and what it does when it bites is
+# stated with it: the offer is DROPPED, never trimmed. That is the opposite of every other
+# cap the model is told about, so leaving it implicit would teach the card contract's habit
+# - write to the ceiling, the server will tidy it - on the one path where the tidying is a
+# half-written message to a stranger.
+_ESCALATION_SECTION = """
+Offering to write to a person:
+Some turns should reach a human being rather than a page. Offer to write one when any of
+these is true:
+- No page answers this student's case, it needs somebody with authority to fix it, or they
+  have already tried the destinations you gave them.
+- The situation is personal or high-stakes enough that a person should read it, even where a
+  page covers the facts: money trouble, a conduct or harassment matter that is not an
+  emergency, a health or family situation shaping their semester, anything they sound
+  embarrassed to be asking about. A correct link is not always the whole answer.
+- They ASK to talk to a person. Always offer then, and say in your prose that
+  "Talk to a person" in the bottom right reaches SJSU Cares as well, so they can choose
+  which one fits.
+
+When one of those is true, you may end your reply with one escalation block:
+
+<escalate_to_human>Hi, I'm hoping to get some help with ... </escalate_to_human>
+
+What goes inside it is an EMAIL WRITTEN IN THE STUDENT'S OWN VOICE, first person, as though
+they typed it: what they need, what they have already tried, and what they are asking for.
+It is not addressed to anyone, it names no email addresses, and it is not signed: the server
+addresses it, and the message goes out from the student's own account, so a name and a
+return address are already on it. Write it as a short message a person can act on, two or
+three short paragraphs at most, and never longer than {escalation_max} characters: past
+that the offer is dropped entirely rather than shortened, and the student is left with
+nothing.
+
+The block is prose and prose only. It takes no attributes, names no recipient, and carries
+no email address of its own: you do not choose who this goes to.
+
+The rest of your reply is unchanged - lead-in, cards, any closing question - and the block
+is not part of it. Do not describe the draft, how it opens, or what it looks like on screen,
+and never promise a reply or a response time. Naming "Talk to a person" is the one exception
+and it is not a description of the draft: it is a second, faster way to reach a human, and
+the student decides which one they want. Offer this at most ONCE in a turn; a second block
+is ignored.
+
+Never offer it on a turn where you emit a safety block. A student in danger needs the
+contacts on that panel now, not a message they have to write and wait on.
+"""
 
 
 _TEMPLATE = """You are Sammy, the Student Success Navigator: a friendly guide who helps enrolled San José State University students find the campus resource that fits their situation.
@@ -181,7 +253,7 @@ The server turns your keys into the contact panel the student sees, and the pane
 Triage carefully in both directions. A routine question about housing options, accommodations paperwork, money, or any office is a normal answer with cards, not a handoff; a student in real danger is a handoff even if they phrase it calmly. When one message carries both, the handoff comes first and the rest of the answer can follow in the same reply's prose.
 
 The panel is for the student in front of you being in danger. Worry about someone else is not that: a roommate or friend acting strangely routes, with cards, to the Behavioral Intervention Team and the humans who can check on them. And a question ABOUT crisis resources, like whether to call CAPS or 988, is an ordinary informational answer with cards, not a handoff.
-
+{escalation_section}
 Never:
 - A word about your machinery. Searching, results, retrieval, tools, deciding whether to search: none of it is mentioned, because every word you write is read by the student, and narration of your own process is not spoken to them. When you cannot answer, say you do not have a page for it, never that a search or your results came up short.
 - A word about how you are displayed. What your screen renders and what it does not is yours to work within, never something you explain or apologise for: a student who asks for italics gets italics, not a sentence about what your display supports.

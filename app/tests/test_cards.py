@@ -16,6 +16,8 @@ mechanically out of retrieved page text, so a broken response became confident r
 nobody had written.
 """
 
+import logging
+
 import pytest
 
 import cards
@@ -859,7 +861,7 @@ def test_a_less_than_sign_that_is_not_ours_streams_intact():
 def test_every_tag_in_the_contract_stops_the_preview():
     """One vocabulary, shared with the scrub. A tag this did not know about would reach a
     student as markup."""
-    for tag in ("card", "title", "desc", "followup", "safety"):
+    for tag in ("card", "title", "desc", "followup", "safety", "escalate_to_human"):
         assert cards.preview_safe_prefix(f"prose <{tag}>x</{tag}>") == "prose "
         assert cards.preview_safe_prefix(f"prose </{tag}>") == "prose "
     assert cards.preview_safe_prefix("prose <SAFETY>crisis-988</SAFETY>") == "prose "
@@ -885,3 +887,104 @@ def test_the_preview_does_not_cap_or_normalise_anything():
     long_text = "x" * 5000
     assert cards.preview_safe_prefix(long_text) == long_text
     assert cards.preview_safe_prefix("a — b") == "a — b"
+
+
+# --- the escalate-to-human block ------------------------------------------------------
+#
+# The tag carries PROSE ONLY. There is no attribute group in its pattern and no field
+# inside it, so a model-chosen recipient is not something this parser rejects - it is
+# something the shape has no room for, exactly as a card's URL is. What these cover is the
+# other half: the block's content is the body of an email, so it must leave the prose the
+# student reads, and a turn makes one offer however many blocks arrive.
+
+
+def test_the_escalation_block_is_parsed_and_never_rendered():
+    parsed = parse_model_response(
+        "That one needs a person.\n\n"
+        "<escalate_to_human>Hi, I need help with a registration hold.</escalate_to_human>"
+    )
+
+    assert parsed.escalation_prose == "Hi, I need help with a registration hold."
+    assert parsed.prose == "That one needs a person."
+    assert "escalate_to_human" not in parsed.prose
+    assert "registration hold" not in parsed.prose, (
+        "the block's content is a draft email, not a second copy of the bubble"
+    )
+
+
+def test_no_escalation_tag_is_none_rather_than_an_empty_offer():
+    """None and "" are different states: no tag at all, versus a tag the model left empty.
+    The second is a fault worth logging (app/escalation.py) and the first is every turn."""
+    assert parse_model_response("Just an answer.").escalation_prose is None
+    assert parse_model_response(
+        "<escalate_to_human>  </escalate_to_human>"
+    ).escalation_prose == ""
+
+
+def test_an_escalation_block_under_the_cards_still_counts():
+    """Read from BOTH sides of the split, like the safety tag: where a block sits decides
+    where prose renders, never whether a tag counts."""
+    raw = (
+        "Here is what I found.\n\n"
+        '<card ref="1"><title>Registrar</title><desc>Holds and enrolment.</desc></card>\n\n'
+        "<escalate_to_human>Hi, could someone look at my hold?</escalate_to_human>"
+    )
+
+    parsed = parse_model_response(raw)
+
+    assert parsed.escalation_prose == "Hi, could someone look at my hold?"
+    assert parsed.trailing_prose == ""
+    assert len(parsed.cards) == 1
+
+
+def test_a_second_escalation_block_is_ignored_and_logged(caplog):
+    """One turn, one offer. Merging them or preferring the longer one would put an
+    editorial rule in a parser; the first is the one the model wrote first."""
+    raw = (
+        "<escalate_to_human>The first draft.</escalate_to_human>\n\n"
+        "<escalate_to_human>The second draft.</escalate_to_human>"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        parsed = parse_model_response(raw)
+
+    assert parsed.escalation_prose == "The first draft."
+    assert "2 escalate_to_human blocks" in caplog.text
+    assert "The second draft." not in parsed.prose
+
+
+def test_the_escalation_block_keeps_its_paragraphs():
+    """A draft is read by a person, so a paragraph break the model wrote is one they see -
+    the same reason <desc> keeps its line breaks, for a body of text rather than a list."""
+    raw = (
+        "<escalate_to_human>Hi,\n\nI have tried the advising page and the form.\n\n"
+        "Could someone help?</escalate_to_human>"
+    )
+
+    assert parse_model_response(raw).escalation_prose == (
+        "Hi,\n\nI have tried the advising page and the form.\n\nCould someone help?"
+    )
+
+
+def test_a_dash_in_a_draft_is_normalised_like_every_other_display_string():
+    """The draft is text a member of staff reads, so it obeys the same one display
+    invariant every other string in this app does."""
+    parsed = parse_model_response(
+        "<escalate_to_human>I am stuck — could someone help?</escalate_to_human>"
+    )
+
+    assert "—" not in parsed.escalation_prose
+    assert parsed.escalation_prose == "I am stuck, could someone help?"
+
+
+def test_the_fallback_scrub_removes_an_escalation_block_whole():
+    """The zero-card fallback rebuilds the bubble from the COMPLETE reply, so a block left
+    in it would show the student an email they have not sent as though it were the answer."""
+    raw = (
+        "Sorry, I do not have a page for that.\n"
+        "<escalate_to_human>Hi, I am trying to find out about a fee.</escalate_to_human>"
+    )
+
+    scrubbed = strip_card_tags(raw)
+
+    assert scrubbed == "Sorry, I do not have a page for that."

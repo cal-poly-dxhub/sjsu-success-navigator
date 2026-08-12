@@ -1137,3 +1137,193 @@ def test_an_absent_moment_is_read_from_the_clock(monkeypatch, no_retrieval):
 
     assert "Current date and time on campus:" in _user_turn(fake.kwargs["messages"])
     assert "(America/Los_Angeles)" in _user_turn(fake.kwargs["messages"])
+
+
+# --- the escalate-to-human offer ------------------------------------------------------
+#
+# The loop's part in this is small and worth pinning anyway: it is where the draft is
+# assembled, once, and where a safety turn's ban on offers is enforced beside the card
+# drop. Everything about WHAT the draft says is app/escalation.py's (test_escalation.py).
+
+_ESCALATION_SETTINGS = Settings(
+    **{
+        **_SETTINGS.__dict__,
+        "escalation_recipient": "sjsucares@sjsu.edu",
+        "escalation_subject": "A student would like to talk with someone",
+    }
+)
+
+
+def test_a_tagged_turn_carries_an_assembled_draft(monkeypatch, no_retrieval):
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "That one really needs a person.\n\n"
+                "<escalate_to_human>Hi, I have a hold I cannot clear.</escalate_to_human>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake, settings=_ESCALATION_SETTINGS)
+
+    assert response.escalation is not None
+    assert response.escalation.to == "sjsucares@sjsu.edu"
+    assert response.escalation.body.startswith("Hi, I have a hold I cannot clear.")
+    # The draft is not the bubble. Its prose left the message the student reads.
+    assert response.conversational_text == "That one really needs a person."
+
+
+def test_an_untagged_turn_carries_no_draft(monkeypatch, no_retrieval):
+    fake = _FakeBedrock([_text_turn("Peer Connections runs drop-in tutoring.")])
+
+    response = _run(monkeypatch, fake, settings=_ESCALATION_SETTINGS)
+
+    assert response.escalation is None
+
+
+def test_a_safety_turn_never_carries_an_offer(monkeypatch, no_retrieval):
+    """The panel is the handoff. A draft under it puts a message the student has to write,
+    and then wait on, between them and a number that answers now."""
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "<safety>crisis-988</safety>\n\nPlease reach someone below.\n\n"
+                "<escalate_to_human>Hi, I could use some help.</escalate_to_human>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake, settings=_ESCALATION_SETTINGS)
+
+    assert response.safety_handoff is not None
+    assert response.escalation is None
+    assert "I could use some help" not in response.conversational_text
+
+
+def test_a_crisis_line_in_the_prose_drops_the_offer_too(monkeypatch, no_retrieval):
+    """The OTHER way into a safety turn: no tag, but prose naming a crisis line, which
+    attaches the panel after the fact. The offer has to go with the cards there as well,
+    and that drop lives beside them in app/safety.py rather than here."""
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "If it gets heavier than coursework, call 988.\n\n"
+                "<escalate_to_human>Hi, I could use some help.</escalate_to_human>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake, settings=_ESCALATION_SETTINGS)
+
+    assert response.safety_handoff is not None
+    assert response.escalation is None
+
+
+def test_no_recipient_configured_means_no_offer_however_the_model_tags_it(
+    monkeypatch, no_retrieval
+):
+    """The deployment gate, at the loop's own exit. _SETTINGS carries no recipient, which
+    is also the state in which the prompt never mentioned the tag."""
+    fake = _FakeBedrock(
+        [_text_turn("<escalate_to_human>Hi, I could use some help.</escalate_to_human>")]
+    )
+
+    response = _run(monkeypatch, fake)
+
+    assert response.escalation is None
+
+
+def test_a_streamed_turn_and_a_buffered_turn_agree_about_the_draft(monkeypatch):
+    """The same parity the cards have, for the same structural reason: both transports exit
+    through _response_from_text reading the same complete reply."""
+    reply = (
+        "That one needs a person.\n\n"
+        "<escalate_to_human>Hi, I have a hold I cannot clear.</escalate_to_human>"
+    )
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+
+    monkeypatch.setattr(
+        orchestrator, "_bedrock_client", lambda region: _FakeBedrock([_text_turn(reply)])
+    )
+    buffered = orchestrator.run_chat(ChatRequest(query="who can help?"), _ESCALATION_SETTINGS)
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_bedrock_client",
+        lambda region: _FakeStreamingBedrock([_text_events(reply)]),
+    )
+    streamed = orchestrator.run_chat(
+        ChatRequest(query="who can help?"), _ESCALATION_SETTINGS, stream=_RecordingSink()
+    )
+
+    assert buffered.escalation == streamed.escalation
+    assert buffered.escalation is not None
+
+
+def test_the_preview_never_shows_the_draft(monkeypatch):
+    """A draft is not an answer, and a student watching prose type itself out must not see
+    the email being written. preview_safe_prefix stops at the tag; this is that rule
+    reaching the socket."""
+    sink = _RecordingSink()
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+    monkeypatch.setattr(
+        orchestrator,
+        "_bedrock_client",
+        lambda region: _FakeStreamingBedrock(
+            [
+                _text_events(
+                    "That one needs a person.\n\n"
+                    "<escalate_to_human>Hi, I have a hold I cannot clear.</escalate_to_human>"
+                )
+            ]
+        ),
+    )
+
+    orchestrator.run_chat(
+        ChatRequest(query="who can help?"), _ESCALATION_SETTINGS, stream=sink
+    )
+
+    from cards import preview_safe_prefix
+
+    for accumulated in sink.texts:
+        assert "escalate_to_human" not in preview_safe_prefix(accumulated)
+        assert "I have a hold" not in preview_safe_prefix(accumulated)
+
+
+def test_a_reply_that_is_only_an_offer_still_says_something(monkeypatch, no_retrieval):
+    """The model can emit whatever it likes, including a turn that is one block and nothing
+    else. Its content is an email and is removed from the bubble, so without this the turn
+    would fall through to the loop's "I ran out of time" line - over a draft that proves it
+    did not."""
+    fake = _FakeBedrock(
+        [_text_turn("<escalate_to_human>Hi, I have a hold I cannot clear.</escalate_to_human>")]
+    )
+
+    response = _run(monkeypatch, fake, settings=_ESCALATION_SETTINGS)
+
+    assert response.escalation is not None
+    assert response.conversational_text == orchestrator.ESCALATION_FALLBACK_TEXT
+    assert orchestrator._NO_OUTPUT_TEXT not in response.conversational_text
+
+
+def test_four_blocks_back_to_back_are_still_one_offer(monkeypatch, no_retrieval):
+    """Nothing stops the model emitting several. The FIRST is the offer, the rest are logged
+    and dropped, and none of their text reaches the bubble: one turn makes one offer, and
+    that is enforced here rather than left to the prompt."""
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "Here is one.\n\n"
+                + "".join(
+                    f"<escalate_to_human>Draft number {n}.</escalate_to_human>\n\n"
+                    for n in range(1, 5)
+                )
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake, settings=_ESCALATION_SETTINGS)
+
+    assert response.escalation.body.startswith("Draft number 1.")
+    for n in range(1, 5):
+        assert f"Draft number {n}" not in response.conversational_text
