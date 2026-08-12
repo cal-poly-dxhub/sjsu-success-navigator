@@ -211,6 +211,40 @@ chat_history:
   # effect of tearing down infrastructure.
   table_name: sjsu-navigator-chat-history
 
+# --- Identity federation (Okta SAML into the chat user pool) --------------------------
+#
+# ONE KEY, SET THREE WAYS, and that is the whole feature. Empty or absent -> no identity
+# provider is created, the human app client offers COGNITO alone, and the local accounts an
+# administrator creates keep working exactly as they do today. A URL -> Cognito's managed
+# login grows a federated button and hands the pool an Okta assertion. The three settings
+# are local-only, a rehearsal org, and SJSU's tenant, and moving between them is this line.
+#
+# The absence IS the gate, in the shape the cost panel already uses (see cost_model below):
+# there is no separate `enabled` flag, because a URL is the one thing an identity provider
+# cannot be built without, so a filled-in URL that does nothing would be a state nobody
+# wants.
+#
+# WHAT IS NOT HERE, AND WHY. The provider's NAME is a constant in infra/config.py, not a
+# knob: a federated user's Cognito username is `<providerName>_<nameid>`, so renaming it
+# mints new `sub` values - the DynamoDB partition key - and orphans every conversation the
+# old identities wrote. It is named `Okta` for its ROLE, never for an org, so the rehearsal
+# tenant and SJSU's share it. Nothing else about the provider is tunable either: the
+# attribute below maps to this pool's own `email`, and the username is taken from the SAML
+# NameID (Cognito does not let it be mapped) - so there is no second mapping to get wrong.
+okta:
+  # The Okta app's SAML metadata endpoint. A URL rather than an uploaded file so Cognito
+  # re-fetches it: when the IdP's signing certificate rotates on the Okta side, federation
+  # keeps working instead of failing until somebody re-uploads a document.
+  #
+  # https only - Cognito trusts the signing certificate inside this document, so plain http
+  # would be a forgeable trust anchor (rejected at synth, and by Cognito too).
+  metadata_url: "https://integrator-6509951.okta.com/app/exk16bohofxDxsJS4698/sso/saml/metadata"
+  # The name the Okta side puts on the email claim, mapped to this pool's `email`. Config
+  # because it genuinely differs between orgs - some emit a SAML namespace URI, some
+  # `emailAddress` - and `email` is the common case. Omit the key to accept that default;
+  # do not set it to an empty string.
+  email_attribute: email
+
 generation:
   # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.
   model_id: us.anthropic.claude-sonnet-4-6
