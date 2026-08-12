@@ -147,6 +147,123 @@ def test_the_followup_prompt_is_model_authored_not_derived_from_a_section():
     assert card.actions[-1].prompt == "Can I get help with Calc 2 specifically?"
 
 
+# --- Whitespace inside a card -------------------------------------------------------------
+
+
+_BULLETED_DESC = """Sammy here.
+
+<card ref="1">
+  <title>Advising drop-ins</title>
+  <desc>Two ways in, and both get you a version an advisor has read.
+- **Email:** advising@sjsu.edu
+- **Walk in:** Clark Hall 240, weekdays 9 to 4</desc>
+  <followup>Which one is faster?</followup>
+</card>"""
+
+
+def test_a_description_keeps_the_line_breaks_the_model_wrote():
+    """The whole point of this field's separate normalisation. The display parser keys on
+    line STARTS, so a description whose newlines were collapsed into spaces reaches the
+    student as one sentence reading "... an advisor has read. - Email: ... - Walk in: ..."
+    and renders as a paragraph rather than as the list the model wrote."""
+    parsed = parse_model_response(_BULLETED_DESC)
+    body = cards_from_parsed(parsed.cards, _sources(_chunk()), _SETTINGS)[0].body
+
+    assert body.splitlines() == [
+        "Two ways in, and both get you a version an advisor has read.",
+        "- **Email:** advising@sjsu.edu",
+        "- **Walk in:** Clark Hall 240, weekdays 9 to 4",
+    ]
+
+
+def test_a_description_still_loses_its_indentation():
+    """Incidental whitespace is still incidental. A model that indents its bullets inside
+    <desc> is formatting its XML, and leading space on screen is not what it asked for."""
+    parsed = parse_model_response(
+        "<card ref='1'>"
+        "<desc>\n"
+        "      What to bring:\n"
+        "        -   Your ID\t\n"
+        "        -   The form\n"
+        "    </desc>"
+        "<title>T</title>"
+        "</card>"
+    )
+
+    assert parsed.cards[0].desc == "What to bring:\n- Your ID\n- The form"
+
+
+def test_a_run_of_blank_lines_in_a_description_closes_up():
+    """Same normalisation the prose either side of the cards already gets: a paragraph break
+    is one blank line, however many the model typed."""
+    parsed = parse_model_response(
+        '<card ref="1"><title>T</title><desc>First.\n\n\n\nSecond.</desc></card>'
+    )
+
+    assert parsed.cards[0].desc == "First.\n\nSecond."
+
+
+def test_the_other_fields_are_still_collapsed_to_one_line():
+    """Only <desc> changed. A title is a heading and a follow-up is a question sent as the
+    student's next turn - neither has anywhere to put a line break."""
+    parsed = parse_model_response(
+        '<card ref="1">'
+        "<title>Advising\n  drop-ins</title>"
+        "<desc>D</desc>"
+        "<followup>Which\n  one is faster?</followup>"
+        "</card>"
+    )
+
+    assert parsed.cards[0].title == "Advising drop-ins"
+    assert parsed.cards[0].followup == "Which one is faster?"
+
+
+def test_a_bulleted_description_is_measured_and_capped_like_any_other(caplog):
+    """The cap is unchanged and still bites - the guard does not get weaker because the
+    field now has newlines in it, and a break is a word boundary exactly like a space."""
+    settings = _settings(card_desc_max_chars=40)
+
+    with caplog.at_level("WARNING"):
+        card = cards_from_parsed(
+            parse_model_response(_BULLETED_DESC).cards, _sources(_chunk()), settings
+        )[0]
+
+    assert len(card.body) <= 40
+    assert card.body.endswith("…")
+    assert "guard cap" in caplog.text
+
+
+def test_a_bulleted_description_within_its_cap_is_not_truncated_or_logged(caplog):
+    """The newlines count toward the cap, but the cap sits far above the steer, so an
+    ordinary bulleted card must pass through whole and silently."""
+    with caplog.at_level("WARNING"):
+        card = cards_from_parsed(
+            parse_model_response(_BULLETED_DESC).cards, _sources(_chunk()), _SETTINGS
+        )[0]
+
+    assert "…" not in card.body
+    assert caplog.text == ""
+
+
+def test_truncating_a_multiline_field_leaves_no_bullet_marker_hanging():
+    """A break is a word boundary like a space, and the marker left at the cut goes with the
+    same rstrip that already takes a trailing comma or hyphen - so the ellipsis follows the
+    last whole word rather than an empty bullet."""
+    text = "Two ways in.\n- Email advising@sjsu.edu"
+
+    assert truncate_to_cap(text, 20, keep_line_breaks=True) == "Two ways in…"
+
+
+def test_truncation_still_respects_the_cap_when_line_breaks_are_kept():
+    for cap in range(10, 60):
+        result = truncate_to_cap(
+            "a line of text\n- a bullet under it\n- and another one\n" * 3,
+            cap,
+            keep_line_breaks=True,
+        )
+        assert len(result) <= cap, f"cap {cap} produced {len(result)} chars"
+
+
 # --- Where the cards sit in the reply -----------------------------------------------------
 
 

@@ -207,6 +207,31 @@ quietly absorbed by the UI. Title moved 60 to 90 on the same reasoning, its
 one-line derivation retired: titles wrap, so the layout was never protecting
 anything worth a mid-thought cut.
 
+## Formatting inside a description
+
+Two marks render in model-authored text, in the prose and inside a `<desc>` alike: `**bold**`
+and a bulleted list, one item per line, each line starting with `- `. Nothing else. The
+display parser is two constructs wide on purpose rather than a markdown library with a
+sanitizer bolted on, because the one construct this path must never gain is a link: the model
+is never shown a URL, so a model-authored URL is unrepresentable, and the renderer should stay
+unable to express one rather than be taught to and then policed
+(`frontend/src/lib/messageFormat.ts`). Unsupported syntax renders as its own characters, so
+nothing the model types can silently disappear.
+
+This is a prompt knob like the editorial balance is: the tag contract does not change, and
+nothing on the wire says whether a description is bulleted.
+
+What the SERVER owes it is one thing, and it is easy to lose: **`<desc>` keeps its line
+breaks.** A bullet is a line that starts with a marker, so a description whose newlines were
+collapsed into spaces arrives as one paragraph reading "... an advisor has read. - Email: ...
+- Walk in: ...", and the list the model wrote is gone with nothing on screen to say so. Every
+other field is still collapsed to one line, because every other field IS one line: a title is
+a heading and a follow-up is a question sent as the student's next turn. Indentation inside
+`<desc>` is still collapsed too - a model that indents its bullets is formatting its XML, not
+asking for leading space on screen - and so is a run of blank lines, the same normalisation
+the prose either side of the cards already gets. The caps are unchanged and still measured
+after that normalisation, newlines included.
+
 ## Presentation
 
 Cards carry the destinations and the specifics; the prose is a short intro. A

@@ -1,89 +1,65 @@
-import type { ReactNode } from 'react';
+import { Fragment, useMemo } from 'react';
+import type { MessageSpan } from '../lib/messageFormat';
+import { parseMessage, revealMessage } from '../lib/messageFormat';
 import './FormattedMessage.css';
 
-/** Break inline numbered steps onto their own lines for readability. */
-export function normalizeMessageLayout(text: string): string {
-	return text
-		.replace(/:\s+(\d+)\.\s+/g, ':\n\n$1. ')
-		.replace(/([.!?])\s+(\d+)\.\s+/g, '$1\n\n$2. ');
-}
+/**
+ * Model-authored reply text on screen: the prose above and below the cards, and a card's
+ * description. Bold and unordered bullets render; everything else is its own characters
+ * (docs/cards-v2.md and lib/messageFormat.ts for why the parser is two constructs wide).
+ *
+ * Every piece of model text below reaches the DOM as a React text node, so it is escaped
+ * before it is anything else and a reply containing markup is read, not run. There is no
+ * href and no src in this file, which is the display half of "the model never authors a
+ * source" - it cannot write a link because there is nothing here that would render one.
+ */
 
-/** Drop trailing partial markdown tokens while the typewriter is mid-token. */
-export function trimPartialMarkdown(text: string): string {
-	let safe = text;
-	if ((safe.match(/\*\*/g) ?? []).length % 2 === 1) {
-		safe = safe.replace(/\*\*([^*]*)$/, '$1');
-	}
-	const linkStart = safe.lastIndexOf('[');
-	if (linkStart !== -1 && !/\]\([^)]*\)/.test(safe.slice(linkStart))) {
-		safe = safe.slice(0, linkStart);
-	}
-	return safe;
-}
-
-function parseInline(text: string, keyPrefix: string): ReactNode[] {
-	const parts: ReactNode[] = [];
-	const pattern = /\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)]+)\)/g;
-	let lastIndex = 0;
-	let match: RegExpExecArray | null;
-	let tokenIndex = 0;
-
-	while ((match = pattern.exec(text)) !== null) {
-		if (match.index > lastIndex) {
-			parts.push(text.slice(lastIndex, match.index));
-		}
-		const key = `${keyPrefix}-${tokenIndex}`;
-		if (match[1] !== undefined) {
-			parts.push(<strong key={key}>{match[1]}</strong>);
-		} else {
-			parts.push(
-				<a key={key} href={match[3]} target="_blank" rel="noopener noreferrer">
-					{match[2]}
-				</a>,
-			);
-		}
-		lastIndex = match.index + match[0].length;
-		tokenIndex += 1;
-	}
-
-	if (lastIndex < text.length) {
-		parts.push(text.slice(lastIndex));
-	}
-
-	return parts.length ? parts : [text];
+function Spans({ spans }: { spans: MessageSpan[] }) {
+	return (
+		<>
+			{spans.map((span, index) =>
+				span.bold ? (
+					<strong key={index}>{span.text}</strong>
+				) : (
+					<Fragment key={index}>{span.text}</Fragment>
+				),
+			)}
+		</>
+	);
 }
 
 type FormattedMessageProps = {
 	text: string;
-	/** When true, hide incomplete markdown at the end (for typewriter). */
-	trimPartial?: boolean;
+	/**
+	 * Show only the first N RENDERED characters. The typewriter passes a rising count and
+	 * gets formatted output at every step; left off, the whole message renders.
+	 */
+	reveal?: number;
 };
 
-export function FormattedMessage({ text, trimPartial = false }: FormattedMessageProps) {
-	const source = trimPartial ? trimPartialMarkdown(text) : text;
-	const normalized = normalizeMessageLayout(source);
-	const blocks = normalized.split(/\n\n+/).filter(Boolean);
+export function FormattedMessage({ text, reveal }: FormattedMessageProps) {
+	const blocks = useMemo(() => parseMessage(text), [text]);
+	const shown = reveal === undefined ? blocks : revealMessage(blocks, reveal);
 
-	if (!blocks.length) return null;
+	if (!shown.length) return null;
 
 	return (
 		<div className="formatted-message">
-			{blocks.map((block, index) => {
-				const step = block.match(/^(\d+)\.\s+([\s\S]+)/);
-				if (step) {
-					return (
-						<p key={index} className="formatted-message__step">
-							<span className="formatted-message__step-num">{step[1]}.</span>
-							<span>{parseInline(step[2], `step-${index}`)}</span>
-						</p>
-					);
-				}
-				return (
+			{shown.map((block, index) =>
+				block.kind === 'list' ? (
+					<ul key={index} className="formatted-message__list">
+						{block.items.map((item, itemIndex) => (
+							<li key={itemIndex} className="formatted-message__item">
+								<Spans spans={item} />
+							</li>
+						))}
+					</ul>
+				) : (
 					<p key={index} className="formatted-message__para">
-						{parseInline(block, `para-${index}`)}
+						<Spans spans={block.spans} />
 					</p>
-				);
-			})}
+				),
+			)}
 		</div>
 	);
 }

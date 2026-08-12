@@ -2,10 +2,20 @@
 	display: flex;
 	flex-direction: column;
 	gap: 0.55rem;
+	/*
+	 * A token with nowhere to break wraps rather than being clipped. The card it may sit in
+	 * is `overflow: hidden` and has no horizontal scroll, so without this a long unbroken
+	 * run - a URL the model typed out, a hyphenless compound - is painted past the right
+	 * edge and simply disappears. Measured, not assumed: a card body carrying one overflowed
+	 * its box by 10px before this change and 29px after (the list indent narrows the text
+	 * column), so the clip predates the bullets and the bullets made it worse. Text is never
+	 * hidden by the layout (docs/cards-v2.md, Length caps).
+	 */
+	overflow-wrap: break-word;
 }
 
 .formatted-message__para,
-.formatted-message__step {
+.formatted-message__item {
 	margin: 0;
 	font-family: inherit;
 	font-size: inherit;
@@ -13,34 +23,26 @@
 	color: inherit;
 }
 
-.formatted-message__step {
-	display: flex;
-	gap: 0.35rem;
-	align-items: flex-start;
-	padding-left: 0.1rem;
+/*
+ * `outside` markers sit in the list's own padding, so a bullet never pokes out of the
+ * bubble or the card it is in. No height or clamp here for the same reason the card has
+ * none: the block is as tall as its own text.
+ */
+.formatted-message__list {
+	margin: 0;
+	padding-left: 1.2rem;
+	list-style: disc outside;
 }
 
-.formatted-message__step-num {
-	flex-shrink: 0;
-	font-weight: 750;
+.formatted-message__item::marker {
 	color: var(--accent-blue);
-	min-width: 1.25rem;
+}
+
+.formatted-message__item + .formatted-message__item {
+	margin-top: 0.3rem;
 }
 
 .formatted-message strong {
 	font-weight: 750;
 	color: var(--text-primary);
-}
-
-.formatted-message a {
-	color: var(--accent-blue);
-	font-weight: 650;
-	text-decoration: underline;
-	text-decoration-color: rgba(8, 90, 163, 0.35);
-	text-underline-offset: 0.12em;
-}
-
-.formatted-message a:hover,
-.formatted-message a:focus-visible {
-	text-decoration-color: var(--accent-blue);
 }
