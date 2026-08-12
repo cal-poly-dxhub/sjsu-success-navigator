@@ -181,12 +181,25 @@ eval kept scoring. Numbers earn theirs on a process answer: "how do I apply to
 EOP" is a sequence, and a paragraph of it is a sequence the student has to
 rebuild before they can follow it.
 
-**What the PROMPT permits is a separate number.** The renderer's four are a
-ceiling, not an instruction. The system prompt still offers exactly two marks
-and bans numbered lists by name (app/prompts.py, Formatting), so numbered steps
-and italics reach a student only when the model writes them regardless - which
-it does, which is why they used to arrive as literal `1.` and `*this*`. Widening
-the prompt is a prompt decision and is taken on its own.
+**What the PROMPT permits is a separate number, and it is now the same four.**
+The renderer's set is a ceiling rather than an instruction, so widening the
+prompt was its own decision; it was taken (app/prompts.py, Formatting). Before
+that the prompt offered two marks and banned numbered lists by name, so numbered
+steps and italics reached a student only when the model wrote them regardless -
+which it did, which is why they used to arrive as literal `1.` and `*this*`.
+
+Two things the prompt does that this file cannot. It states the syntax in the
+parser's terms and not markdown's, `_underscores_` excluded by name and the
+ordered marker only counting with its separator and the space after it, because
+a permission looser than the parser is how a model is told a mark works and the
+student gets asterisks. And it never lets the model describe the display to the
+student: the old ban did not just suppress italics, it got recited to a student
+who asked for them ("isn't something my display supports"), so what renders is
+now internal by rule.
+
+The prompt models two of the four and only permits the other two. A numbered
+list earns its place on a process answer, no worked example is one, and the
+examples are the length steer, so none was grown to carry one.
 
 `<desc>` keeps its line breaks, which is what lets a list of either kind survive
 the parser: a list is lines that start with a marker, and every other field is

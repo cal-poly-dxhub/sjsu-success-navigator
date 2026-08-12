@@ -133,8 +133,8 @@ def test_the_cards_carry_the_majority_of_each_worked_reply():
         )
 
 
-def test_the_prompt_permits_bold_and_bulleted_lists_in_both_places():
-    """Two marks, prose and <desc> alike. The permission has to be explicit in both places:
+def test_the_prompt_permits_all_four_marks_in_both_places():
+    """Four marks, prose and <desc> alike. The permission has to be explicit in both places:
     a model told only that the prose renders markup writes plain descriptions, and the
     descriptions are where most of the reply lives."""
     prompt = build_system_prompt(_SETTINGS)
@@ -142,24 +142,52 @@ def test_the_prompt_permits_bold_and_bulleted_lists_in_both_places():
     assert "Formatting:" in prompt
     assert "in the prose and inside a <desc> alike" in prompt
     assert "**Bold**" in prompt
+    assert "*Italics*" in prompt
     assert 'each line starting with "- "' in prompt
+    assert '"1. " or "1) "' in prompt
+
+
+def test_the_permitted_syntax_is_the_display_parsers_and_not_markdowns():
+    """A permission looser than the parser is how a model is told a mark works and the student
+    gets asterisks. Two places where markdown and messageFormat.ts disagree, so two pins:
+    `_underscores_` are not italics there (the prose carries email local parts and snake_case
+    ids, where the underscores are the text), and a numbered line counts only with its
+    separator AND the space after it - "1." alone is the characters the model typed."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "Underscores are not italics" in prompt
+    assert 'then "." or ")", then a space' in prompt
+    # The single-asterisk form is the one a model can write as `* italics *` and lose.
+    assert "no space between the asterisks and the words" in prompt
 
 
 def test_the_prompt_bans_the_constructs_nothing_renders():
-    """The load-bearing half. Only bold and unordered bullets reach the student as anything
-    other than the literal characters typed, and a typed link is worse than unrendered: it is
-    a destination nobody resolved, which is the failure the card ref contract exists to make
-    unrepresentable."""
+    """The load-bearing half, and the half that did not move: past the four marks, everything
+    reaches the student as the literal characters typed. A typed link is worse than unrendered
+    - it is a destination nobody resolved, which is the failure the card ref contract exists
+    to make unrepresentable."""
     prompt = build_system_prompt(_SETTINGS)
 
-    for banned in ("no headings", "no numbered lists", "no tables", "no images"):
+    for banned in ("no headings", "no tables", "no images"):
         assert banned in prompt, f"the formatting ban dropped {banned!r}"
     assert "no links written as bracketed text with a URL after it" in prompt
+    # And the ban that lifted stays lifted: numbered lists render now.
+    assert "no numbered lists" not in prompt
+
+
+def test_the_prompt_never_explains_its_own_display_to_the_student():
+    """The renderer's reach is internal. A student who asks for italics wants italics, and the
+    live site used to answer that request by reciting the prompt's own two-mark ban back at
+    them ("isn't something my display supports"), which is a sentence about machinery wearing
+    a formatting hat."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "A word about how you are displayed." in prompt
+    assert "not a sentence about what your display supports" in prompt
 
 
 _BANNED_MARKUP = (
     ("a heading", re.compile(r"^\s{0,3}#{1,6}\s", re.MULTILINE)),
-    ("an ordered list", re.compile(r"^\s{0,3}\d+[.)]\s", re.MULTILINE)),
     ("a table row", re.compile(r"^\s*\|.*\|", re.MULTILINE)),
     ("an image", re.compile(r"!\[[^\]]*\]\(")),
     ("a typed link", re.compile(r"\[[^\]]+\]\([^)]*\)")),
@@ -176,10 +204,16 @@ def test_no_worked_example_uses_a_construct_the_prompt_bans():
             assert match is None, f"a worked example models {name}: {match.group(0)!r}"
 
 
-def test_the_examples_model_both_marks_rather_than_only_permitting_them():
+def test_the_examples_model_bold_and_bullets_rather_than_only_permitting_them():
     """A construct that appears in no example is one the model uses at whatever rate its
     training suggests. Bullets are modelled where they earn their place - the contact band of
-    a routing card, which is the half of the answer the 2026-08-10 eval kept losing."""
+    a routing card, which is the half of the answer the 2026-08-10 eval kept losing.
+
+    Two of the four marks are modelled and two are only permitted, deliberately. A numbered
+    list earns its place on a process answer and none of the five worked examples is one, so
+    carrying one would mean a sixth example - growth in the file the examples were shortened
+    for. Not asserted as an absence either: an example added later that IS a sequence should
+    number it."""
     prompt = build_system_prompt(_SETTINGS)
     descs = _examples(prompt, "desc")
 
