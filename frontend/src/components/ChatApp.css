@@ -32,10 +32,27 @@
 	will-change: background-position;
 }
 
+/*
+ * COLLAPSING THE RAIL IS ONE TOKEN CHANGING. Everything that sits beside the sidebar
+ * already measures itself against --side-nav-width, so re-pointing that variable on the
+ * app root moves the rail, the content margin and the dock together, and nothing needs to
+ * be told the rail is narrow now.
+ *
+ * Scoped ABOVE the drawer breakpoint on purpose. Below it the desktop rail is display:none
+ * and the mobile drawer sizes itself from the same variable; without this guard, collapsing
+ * on a wide screen and then narrowing the window would open a 3.5rem drawer.
+ */
+@media (min-width: 1041px) {
+	.chat-app--nav-collapsed {
+		--side-nav-width: var(--side-nav-width-collapsed);
+	}
+}
+
 .chat-app__content {
 	min-height: 100vh;
 	min-height: 100dvh;
 	margin-left: var(--side-nav-width);
+	transition: margin-left var(--side-nav-duration) var(--side-nav-ease);
 }
 
 /*
@@ -106,6 +123,7 @@
 .chat-app__dock {
 	position: fixed;
 	left: var(--side-nav-width);
+	transition: left var(--side-nav-duration) var(--side-nav-ease);
 	right: 0;
 	bottom: calc(3.25rem + env(safe-area-inset-bottom));
 	z-index: 5;
@@ -220,5 +238,14 @@
 	/* Active chat: the avatar is gone and the thread has that space. */
 	.chat-app--active .chat-app__sammy-col {
 		display: none;
+	}
+}
+
+/* The rail's travel is layout, not decoration, so under a motion preference it simply
+   arrives at the new width. */
+@media (prefers-reduced-motion: reduce) {
+	.chat-app__content,
+	.chat-app__dock {
+		transition: none;
 	}
 }

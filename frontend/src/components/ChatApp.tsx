@@ -41,6 +41,27 @@ const CHAT_WIPE_MS = 620;
 const SPEECH_INTRO_DELAY_MS = 1100;
 const BG_TILE_PX = 480;
 
+/**
+ * Whether the desktop rail is collapsed, remembered across reloads.
+ *
+ * A UI preference and nothing else - it is the one thing in this app that is allowed in
+ * localStorage. The access token deliberately is not (lib/auth.ts), and this is not a
+ * loophole in that: it says how wide a panel is, it is not read by anything that talks to
+ * the server, and a shared campus machine handing the next student a narrow sidebar is
+ * not a disclosure. A read failure (Safari private mode throws on access) means the rail
+ * simply starts open.
+ */
+const NAV_COLLAPSED_KEY = 'ssn.nav.collapsed';
+
+function readNavCollapsed(): boolean {
+	if (typeof window === 'undefined') return false;
+	try {
+		return window.localStorage.getItem(NAV_COLLAPSED_KEY) === '1';
+	} catch {
+		return false;
+	}
+}
+
 type TransitionDirection = 'left' | 'right';
 
 type ChatTransition = {
@@ -96,6 +117,7 @@ export default function ChatApp() {
 	const [historyError, setHistoryError] = useState<string | null>(null);
 	const [openingChatId, setOpeningChatId] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
+	const [navCollapsed, setNavCollapsed] = useState(readNavCollapsed);
 	const [contentVisible, setContentVisible] = useState(true);
 	const [isShocked, setIsShocked] = useState(false);
 	const [chatTransition, setChatTransition] = useState<ChatTransition | null>(null);
@@ -588,6 +610,15 @@ export default function ChatApp() {
 		if (replacement) showChat(replacement);
 	};
 
+	const setNavCollapsedPersisted = useCallback((next: boolean) => {
+		setNavCollapsed(next);
+		try {
+			window.localStorage.setItem(NAV_COLLAPSED_KEY, next ? '1' : '0');
+		} catch {
+			/* Private mode. The rail still moves; it just will not be remembered. */
+		}
+	}, []);
+
 	const handleNewChat = () => {
 		if (openingChatId) return;
 		const chat = newChatSession();
@@ -601,7 +632,9 @@ export default function ChatApp() {
 
 	return (
 		<div
-			className={`chat-app${conversationStarted ? ' chat-app--active' : ' chat-app--landing'}`}
+			className={`chat-app${conversationStarted ? ' chat-app--active' : ' chat-app--landing'}${
+				navCollapsed ? ' chat-app--nav-collapsed' : ''
+			}`}
 		>
 			<motion.div
 				className="chat-app__background"
@@ -637,6 +670,9 @@ export default function ChatApp() {
 				// out of the sidebar entirely rather than rendering a button that opens
 				// nothing.
 				onOpenCost={costModel ? () => setShowCostPanel(true) : undefined}
+				collapsed={navCollapsed}
+				onExpand={() => setNavCollapsedPersisted(false)}
+				onCollapse={() => setNavCollapsedPersisted(true)}
 				onClose={() => setNavOpen(false)}
 				onNewChat={handleNewChat}
 				onSelectChat={handleSelectChat}

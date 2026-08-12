@@ -13,6 +13,70 @@ import './SideNav.css';
  */
 const TITLE_MAX_CHARS = 80;
 
+/**
+ * Sammy's face, cut out of the SAME artboard the chat stage animates (public/sammy.riv)
+ * and shipped as a still. The .riv is a 960 KB vector animation that needs the Rive
+ * runtime and a canvas to show anything; the header wants a 24 KB picture, so the crop
+ * was taken once, offline, from a rendered frame - the pixels are his own line art rather
+ * than a redrawing of it, and the header costs no Rive at runtime.
+ *
+ * A FAILED LOAD REMOVES HIM FROM THE LAYOUT. Left alone, a broken <img> is a torn-page
+ * glyph and the alt text sitting where the face should be, which is worse than never
+ * having put a picture there. Rendering nothing puts the header back to exactly the text
+ * it used to be.
+ */
+function SammyMark({ className }: { className: string }) {
+	const [failed, setFailed] = useState(false);
+	if (failed) return null;
+	return (
+		<img
+			className={className}
+			src="/sammy-head.png"
+			alt="Sammy, the SJSU Spartans mascot"
+			// The intrinsic size, so the box is reserved from the first frame and the title
+			// does not jump sideways when the picture arrives.
+			width={234}
+			height={256}
+			decoding="async"
+			onError={() => setFailed(true)}
+		/>
+	);
+}
+
+/**
+ * The rail control, and the collapse control. A panel whose NARROW PANE IS FILLED, drawn
+ * once and mirrored between the two states (see .side-nav__collapse in the stylesheet):
+ * the solid bar sits on the side the sidebar is about to be, so the glyph says which way
+ * the click goes rather than being the same picture twice.
+ */
+function PanelIcon() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			width="18"
+			height="18"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.9"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+		>
+			<rect x="3" y="4" width="18" height="16" rx="3" />
+			<path d="M9.5 4v16" />
+			{/* Inset to the INNER edge of the 1.9 stroke (x 4, y 5 to 19) with its own 2.1
+			    corner radius rather than the outer 3, so it hugs the frame instead of
+			    leaving a sliver of paper in the curve. It runs to the divider's centre
+			    line, which paints over the join. */}
+			<path
+				d="M4 7.1A2.1 2.1 0 0 1 6.1 5h2.5v14H6.1A2.1 2.1 0 0 1 4 16.9z"
+				fill="currentColor"
+				stroke="none"
+			/>
+		</svg>
+	);
+}
+
 type SideNavProps = {
 	chats: ChatSession[];
 	activeChatId: string;
@@ -31,6 +95,21 @@ type SideNavProps = {
 	 * and its absence is what hides the control entirely - see lib/runtimeConfig.ts.
 	 */
 	onOpenCost?: () => void;
+	/**
+	 * DESKTOP ONLY. The rail is collapsed to its icon width; the mobile drawer is always
+	 * given `false`, because it is already a thing you open and dismiss and a drawer that
+	 * opened to a 3.5rem strip would be a drawer that opened to nothing.
+	 */
+	collapsed?: boolean;
+	/**
+	 * Idempotent on purpose. Both ways of expanding - the brand button and a click anywhere
+	 * on the rail - call this, and the button's click bubbles to the rail, so "expand" has
+	 * to survive being asked for twice in one gesture. A toggle would collapse straight
+	 * back again.
+	 */
+	onExpand?: () => void;
+	/** Absent on the mobile drawer, which is what keeps the collapse control off it. */
+	onCollapse?: () => void;
 	onClose: () => void;
 	onNewChat: () => void;
 	onSelectChat: (id: string) => void;
@@ -54,6 +133,9 @@ function NavContent({
 	userEmail,
 	onLogout,
 	onOpenCost,
+	collapsed = false,
+	onExpand,
+	onCollapse,
 	onNewChat,
 	onSelectChat,
 	onRenameChat,
@@ -112,19 +194,73 @@ function NavContent({
 	// so it is not "history" - it is the only thing in the list on a first visit, and saying
 	// "no past chats" beneath it would be wrong the moment the student presses send.
 	const stored = chats.filter((chat) => chat.conversationId);
+
+	/**
+	 * The collapsed rail: his face at the top, the signed-in student at the bottom, nothing
+	 * else. This is a SEPARATE TREE rather than the full sidebar with most of it hidden -
+	 * a rail built by display:none would still be laying out chat titles inside a 3.5rem
+	 * strip, and every one of them would flash as an ellipsis on the way open.
+	 */
+	if (collapsed) {
+		return (
+			<div className="side-nav__rail">
+				<button
+					type="button"
+					className="side-nav__rail-brand"
+					onClick={onExpand}
+					aria-label="Expand sidebar"
+					aria-expanded={false}
+					title="Expand sidebar"
+				>
+					{/* Both live in one grid cell and cross-fade: hovering ANYWHERE on the rail
+					    turns his face into the control (see SideNav.css), which is the whole
+					    trick - the mark is the button, rather than a button appearing next to a
+					    mark and making the rail feel crowded. */}
+					<SammyMark className="side-nav__mark side-nav__mark--rail" />
+					<span className="side-nav__rail-icon">
+						<PanelIcon />
+					</span>
+				</button>
+
+				{userEmail ? (
+					// Not a button. The rail's own click expands, so a second control here would
+					// be a second thing to tab to that does what the first one does; the initial
+					// is identity, and the title says whose.
+					<span className="side-nav__rail-avatar" title={userEmail} aria-hidden="true">
+						{userEmail.trim().charAt(0).toUpperCase()}
+					</span>
+				) : null}
+			</div>
+		);
+	}
+
 	return (
 		<>
 			<div className="side-nav__header">
-				<div className="side-nav__brand" aria-label="Student Success Navigator">
-					{/* The name alone. A rounded blue tile holding an "S" used to sit here; it stood
-					    for nothing and read as a placeholder logo, and the product name does the job
-					    the tile was pretending to do. The aria-label stays because the two lines are
-					    separate elements and it fixes them into a single reading. */}
+				<div className="side-nav__brand">
+					{/* Sammy, then the name. A rounded blue tile holding an "S" used to sit here; it
+					    stood for nothing and read as a placeholder logo, and his actual face is the
+					    thing the tile was pretending to be. The wrapper's aria-label is gone with
+					    the second line it existed to join: the image carries its own alt and the
+					    name is one string, so there is nothing left to fix into a single reading. */}
+					<SammyMark className="side-nav__mark" />
 					<span className="side-nav__brand-copy">
-						<strong>Student Success</strong>
-						<span>Navigator</span>
+						<strong>SJSU Student Success</strong>
 					</span>
 				</div>
+
+				{onCollapse ? (
+					<button
+						type="button"
+						className="side-nav__collapse"
+						onClick={onCollapse}
+						aria-label="Collapse sidebar"
+						aria-expanded
+						title="Collapse sidebar"
+					>
+						<PanelIcon />
+					</button>
+				) : null}
 			</div>
 
 			<button type="button" className="side-nav__new-chat" onClick={onNewChat} disabled={busy}>
@@ -384,7 +520,18 @@ export function SideNav(props: SideNavProps) {
 
 	return (
 		<>
-			<aside className="side-nav side-nav--desktop">
+			{/*
+			  THE SECOND WAY TO EXPAND. The whole collapsed strip is a click target, which is
+			  the behaviour a thin rail invites - you aim at the bar, not at the 28px picture
+			  on it. It is deliberately mouse-only affordance layered over a real control: the
+			  brand button inside is what a keyboard reaches, and it does the same thing, so
+			  nothing here is reachable only by pointer. onExpand is idempotent, which is why
+			  the button's click bubbling into this handler is harmless.
+			*/}
+			<aside
+				className={`side-nav side-nav--desktop${props.collapsed ? ' side-nav--collapsed' : ''}`}
+				onClick={props.collapsed ? props.onExpand : undefined}
+			>
 				<NavContent {...props} />
 			</aside>
 
@@ -420,7 +567,9 @@ export function SideNav(props: SideNavProps) {
 								}
 							}}
 						>
-							<NavContent {...props} />
+							{/* Never collapsed, and no collapse control: this one is already a panel
+							    you open and dismiss, and the rail is a desktop idea. */}
+							<NavContent {...props} collapsed={false} onCollapse={undefined} />
 						</motion.aside>
 					</>
 				) : null}

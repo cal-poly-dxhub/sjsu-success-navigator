@@ -9,12 +9,22 @@
 	border-right: 2px solid #e5e2da;
 	box-shadow: 8px 0 24px rgba(28, 36, 48, 0.025);
 	color: var(--text-primary);
+	transition:
+		width var(--side-nav-duration) var(--side-nav-ease),
+		padding var(--side-nav-duration) var(--side-nav-ease);
 }
 
 .side-nav--desktop {
 	position: fixed;
 	inset: 0 auto 0 0;
 	z-index: 20;
+}
+
+/* The whole strip is the control, so it says so under the cursor. */
+.side-nav--collapsed {
+	padding-right: 0.5rem;
+	padding-left: 0.5rem;
+	cursor: pointer;
 }
 
 .side-nav--mobile,
@@ -26,6 +36,7 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	gap: 0.35rem;
 	min-height: 2.5rem;
 	padding: 0 0.3rem;
 }
@@ -33,7 +44,16 @@
 .side-nav__brand {
 	display: flex;
 	align-items: center;
+	gap: 0.5rem;
 	min-width: 0;
+}
+
+/* Sammy. `height` drives it and the width follows his own 234x256, so the box the width
+   and height attributes reserved is the box he lands in. */
+.side-nav__mark {
+	flex: none;
+	width: auto;
+	height: 2.05rem;
 }
 
 .side-nav__brand-copy {
@@ -45,13 +65,128 @@
 	color: var(--text-muted);
 }
 
+/* WRAPS, where the old two-line name was two elements that could not. "SJSU Student
+   Success" is 20 characters against about 6rem of room once his face and the collapse
+   control have taken theirs, so holding it on one line would mean either ellipsing the
+   product name or shrinking it to something no one reads. Two lines, tight. */
 .side-nav__brand-copy strong {
-	overflow: hidden;
 	color: var(--text-primary);
-	font-size: 0.82rem;
+	font-size: 0.79rem;
 	font-weight: 700;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	line-height: 1.16;
+	overflow-wrap: anywhere;
+}
+
+.side-nav__collapse,
+.side-nav__rail-brand {
+	display: grid;
+	place-items: center;
+	flex: none;
+	padding: 0;
+	border: 0;
+	border-radius: 10px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background 140ms ease, color 140ms ease;
+}
+
+/* Always visible, not revealed on hover: it is the only way back to the rail, and a control
+   you have to go looking for is one most people never find. */
+.side-nav__collapse {
+	width: 1.95rem;
+	height: 1.95rem;
+}
+
+/*
+ * THE FLOP. PanelIcon is drawn once, narrow-pane-left and filled, which is the rail; the
+ * expanded control is that same drawing mirrored, so the solid bar lands on the right. The
+ * fill travels with the mirror on purpose - the solid pane marks the side the panel is
+ * heading for, and pinning it to one side would take the direction back out of the glyph.
+ */
+.side-nav__collapse svg {
+	transform: scaleX(-1);
+}
+
+.side-nav__collapse:hover,
+.side-nav__rail-brand:hover {
+	background: rgba(28, 36, 48, 0.07);
+	color: var(--text-primary);
+}
+
+.side-nav__collapse:focus-visible,
+.side-nav__rail-brand:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+/* ---- The collapsed rail ------------------------------------------------------------ */
+
+.side-nav__rail {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	flex: 1;
+	min-height: 0;
+}
+
+.side-nav__rail-brand {
+	width: 2.5rem;
+	height: 2.5rem;
+}
+
+/* His face and the control occupy ONE cell and cross-fade in place, so the swap reads as
+   the mark becoming the button rather than as two things trading places. */
+.side-nav__mark--rail,
+.side-nav__rail-icon {
+	grid-area: 1 / 1;
+	transition:
+		opacity var(--side-nav-duration) var(--side-nav-ease),
+		transform var(--side-nav-duration) var(--side-nav-ease);
+}
+
+.side-nav__mark--rail {
+	height: 1.85rem;
+}
+
+.side-nav__rail-icon {
+	display: grid;
+	place-items: center;
+	opacity: 0;
+	transform: scale(0.72);
+}
+
+/*
+ * HOVERING THE RAIL, not the picture. The strip is the click target, so it has to be the
+ * hover target too - aiming at a 28px face to reveal the control it is about to become
+ * would make a 3.5rem bar feel like a 1.75rem one.
+ */
+.side-nav--collapsed:hover .side-nav__mark--rail,
+.side-nav__rail-brand:focus-visible .side-nav__mark--rail {
+	opacity: 0;
+	transform: scale(0.72);
+}
+
+.side-nav--collapsed:hover .side-nav__rail-icon,
+.side-nav__rail-brand:focus-visible .side-nav__rail-icon {
+	opacity: 1;
+	transform: none;
+}
+
+.side-nav__rail-avatar {
+	display: grid;
+	place-items: center;
+	flex: none;
+	width: 1.85rem;
+	height: 1.85rem;
+	margin-top: auto;
+	border-radius: 50%;
+	background: var(--accent-blue);
+	color: #fff;
+	font-size: 0.78rem;
+	font-weight: 700;
+	line-height: 1;
+	user-select: none;
 }
 
 .side-nav__new-chat {
@@ -470,7 +605,12 @@
 	.side-nav__chat,
 	.side-nav__row-actions,
 	.side-nav__row-icon,
-	.chat-app__nav-toggle {
+	.chat-app__nav-toggle,
+	.side-nav,
+	.side-nav__collapse,
+	.side-nav__rail-brand,
+	.side-nav__mark--rail,
+	.side-nav__rail-icon {
 		transition: none;
 	}
 }
