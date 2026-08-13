@@ -104,6 +104,12 @@ export function ConversationTurnView({
 	// top to bottom at one pace: lead-in, cards, then the question about them. It also
 	// keeps the entrance transform-only - a bubble growing under cards still in the air is
 	// the reflow the deal was built to avoid.
+	//
+	// THE DECK REPORTS ITS OWN LANDING and this timer is the backstop, because a flight is
+	// sized by a distance measured inside the group: the timer can only work from the card
+	// count and the longest flight a card could have (dealDurationMs), which is an upper
+	// bound and would leave a beat of dead air on most turns. Whichever arrives first wins,
+	// so a deck that never reports - a dropped animation event - still ends the wait.
 	useEffect(() => {
 		if (dealt || !showCards) return;
 		const timer = window.setTimeout(() => setDealt(true), dealDurationMs(turn.cards.length));
@@ -179,6 +185,7 @@ export function ConversationTurnView({
 							onFollowup={onFollowup}
 							createdAt={turn.createdAt}
 							deal={isArriving}
+							onLanded={() => setDealt(true)}
 							archived={!isActive}
 						/>
 					</div>

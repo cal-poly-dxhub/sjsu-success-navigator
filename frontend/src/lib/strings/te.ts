@@ -55,6 +55,7 @@ export const te: Strings = {
 	thinking: 'ఆలోచిస్తోంది',
 	waitingForSammy: 'Sammy సమాధానం కోసం వేచి ఉంది',
 	stageRetrieving: 'క్యాంపస్ వనరులలో వెతుకుతోంది',
+	stageComposingCards: 'క్యాంపస్ వనరులను సేకరిస్తోంది',
 
 	campusResources: 'క్యాంపస్ వనరులు',
 	campusResourcesFrom: (timestamp: string) => `${timestamp} నాటి క్యాంపస్ వనరులు`,

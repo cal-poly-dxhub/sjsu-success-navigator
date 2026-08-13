@@ -20,6 +20,8 @@ import {
 	turnsFromResponse,
 	turnsFromStoredMessages,
 } from '../lib/conversationTurns';
+import { CARDS_STAGE } from './PendingExchange';
+import { waitingDeck } from '../lib/waitingDeck';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
 import { SammyStage } from './SammyStage';
@@ -522,20 +524,37 @@ export default function ChatApp() {
 			);
 
 		const streamed = () => {
-			// Held in a local rather than read back out of state: the final payload arrives
+			// Held in locals rather than read back out of state: the final payload arrives
 			// in the same tick as the last delta, and a state read there would be stale.
 			let previewed = 0;
+			let stage: string | null = null;
 			return streamChat(
 				{ query, followup: options?.followup, conversationId },
 				{
-					onStatus: (stage) => setPendingStage(stage),
+					onStatus: (next) => {
+						stage = next;
+						setPendingStage(next);
+					},
 					onPreview: (preview) => {
 						previewed = preview.length;
+						stage = null;
 						setPendingStage(null);
 						setPendingPreview(preview);
 					},
 				},
-			).then((next) => {
+			).then(async (next) => {
+				// THE HAND-OFF WAITS FOR THE DECK TO STAND SQUARE. While the model was
+				// writing its cards the pending exchange has been showing them as a cycling
+				// stack, and this swap is the moment that stack becomes the real one and is
+				// dealt from. Landing it mid-cycle pulls a card out of a deck that is
+				// halfway round, which is exactly the snap this is here to prevent - so the
+				// reply is held for the few hundred milliseconds until the deck is square,
+				// and held there (lib/waitingDeck.ts). Nothing else waits on it: the prose
+				// is already typed and on screen, and a turn that never showed a deck
+				// resolves immediately.
+				if (stage === CARDS_STAGE && !reduceMotion) {
+					await waitingDeck.settleAndHold();
+				}
 				setPendingPreview('');
 				setPendingStage(null);
 				applyChatResponse(next, query, previewed || undefined);

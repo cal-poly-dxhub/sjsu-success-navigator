@@ -57,6 +57,7 @@ export const vi: Strings = {
 	thinking: 'Đang suy nghĩ',
 	waitingForSammy: 'Đang chờ Sammy trả lời',
 	stageRetrieving: 'Đang tìm trong các nguồn hỗ trợ của trường',
+	stageComposingCards: 'Đang tập hợp các nguồn hỗ trợ của trường',
 
 	campusResources: 'Nguồn hỗ trợ của trường',
 	campusResourcesFrom: (timestamp: string) => `Nguồn hỗ trợ của trường từ ${timestamp}`,

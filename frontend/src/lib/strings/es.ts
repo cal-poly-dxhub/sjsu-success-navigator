@@ -61,6 +61,7 @@ export const es: Strings = {
 	thinking: 'Pensando',
 	waitingForSammy: 'Esperando la respuesta de Sammy',
 	stageRetrieving: 'Buscando en los recursos del campus',
+	stageComposingCards: 'Reuniendo recursos del campus',
 
 	campusResources: 'Recursos del campus',
 	campusResourcesFrom: (timestamp: string) => `Recursos del campus de ${timestamp}`,

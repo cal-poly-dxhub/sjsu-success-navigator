@@ -55,6 +55,7 @@ export const tl: Strings = {
 	thinking: 'Nag-iisip',
 	waitingForSammy: 'Naghihintay ng sagot ni Sammy',
 	stageRetrieving: 'Naghahanap sa mga campus resource',
+	stageComposingCards: 'Tinitipon ang mga campus resource',
 
 	campusResources: 'Mga campus resource',
 	campusResourcesFrom: (timestamp: string) => `Mga campus resource mula ${timestamp}`,

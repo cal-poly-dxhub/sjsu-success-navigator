@@ -16,6 +16,8 @@
 	 * dead space. The lone-card rule above is about short cards; a lone long card spans.
 	 */
 	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	/* Depth for the turn-over. Far enough back that a card flips rather than lunges. */
+	perspective: 1400px;
 	/* Each card is as tall as its own content. Nothing stretches to match its row. */
 	align-items: start;
 	gap: 0.85rem;
@@ -30,9 +32,95 @@
 
 .card-deck__item {
 	min-width: 0;
+	/*
+	 * TOP CENTRE, and the horizontal half of that is load-bearing now that a dealing card
+	 * also turns over: `rotateY` pivots on the origin, so a left origin reflects the card
+	 * across its own left edge and lands it a full width away from where it belongs. The
+	 * offsets are measured centre-to-centre to match (see the measuring effect), which is
+	 * also what keeps the deck's scale from dragging a card sideways as it grows.
+	 */
 	transform-origin: top center;
+	transform-style: preserve-3d;
+}
+
+/*
+ * The two faces of a dealing card. The back is what the deck has been showing all along;
+ * the front is the card itself, hidden until the turn-over passes ninety degrees. Both are
+ * inert for a group that is not dealing - an archived or reduced-motion card renders its
+ * front and nothing else, because the item is never rotated.
+ */
+.card-deck__front {
+	backface-visibility: hidden;
+}
+
+/* The same plain card back the waiting deck shows, because it is the same deck. */
+.card-deck__back {
+	position: absolute;
+	inset: 0;
+	border-radius: 0.85rem;
+	backface-visibility: hidden;
+	transform: rotateY(180deg);
+	background: linear-gradient(165deg, #ffffff 0%, #fbfaf7 100%);
+	border: 1px solid rgba(8, 90, 163, 0.14);
+	box-shadow:
+		0 6px 14px rgba(8, 90, 163, 0.09),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Nothing is ever face down when the group is presented directly. */
+.card-deck:not(.card-deck--dealing) .card-deck__back {
+	display: none;
 }
 
 .card-deck--dealing .card-deck__item {
 	will-change: transform;
 }
+
+/*
+ * The waiting deck: the stack the cards are about to be dealt off, drawn while the model is
+ * still writing them. Sized to ONE grid track (the same 15.5rem floor the tracks use) and
+ * placed where the first slot will be, so the cards that follow come out of it rather than
+ * out of nowhere. Deliberately much shorter than a real card - it is a deck seen as a deck,
+ * not a card-shaped hole waiting to be filled in.
+ */
+/*
+ * The row the waiting deck sits in, laid out on THE CARD GRID'S OWN TRACKS rather than as a
+ * loose flex row. The deck must be exactly as wide as the first grid slot, because the real
+ * cards are scaled to that width when they take its place - anything else and the stack
+ * changes size at the hand-off.
+ */
+.waiting-deck-row {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	gap: 0.85rem;
+	align-items: start;
+	width: 100%;
+	min-width: 0;
+	margin-top: 0.35rem;
+}
+
+.waiting-deck {
+	position: relative;
+	height: 4.75rem;
+}
+
+.waiting-deck__card {
+	position: absolute;
+	inset: 0;
+	/* Depth is fixed: no card ever changes its place in the stack, so the one written first
+	   is the one on top and nothing has to restack mid-move. */
+	border-radius: 0.85rem;
+	transform-origin: top center;
+	/* The pose is written by CardDeck.tsx every frame - see deckPose. Nothing animates from
+	   here: a keyframe list would be a second model of the cycle to keep in step with the
+	   first, which is how the last one drifted out of step with itself. */
+	will-change: transform;
+	/* A plain card, face down. The stack reads as cards because there are edges behind the
+	   top one, not because anything is printed on it. */
+	background: linear-gradient(165deg, #ffffff 0%, #fbfaf7 100%);
+	border: 1px solid rgba(8, 90, 163, 0.14);
+	box-shadow:
+		0 6px 14px rgba(8, 90, 163, 0.09),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+

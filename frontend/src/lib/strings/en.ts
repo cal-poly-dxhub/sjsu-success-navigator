@@ -80,6 +80,7 @@ export const en = {
 	thinking: 'Thinking',
 	waitingForSammy: "Waiting for Sammy's response",
 	stageRetrieving: 'Looking through campus resources',
+	stageComposingCards: 'Finding campus resources',
 
 	// The card group under a reply, named for a screen reader rather than left as an
 	// unlabelled region. The archived form carries the timestamp because a chat reopened

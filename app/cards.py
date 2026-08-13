@@ -170,6 +170,9 @@ def preview_safe_prefix(text: str) -> str:
     _ANY_KNOWN_TAG_RE's note says. A trailing partial (`...see <ca`) DOES stop it, because
     the rest of that tag has not arrived yet and might.
 
+    Where the preview stops is also WHY it stopped, which `card_block_started` below reads
+    off the same text for the streaming UI.
+
     Deliberately no dash normalisation and no capping. Those belong to the finished reply
     and are applied there, once; doing them here would be the duplication this contract's
     whole streaming design exists to avoid, and a substitution near the end of a partial
@@ -185,6 +188,29 @@ def preview_safe_prefix(text: str) -> str:
             if rest.startswith(opening) or opening.startswith(rest):
                 return text[:index]
     return text
+
+
+def card_block_started(text: str) -> bool:
+    """Has the model DEFINITELY begun writing a card block in this partial reply?
+
+    The streaming UI's one honest answer to "are cards coming?". A turn writes its lead-in
+    prose and then its `<card>` blocks, so the instant `<card` appears is the instant the
+    prose is finished and the part the student cannot see begins - the silence the browser
+    otherwise has nothing true to say about.
+
+    DEFINITELY, which is the whole difference between this and the stop rule above.
+    preview_safe_prefix stops on a PARTIAL (`...see <ca`) because the rest of that tag might
+    still arrive; this waits for the whole opening, because saying "cards are coming" on a
+    maybe is exactly the promise that must not be made. `<c` is not an answer yet.
+
+    A `<safety` anywhere in the reply takes it back to no: safety turns drop their cards by
+    contract (apply_safety_handoff_to_response), so a turn carrying that tag has no card
+    group to announce however many blocks the model wrote alongside it.
+    """
+    lowered = text.lower()
+    if "<safety" in lowered:
+        return False
+    return "<card" in lowered
 
 
 @dataclass(frozen=True)

@@ -55,6 +55,7 @@ export const ko: Strings = {
 	thinking: '생각 중',
 	waitingForSammy: 'Sammy의 답변을 기다리는 중',
 	stageRetrieving: '캠퍼스 자원을 찾아보는 중',
+	stageComposingCards: '캠퍼스 자원을 모으는 중',
 
 	campusResources: '캠퍼스 자원',
 	campusResourcesFrom: (timestamp: string) => `${timestamp}의 캠퍼스 자원`,

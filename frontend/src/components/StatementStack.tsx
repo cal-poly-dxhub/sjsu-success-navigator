@@ -13,6 +13,8 @@ type RagGridProps = {
 	createdAt: number;
 	/** Deal the group in from a deck. Off for archived turns. */
 	deal?: boolean;
+	/** Called once the last card is down - see CardDeck's onLanded. */
+	onLanded?: () => void;
 	archived?: boolean;
 };
 
@@ -21,6 +23,7 @@ export function RagGrid({
 	onFollowup,
 	createdAt,
 	deal = false,
+	onLanded,
 	archived = false,
 }: RagGridProps) {
 	const t = useStrings();
@@ -43,7 +46,7 @@ export function RagGrid({
 					{timestampLabel}
 				</time>
 			) : null}
-			<CardDeck cards={list} onFollowup={onFollowup} deal={deal} />
+			<CardDeck cards={list} onFollowup={onFollowup} deal={deal} onLanded={onLanded} />
 		</section>
 	);
 }

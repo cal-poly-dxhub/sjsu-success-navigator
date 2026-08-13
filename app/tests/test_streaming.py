@@ -508,6 +508,98 @@ def test_a_status_event_says_what_the_silence_is(monkeypatch):
     assert management.of_type("status")[0]["stage"] == "retrieving"
 
 
+def test_the_card_stage_is_announced_when_the_model_starts_writing_cards(monkeypatch):
+    """THE GAP AFTER THE PROSE. The preview stops at the first tag, so from the student's
+    side the reply simply ends and nothing says whether anything else is coming. `<card` in
+    the model's own output is the event that closes the prose and opens that silence, so it
+    is the event the browser is told about - never a timer, and never a prediction."""
+    import streaming
+
+    management = _FakeManagement()
+    sink = _sink(monkeypatch, management, min_chars=1)
+
+    sink.text("Two places can help.\n\n")
+    assert management.of_type("status") == []
+
+    sink.text('Two places can help.\n\n<card ref="2">')
+
+    assert [f["stage"] for f in management.of_type("status")] == [streaming.CARDS_STAGE]
+    # The frontend's PendingExchange holds the other end of this string.
+    assert streaming.CARDS_STAGE == "composing_cards"
+
+
+def test_a_reply_with_no_cards_never_announces_one(monkeypatch):
+    """About one reply in ten is prose only, and an indicator promising resources that never
+    arrive is worse than the silence it filled. Nothing here predicts: no tag, no frame."""
+    management = _FakeManagement()
+    sink = _sink(monkeypatch, management, min_chars=1)
+
+    for text in ("The deadline", "The deadline is", "The deadline is 4pm on Friday."):
+        sink.text(text)
+    sink.flush()
+
+    assert management.of_type("status") == []
+
+
+def test_a_partial_card_tag_is_not_an_announcement_yet(monkeypatch):
+    """preview_safe_prefix stops on a PARTIAL because the rest of the tag might arrive. This
+    waits for the whole opening, because "cards are coming" said on a maybe is exactly the
+    promise that must not be made."""
+    management = _FakeManagement()
+    sink = _sink(monkeypatch, management, min_chars=1)
+
+    for partial in ("Try this. <", "Try this. <c", "Try this. <ca", "Try this. <car"):
+        sink.text(partial)
+        assert management.of_type("status") == [], partial
+
+    sink.text("Try this. <card")
+    assert len(management.of_type("status")) == 1
+
+
+def test_the_card_stage_is_announced_once_however_many_cards_are_written(monkeypatch):
+    """Every push is a billable API Gateway message, and the browser needs to be told once.
+    Four card blocks are still one answer to "are cards coming?"."""
+    management = _FakeManagement()
+    sink = _sink(monkeypatch, management, min_chars=1)
+
+    accumulated = "Here you go.\n\n"
+    for ref in range(1, 5):
+        accumulated += f'<card ref="{ref}"><title>t</title><desc>d</desc></card>\n'
+        sink.text(accumulated)
+    sink.flush()
+
+    assert len(management.of_type("status")) == 1
+
+
+def test_the_prose_tail_is_pushed_before_the_card_stage_is(monkeypatch):
+    """ORDERING, and it is load-bearing twice. The safe prefix cannot grow past the tag, so
+    the last words of the lead-in must not sit in the batcher behind a min_chars threshold
+    they will never reach. And the browser clears the indicator on arriving prose, so a
+    delta landing after the frame would take it straight back off."""
+    management = _FakeManagement()
+    sink = _sink(monkeypatch, management, min_chars=200)
+
+    sink.text("Two places can help with that.")
+    assert management.frames == []  # under the batch threshold, nothing sent yet
+
+    sink.text('Two places can help with that.\n\n<card ref="2">')
+
+    assert management.types == ["delta", "status"]
+    assert management.of_type("delta")[0]["text"] == "Two places can help with that.\n\n"
+
+
+def test_a_safety_turn_announces_no_cards_because_it_will_have_none(monkeypatch):
+    """A safety turn drops its cards by contract (apply_safety_handoff_to_response), so a
+    reply carrying that tag has no card group to announce however many blocks the model
+    wrote beside it."""
+    management = _FakeManagement()
+    sink = _sink(monkeypatch, management, min_chars=1)
+
+    sink.text("Please talk to someone now.\n\n<safety>caps</safety>\n<card ref=\"1\">")
+
+    assert management.of_type("status") == []
+
+
 def test_the_final_flush_continues_the_preview_rather_than_restarting_it(monkeypatch):
     """REGRESSION. `flush` used to take the parsed `conversationalText` and slice it with an
     offset measured against the RAW stream. They are different strings - the parsed one is

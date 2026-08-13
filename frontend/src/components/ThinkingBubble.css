@@ -13,6 +13,31 @@
 		0 2px 6px rgba(28, 36, 48, 0.05);
 }
 
+/*
+ * The same indicator under a bubble that already has prose in it, rather than inside an
+ * empty one. It keeps the words and the dots and drops the bubble: the student is reading
+ * an answer that is still arriving, and this is a note in the margin of it, not a second
+ * thing said.
+ */
+.thinking-bubble--inline {
+	width: auto;
+	align-items: flex-start;
+	justify-content: flex-start;
+	padding: 0.2rem 0;
+	background: none;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+}
+
+/* Quiet. It names what the deck beside it is doing; the deck is the thing being looked at. */
+.thinking-bubble--inline .thinking-bubble__label {
+	font-size: 0.8rem;
+	font-weight: 400;
+	letter-spacing: 0.01em;
+	color: color-mix(in srgb, var(--text-muted) 78%, transparent);
+}
+
 .thinking-bubble__label {
 	display: inline-flex;
 	align-items: baseline;
