@@ -56,11 +56,19 @@ export const tl: Strings = {
 	waitingForSammy: 'Naghihintay ng sagot ni Sammy',
 	stageRetrieving: 'Naghahanap sa mga campus resource',
 
+	campusResources: 'Mga campus resource',
+	campusResourcesFrom: (timestamp: string) => `Mga campus resource mula ${timestamp}`,
+	timeJustNow: 'Ngayon lang',
+	timeMinutesAgo: (minutes: number) => `${minutes} min ang nakalipas`,
+	timeHoursAgo: (hours: number) => `${hours} oras ang nakalipas`,
+
 	chatsLoadFailedWith: (message: string) => `Hindi ma-load ang iyong mga chat: ${message}`,
 	chatsLoadFailed: 'Hindi ma-load ang iyong mga chat.',
 	chatOpenFailedWith: (message: string) => `Hindi mabuksan ang chat na iyon: ${message}`,
 	chatOpenFailed: 'Hindi mabuksan ang chat na iyon.',
 	turnFailed: 'May nagkamali sa pagkonekta kay Sammy. Gumagana ba ang chat API?',
+
+	safetyContactsAria: 'Mga kontak para sa emergency',
 
 	talkToPerson: 'Makipag-usap sa isang tao',
 	talkToPersonAria: 'Makipag-usap sa isang tao sa SJSU Cares',
@@ -117,8 +125,7 @@ export const tl: Strings = {
 	settingsClose: 'Isara ang mga setting',
 	close: 'Isara',
 	languageLabel: 'Wika',
-	languageHint:
-		'Binabago nito ang mga label at button ng app na ito. Hindi pa naisasalin ang mga sagot ni Sammy.',
+	languageHint: 'Binabago nito ang mga label at button ng app na ito.',
 	languageUnreviewed: 'Isinalin ng makina. Hindi pa nasusuri ng SJSU ang pananalitang ito.',
 
 	costSection: 'Gastos sa pagpapatakbo nito',

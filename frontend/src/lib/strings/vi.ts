@@ -58,12 +58,20 @@ export const vi: Strings = {
 	waitingForSammy: 'Đang chờ Sammy trả lời',
 	stageRetrieving: 'Đang tìm trong các nguồn hỗ trợ của trường',
 
+	campusResources: 'Nguồn hỗ trợ của trường',
+	campusResourcesFrom: (timestamp: string) => `Nguồn hỗ trợ của trường từ ${timestamp}`,
+	timeJustNow: 'Vừa xong',
+	timeMinutesAgo: (minutes: number) => `${minutes} phút trước`,
+	timeHoursAgo: (hours: number) => `${hours} giờ trước`,
+
 	chatsLoadFailedWith: (message: string) =>
 		`Không thể tải các cuộc trò chuyện của bạn: ${message}`,
 	chatsLoadFailed: 'Không thể tải các cuộc trò chuyện của bạn.',
 	chatOpenFailedWith: (message: string) => `Không thể mở cuộc trò chuyện đó: ${message}`,
 	chatOpenFailed: 'Không thể mở cuộc trò chuyện đó.',
 	turnFailed: 'Đã xảy ra lỗi khi kết nối với Sammy. API trò chuyện có đang chạy không?',
+
+	safetyContactsAria: 'Liên hệ khẩn cấp',
 
 	talkToPerson: 'Nói chuyện với một người',
 	talkToPersonAria: 'Nói chuyện với một người ở SJSU Cares',
@@ -119,8 +127,7 @@ export const vi: Strings = {
 	settingsClose: 'Đóng cài đặt',
 	close: 'Đóng',
 	languageLabel: 'Ngôn ngữ',
-	languageHint:
-		'Thay đổi nhãn và nút của ứng dụng này. Câu trả lời của Sammy thì chưa được dịch.',
+	languageHint: 'Thay đổi nhãn và nút của ứng dụng này.',
 	languageUnreviewed: 'Dịch tự động. SJSU chưa duyệt lại cách diễn đạt này.',
 
 	costSection: 'Chi phí vận hành',

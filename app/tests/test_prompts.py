@@ -334,6 +334,62 @@ def test_the_prompt_tells_the_model_where_the_answer_goes():
     assert "When you emit no cards, the prose is the whole answer" in prompt
 
 
+# --- the student's language -------------------------------------------------------------
+
+
+def _language_section(prompt: str) -> str:
+    """The Language block alone, so a carve-out asserted here cannot be satisfied by the
+    words happening to appear somewhere else in a prompt this long."""
+    assert "Language:" in prompt
+    return prompt.split("Language:")[1].split("What goes in a card")[0]
+
+
+def test_the_reply_follows_the_language_of_the_latest_message():
+    """Both halves, because the second does not follow from the first. Which message decides
+    is one rule; that a switch part way through a conversation is FOLLOWED rather than read as
+    a slip is another, and a prompt saying only "answer in the student's language" leaves a
+    model to decide whether the conversation has a language of its own that a single message
+    should not overturn."""
+    prompt = build_system_prompt(_SETTINGS)
+
+    assert "Answer in the language of the student's most recent message." in prompt
+    assert "the latest message decides, and it decides again each turn" in prompt
+
+
+def test_the_language_rule_reaches_the_card_fields_by_name():
+    """THE REASON THE SECTION EXISTS. A model follows "answer in their language" readily in
+    prose and much less readily inside a <card> block, where the fields read as metadata
+    rather than as speech. The cards carry the answer, so the three fields are named rather
+    than left to follow from "the whole reply"."""
+    section = _language_section(build_system_prompt(_SETTINGS))
+
+    for field in ("<title>", "<desc>", "<followup>"):
+        assert field in section, f"the language rule does not name {field}"
+
+
+def test_the_language_rule_carves_out_what_a_translation_would_break():
+    """Three carve-outs and three distinct breakages: a translated phone number is a wrong
+    number, a translated office name is a door the student cannot find, and a translated
+    <safety> key resolves to nothing at all. The last is the one with a crisis panel behind
+    it - app/safety.py logs an unknown key at WARNING and drops it."""
+    section = _language_section(build_system_prompt(_SETTINGS))
+
+    assert "Phone numbers, email addresses, and web addresses, character for character." in section
+    assert "The names of offices, buildings, programs and rooms" in section
+    assert "the keys inside a <safety> block" in section
+
+
+def test_the_safety_panel_does_not_move_with_the_language():
+    """The panel's contents are the server's either way, so what this pins is the INSTRUCTION
+    not to treat them as translatable prose: the model's two lines follow the student, the
+    contacts under them are identical in every language. A crisis line is the one thing on
+    the screen that a language change must not be able to reach."""
+    safety_section = build_system_prompt(_SETTINGS).split("Safety:")[1].split("Never:")[0]
+
+    assert "word for word the same in every language" in safety_section
+    assert "The keys you write stay in English." in safety_section
+
+
 # --- the escalation section -----------------------------------------------------------
 
 
@@ -398,6 +454,24 @@ def test_the_section_names_all_three_triggers():
     assert "already tried the destinations you gave them" in prompt
     assert "personal or high-stakes enough that a person should read it" in prompt
     assert "They ASK to talk to a person. Always offer then" in prompt
+
+
+def test_the_draft_stays_english_when_the_reply_does_not():
+    """The one piece of model prose that does not follow the student's language, because it
+    is the one piece whose reader is not the student: it opens in a staff inbox at SJSU. The
+    rule sits in THIS section rather than in Language so that a deployment with no recipient
+    is never told about a tag it cannot use, which is the same absent-not-disabled rule the
+    rest of the section follows."""
+    prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
+
+    assert "WRITE THE DRAFT IN ENGLISH" in prompt
+    # And the student is not left holding a message they cannot read: the prose around it is
+    # still theirs, and it says what the draft says.
+    assert "in THEIR language, what the draft says and who it goes to" in prompt
+
+
+def test_the_english_draft_rule_goes_away_with_the_section():
+    assert "WRITE THE DRAFT IN ENGLISH" not in build_system_prompt(_SETTINGS)
 
 
 def test_asking_for_a_person_also_points_at_the_pill():

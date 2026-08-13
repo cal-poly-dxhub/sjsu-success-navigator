@@ -56,11 +56,19 @@ export const ja: Strings = {
 	waitingForSammy: 'Sammy の返答を待っています',
 	stageRetrieving: 'キャンパスのリソースを調べています',
 
+	campusResources: 'キャンパスのリソース',
+	campusResourcesFrom: (timestamp: string) => `${timestamp}のキャンパスのリソース`,
+	timeJustNow: 'たった今',
+	timeMinutesAgo: (minutes: number) => `${minutes}分前`,
+	timeHoursAgo: (hours: number) => `${hours}時間前`,
+
 	chatsLoadFailedWith: (message: string) => `チャットを読み込めませんでした: ${message}`,
 	chatsLoadFailed: 'チャットを読み込めませんでした。',
 	chatOpenFailedWith: (message: string) => `そのチャットを開けませんでした: ${message}`,
 	chatOpenFailed: 'そのチャットを開けませんでした。',
 	turnFailed: 'Sammy への接続で問題が起きました。チャット API は動いていますか？',
+
+	safetyContactsAria: '緊急時の連絡先',
 
 	talkToPerson: '担当者と話す',
 	talkToPersonAria: 'SJSU Cares の担当者と話す',
@@ -115,8 +123,7 @@ export const ja: Strings = {
 	settingsClose: '設定を閉じる',
 	close: '閉じる',
 	languageLabel: '言語',
-	languageHint:
-		'このアプリのラベルとボタンが変わります。Sammy の回答はまだ翻訳されません。',
+	languageHint: 'このアプリのラベルとボタンが変わります。',
 	languageUnreviewed: '機械翻訳です。SJSU はまだこの表現を確認していません。',
 
 	costSection: '運用にかかる費用',

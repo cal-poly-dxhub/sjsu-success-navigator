@@ -5,8 +5,10 @@ import type { Strings } from './en';
  * a file in this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly
  * to the student in the settings panel.
  *
- * REVIEWER'S NOTES. Simplified characters only - Traditional would be a separate file and a
- * separate entry, not a variant of this one. Proper nouns are left in English on purpose:
+ * REVIEWER'S NOTES. Simplified characters only. Traditional is a separate file and a separate
+ * entry rather than a variant of this one (zhHant.ts), which is what lets it carry Taiwan's
+ * vocabulary - 登入, 設定, 儲存, 訊息 - and not just this file's characters converted. Reviewing
+ * either one says nothing about the other. Proper nouns are left in English on purpose:
  * SJSU Cares, Spartan Food Pantry, CalFresh, Sammy and the product name are what the student
  * will see on signs and on SJSU's own pages.
  */
@@ -56,11 +58,19 @@ export const zhHans: Strings = {
 	waitingForSammy: '正在等待 Sammy 的回复',
 	stageRetrieving: '正在查找校园资源',
 
+	campusResources: '校园资源',
+	campusResourcesFrom: (timestamp: string) => `${timestamp}的校园资源`,
+	timeJustNow: '刚刚',
+	timeMinutesAgo: (minutes: number) => `${minutes} 分钟前`,
+	timeHoursAgo: (hours: number) => `${hours} 小时前`,
+
 	chatsLoadFailedWith: (message: string) => `无法加载你的对话：${message}`,
 	chatsLoadFailed: '无法加载你的对话。',
 	chatOpenFailedWith: (message: string) => `无法打开该对话：${message}`,
 	chatOpenFailed: '无法打开该对话。',
 	turnFailed: '连接 Sammy 时出错了。聊天 API 正在运行吗？',
+
+	safetyContactsAria: '紧急求助联系方式',
 
 	talkToPerson: '与真人交谈',
 	talkToPersonAria: '与 SJSU Cares 的工作人员交谈',
@@ -114,7 +124,7 @@ export const zhHans: Strings = {
 	settingsClose: '关闭设置',
 	close: '关闭',
 	languageLabel: '语言',
-	languageHint: '更改本应用自身的标签和按钮。Sammy 的回答目前还不会被翻译。',
+	languageHint: '更改本应用自身的标签和按钮。',
 	languageUnreviewed: '机器翻译。SJSU 尚未审校此措辞。',
 
 	costSection: '运行成本',

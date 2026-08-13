@@ -9,6 +9,11 @@ import { te } from './strings/te';
 import { tl } from './strings/tl';
 import { ko } from './strings/ko';
 import { ja } from './strings/ja';
+import { fr } from './strings/fr';
+import { ptBR } from './strings/ptBR';
+import { ru } from './strings/ru';
+import { zhHant } from './strings/zhHant';
+import { th } from './strings/th';
 
 /**
  * The frontend's own language: which one is chosen, where that choice lives, and how a
@@ -17,12 +22,18 @@ import { ja } from './strings/ja';
  *
  * WHAT THIS IS AND IS NOT. It translates PAGE CHROME - buttons, labels, headings, empty
  * states, the frontend's own error sentences, and the greeting a new chat opens with. It
- * does not touch the model's replies, the cards, or the prompts behind them: those come off
- * the server in whatever language the server produced them. Nothing here is sent anywhere
- * either - the chat request is unchanged, and the server cannot tell which language the
- * sidebar is in.
+ * does not touch the model's replies or the cards, and it is NOT how those became
+ * multilingual: the system prompt tells the model to answer in the language of the student's
+ * own message, cards included (app/prompts.py). Nothing here is sent anywhere - the chat
+ * request is unchanged, and the server still cannot tell which language the sidebar is in.
  *
- * A PLAIN OBJECT PER LANGUAGE, NOT A LIBRARY. Ten languages of UI copy do not need i18next,
+ * SO THE TWO CAN DISAGREE, and that is the honest behaviour rather than a defect to paper
+ * over. A student can read the sidebar in Thai and type in English, and they will get an
+ * English answer under Thai chrome, because the picker is a display preference for this
+ * browser and the message is evidence about the person typing it. Wiring the picker into the
+ * request would make the sidebar overrule what somebody actually wrote.
+ *
+ * A PLAIN OBJECT PER LANGUAGE, NOT A LIBRARY. Fifteen languages of UI copy do not need i18next,
  * ICU message parsing or a runtime dependency to keep pinned; they need files a speaker can
  * read end to end. Interpolation is a function per string, which TypeScript checks for arity
  * in a way a `{{name}}` placeholder never would, and every translation is typed as `Strings`,
@@ -39,7 +50,12 @@ export type Language =
 	| 'te'
 	| 'tl'
 	| 'ko'
-	| 'ja';
+	| 'ja'
+	| 'fr'
+	| 'pt-BR'
+	| 'ru'
+	| 'zh-Hant'
+	| 'th';
 
 export type { Strings };
 
@@ -60,16 +76,25 @@ export type LanguageOption = {
  * The languages offered, and the order they are offered in.
  *
  * THIS LIST IS SJSU'S TO EDIT and adding to it is one line here plus one file in strings/.
- * The ten are the sponsor's two - English and Spanish were named directly, Hindi with them -
- * plus the languages most spoken by SJSU students and by the families around the campus.
- * Nobody here is qualified to rank them, so the order is the population it serves rather
- * than anything about the software.
  *
- * NO RIGHT-TO-LEFT LANGUAGE IS IN THIS LIST, and that is deliberate rather than an oversight
- * about who is on campus. Arabic, Farsi and Hebrew need `dir="rtl"` and a layout that mirrors
- * with it - the sidebar, the dock, the card grid, every `margin-left` in the stylesheets -
- * which is a layout job, not a catalogue entry. Adding one here without that work would
- * render a broken page rather than a translated one.
+ * IT IS IN TWO PARTS, chosen on different grounds, so the order says so rather than blending
+ * them. The FIRST TEN are the population the product serves: the sponsor's two - English and
+ * Spanish were named directly, Hindi with them - plus the languages most spoken by SJSU
+ * students and by the families around the campus. Nobody here is qualified to rank those, so
+ * their order is the population rather than anything about the software. The LAST FIVE were
+ * added for BREADTH, for a sponsor watching this picker open in a demo: French, Brazilian
+ * Portuguese, Russian, Traditional Chinese and Thai each bring a script or a region the first
+ * ten did not, and the list read as regionally narrow with only the ten in it. They sit last
+ * because that is what they are; a campus-population argument for any of them would move it
+ * up the list rather than be answered by reshuffling.
+ *
+ * NO RIGHT-TO-LEFT LANGUAGE IS IN THIS LIST, and that is still deliberate rather than an
+ * oversight about who is on campus - it is also why a breadth pass reached for Thai and not
+ * for the languages a breadth pass reaches for first. Arabic, Farsi and Urdu need `dir="rtl"`
+ * and a layout that mirrors with it - the sidebar, the dock, the card grid, every
+ * `margin-left` in the stylesheets - which is a layout job, not a catalogue entry. A
+ * catalogue for one of them is the cheap half of that work and would render a broken page
+ * rather than a translated one, which serves a student worse than being absent does.
  */
 export const LANGUAGES: LanguageOption[] = [
 	{ code: 'en', label: 'English', reviewed: true },
@@ -82,6 +107,14 @@ export const LANGUAGES: LanguageOption[] = [
 	{ code: 'tl', label: 'Tagalog', reviewed: false },
 	{ code: 'ko', label: '한국어', reviewed: false },
 	{ code: 'ja', label: '日本語', reviewed: false },
+	{ code: 'fr', label: 'Français', reviewed: false },
+	// The endonym carries the region because the catalogue does: this is Brazilian usage,
+	// not Portuguese with a flag on it, and a student from Lisbon should be able to see
+	// that before choosing it (strings/ptBR.ts).
+	{ code: 'pt-BR', label: 'Português (Brasil)', reviewed: false },
+	{ code: 'ru', label: 'Русский', reviewed: false },
+	{ code: 'zh-Hant', label: '繁體中文', reviewed: false },
+	{ code: 'th', label: 'ไทย', reviewed: false },
 ];
 
 const CATALOGUE: Record<Language, Strings> = {
@@ -95,6 +128,11 @@ const CATALOGUE: Record<Language, Strings> = {
 	tl,
 	ko,
 	ja,
+	fr,
+	'pt-BR': ptBR,
+	ru,
+	'zh-Hant': zhHant,
+	th,
 };
 
 /**
