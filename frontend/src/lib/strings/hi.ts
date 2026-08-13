@@ -57,11 +57,19 @@ export const hi: Strings = {
 	waitingForSammy: 'Sammy के उत्तर की प्रतीक्षा है',
 	stageRetrieving: 'कैंपस संसाधनों में खोजा जा रहा है',
 
+	campusResources: 'कैंपस संसाधन',
+	campusResourcesFrom: (timestamp: string) => `${timestamp} के कैंपस संसाधन`,
+	timeJustNow: 'अभी',
+	timeMinutesAgo: (minutes: number) => `${minutes} मिनट पहले`,
+	timeHoursAgo: (hours: number) => `${hours} घंटे पहले`,
+
 	chatsLoadFailedWith: (message: string) => `आपकी चैट लोड नहीं हो सकीं: ${message}`,
 	chatsLoadFailed: 'आपकी चैट लोड नहीं हो सकीं।',
 	chatOpenFailedWith: (message: string) => `वह चैट नहीं खुल सकी: ${message}`,
 	chatOpenFailed: 'वह चैट नहीं खुल सकी।',
 	turnFailed: 'Sammy तक पहुँचने में कुछ गड़बड़ हो गई। क्या चैट API चल रहा है?',
+
+	safetyContactsAria: 'आपातकालीन संपर्क',
 
 	talkToPerson: 'किसी व्यक्ति से बात करें',
 	talkToPersonAria: 'SJSU Cares के किसी व्यक्ति से बात करें',
@@ -116,8 +124,7 @@ export const hi: Strings = {
 	settingsClose: 'सेटिंग्स बंद करें',
 	close: 'बंद करें',
 	languageLabel: 'भाषा',
-	languageHint:
-		'इससे इस ऐप के अपने लेबल और बटन बदलते हैं। Sammy के उत्तरों का अनुवाद अभी नहीं होता।',
+	languageHint: 'इससे इस ऐप के अपने लेबल और बटन बदलते हैं।',
 	languageUnreviewed: 'मशीन से अनुवादित। SJSU ने अभी इस भाषा की जाँच नहीं की है।',
 
 	costSection: 'इसे चलाने की लागत',

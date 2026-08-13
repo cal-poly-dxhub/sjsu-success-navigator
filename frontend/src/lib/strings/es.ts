@@ -62,11 +62,19 @@ export const es: Strings = {
 	waitingForSammy: 'Esperando la respuesta de Sammy',
 	stageRetrieving: 'Buscando en los recursos del campus',
 
+	campusResources: 'Recursos del campus',
+	campusResourcesFrom: (timestamp: string) => `Recursos del campus de ${timestamp}`,
+	timeJustNow: 'Ahora mismo',
+	timeMinutesAgo: (minutes: number) => `hace ${minutes} min`,
+	timeHoursAgo: (hours: number) => `hace ${hours} h`,
+
 	chatsLoadFailedWith: (message: string) => `No se pudieron cargar tus chats: ${message}`,
 	chatsLoadFailed: 'No se pudieron cargar tus chats.',
 	chatOpenFailedWith: (message: string) => `No se pudo abrir ese chat: ${message}`,
 	chatOpenFailed: 'No se pudo abrir ese chat.',
 	turnFailed: 'Algo salió mal al contactar a Sammy. ¿La API del chat está funcionando?',
+
+	safetyContactsAria: 'Contactos de emergencia',
 
 	talkToPerson: 'Habla con una persona',
 	talkToPersonAria: 'Habla con una persona de SJSU Cares',
@@ -123,8 +131,7 @@ export const es: Strings = {
 	settingsClose: 'Cerrar la configuración',
 	close: 'Cerrar',
 	languageLabel: 'Idioma',
-	languageHint:
-		'Cambia las etiquetas y los botones de esta aplicación. Las respuestas de Sammy todavía no se traducen.',
+	languageHint: 'Cambia las etiquetas y los botones de esta aplicación.',
 	languageUnreviewed: 'Traducción automática. SJSU aún no ha revisado esta redacción.',
 
 	costSection: 'Cuánto cuesta funcionar',

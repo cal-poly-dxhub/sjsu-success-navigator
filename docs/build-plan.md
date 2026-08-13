@@ -346,6 +346,35 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       explicit DependsOn because it names the provider as a literal string rather than a Ref.
       No frontend change: managed login renders the federated button itself, and
       `beginSignIn` pins no `identity_provider` parameter (checked, unchanged).
+- [x] fifteen languages of chrome, and Sammy answers in the student's own language
+      (frontend/src/lib/i18n.ts, app/prompts.py). TWO MECHANISMS, deliberately kept apart.
+      The CHROME is five more catalogues at full key parity - French, Brazilian Portuguese,
+      Russian, Traditional Chinese, Thai - chosen for the scripts and regions the first ten
+      missed, because the picker read as regionally narrow in a demo; the first ten stay in
+      population order and the five sit after them, because that is what they are. Every file
+      is typed as `Strings`, so a missing key is a build error rather than an `undefined`
+      rendered at a student (verified by deleting one: TS2741). Still NO right-to-left entry,
+      and that is now also why the breadth pass reached for Thai: Arabic, Farsi and Urdu need
+      a mirrored layout, and a catalogue without it is the cheap half of the job and a broken
+      page. The REPLY is a system prompt section: answer in the language of the latest
+      message, follow a mid-conversation switch, and THE CARDS ARE STATED SEPARATELY from the
+      prose because that is where a model drops the instruction and where the answer lives -
+      a lead-in in Spanish over English cards has answered in English. The carve-outs are the
+      load-bearing half: phone numbers, emails, URLs and office names copied character for
+      character, and the tag names, ref ids and <safety> keys copied because the SERVER reads
+      them - a translated key resolves to nothing, which app/safety.py drops at WARNING, and
+      a dropped key is a crisis panel lost to a translation. The panel's contents were never
+      at risk either way by construction: the model writes keys, the table writes contacts.
+      The escalation draft stays English because its reader is staff rather than the student.
+      The last hardcoded English chrome went with it - the safety panel's accessible name,
+      the card group's, and the relative timestamp inside that label, which was English in
+      all ten languages and is why lib/formatTimestamp.ts now takes the strings and the
+      locale (its date branch followed the BROWSER's locale, not the picker). "Sammy's
+      answers are not translated yet" is deleted from all fifteen catalogues because it
+      stopped being true, and a stale caveat tells a student not to bother asking in Spanish.
+      Two eval pairs added and NOT RUN (needs account): a Spanish and a Vietnamese question
+      over facts already verified elsewhere in ground-truth.yaml, so a failure there is a
+      language failure and never a retrieval one.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

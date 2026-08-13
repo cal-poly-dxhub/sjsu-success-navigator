@@ -56,11 +56,19 @@ export const ko: Strings = {
 	waitingForSammy: 'Sammy의 답변을 기다리는 중',
 	stageRetrieving: '캠퍼스 자원을 찾아보는 중',
 
+	campusResources: '캠퍼스 자원',
+	campusResourcesFrom: (timestamp: string) => `${timestamp}의 캠퍼스 자원`,
+	timeJustNow: '방금',
+	timeMinutesAgo: (minutes: number) => `${minutes}분 전`,
+	timeHoursAgo: (hours: number) => `${hours}시간 전`,
+
 	chatsLoadFailedWith: (message: string) => `대화를 불러오지 못했어요: ${message}`,
 	chatsLoadFailed: '대화를 불러오지 못했어요.',
 	chatOpenFailedWith: (message: string) => `그 대화를 열지 못했어요: ${message}`,
 	chatOpenFailed: '그 대화를 열지 못했어요.',
 	turnFailed: 'Sammy에 연결하는 중 문제가 생겼어요. 채팅 API가 실행 중인가요?',
+
+	safetyContactsAria: '긴급 연락처',
 
 	talkToPerson: '사람과 대화하기',
 	talkToPersonAria: 'SJSU Cares의 담당자와 대화하기',
@@ -115,7 +123,7 @@ export const ko: Strings = {
 	settingsClose: '설정 닫기',
 	close: '닫기',
 	languageLabel: '언어',
-	languageHint: '이 앱의 라벨과 버튼을 바꿔요. Sammy의 답변은 아직 번역되지 않아요.',
+	languageHint: '이 앱의 라벨과 버튼을 바꿔요.',
 	languageUnreviewed: '기계 번역이에요. SJSU가 아직 이 표현을 검토하지 않았어요.',
 
 	costSection: '운영 비용',

@@ -56,11 +56,19 @@ export const te: Strings = {
 	waitingForSammy: 'Sammy సమాధానం కోసం వేచి ఉంది',
 	stageRetrieving: 'క్యాంపస్ వనరులలో వెతుకుతోంది',
 
+	campusResources: 'క్యాంపస్ వనరులు',
+	campusResourcesFrom: (timestamp: string) => `${timestamp} నాటి క్యాంపస్ వనరులు`,
+	timeJustNow: 'ఇప్పుడే',
+	timeMinutesAgo: (minutes: number) => `${minutes} నిమిషాల క్రితం`,
+	timeHoursAgo: (hours: number) => `${hours} గంటల క్రితం`,
+
 	chatsLoadFailedWith: (message: string) => `మీ చాట్‌లను లోడ్ చేయలేకపోయాం: ${message}`,
 	chatsLoadFailed: 'మీ చాట్‌లను లోడ్ చేయలేకపోయాం.',
 	chatOpenFailedWith: (message: string) => `ఆ చాట్‌ను తెరవలేకపోయాం: ${message}`,
 	chatOpenFailed: 'ఆ చాట్‌ను తెరవలేకపోయాం.',
 	turnFailed: 'Sammy ని చేరుకోవడంలో ఏదో తప్పు జరిగింది. చాట్ API నడుస్తోందా?',
+
+	safetyContactsAria: 'అత్యవసర సంప్రదింపులు',
 
 	talkToPerson: 'ఒక వ్యక్తితో మాట్లాడండి',
 	talkToPersonAria: 'SJSU Cares లోని ఒక వ్యక్తితో మాట్లాడండి',
@@ -115,8 +123,7 @@ export const te: Strings = {
 	settingsClose: 'సెట్టింగ్‌లను మూసివేయండి',
 	close: 'మూసివేయండి',
 	languageLabel: 'భాష',
-	languageHint:
-		'ఇది ఈ యాప్ లేబుళ్లను, బటన్లను మారుస్తుంది. Sammy సమాధానాలు ఇంకా అనువదించబడవు.',
+	languageHint: 'ఇది ఈ యాప్ లేబుళ్లను, బటన్లను మారుస్తుంది.',
 	languageUnreviewed: 'యంత్ర అనువాదం. SJSU ఇంకా ఈ పదజాలాన్ని సమీక్షించలేదు.',
 
 	costSection: 'దీన్ని నడపడానికి అయ్యే ఖర్చు',

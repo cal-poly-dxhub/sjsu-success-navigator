@@ -56,11 +56,19 @@ export const pa: Strings = {
 	waitingForSammy: 'Sammy ਦੇ ਜਵਾਬ ਦੀ ਉਡੀਕ ਹੈ',
 	stageRetrieving: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤਾਂ ਵਿੱਚ ਲੱਭਿਆ ਜਾ ਰਿਹਾ ਹੈ',
 
+	campusResources: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤ',
+	campusResourcesFrom: (timestamp: string) => `${timestamp} ਦੇ ਕੈਂਪਸ ਸਰੋਤ`,
+	timeJustNow: 'ਹੁਣੇ',
+	timeMinutesAgo: (minutes: number) => `${minutes} ਮਿੰਟ ਪਹਿਲਾਂ`,
+	timeHoursAgo: (hours: number) => `${hours} ਘੰਟੇ ਪਹਿਲਾਂ`,
+
 	chatsLoadFailedWith: (message: string) => `ਤੁਹਾਡੀਆਂ ਗੱਲਬਾਤਾਂ ਲੋਡ ਨਹੀਂ ਹੋ ਸਕੀਆਂ: ${message}`,
 	chatsLoadFailed: 'ਤੁਹਾਡੀਆਂ ਗੱਲਬਾਤਾਂ ਲੋਡ ਨਹੀਂ ਹੋ ਸਕੀਆਂ।',
 	chatOpenFailedWith: (message: string) => `ਉਹ ਗੱਲਬਾਤ ਨਹੀਂ ਖੁੱਲ੍ਹ ਸਕੀ: ${message}`,
 	chatOpenFailed: 'ਉਹ ਗੱਲਬਾਤ ਨਹੀਂ ਖੁੱਲ੍ਹ ਸਕੀ।',
 	turnFailed: 'Sammy ਤੱਕ ਪਹੁੰਚਣ ਵਿੱਚ ਕੁਝ ਗੜਬੜ ਹੋ ਗਈ। ਕੀ ਚੈਟ API ਚੱਲ ਰਿਹਾ ਹੈ?',
+
+	safetyContactsAria: 'ਐਮਰਜੈਂਸੀ ਸੰਪਰਕ',
 
 	talkToPerson: 'ਕਿਸੇ ਵਿਅਕਤੀ ਨਾਲ ਗੱਲ ਕਰੋ',
 	talkToPersonAria: 'SJSU Cares ਦੇ ਕਿਸੇ ਵਿਅਕਤੀ ਨਾਲ ਗੱਲ ਕਰੋ',
@@ -115,8 +123,7 @@ export const pa: Strings = {
 	settingsClose: 'ਸੈਟਿੰਗਾਂ ਬੰਦ ਕਰੋ',
 	close: 'ਬੰਦ ਕਰੋ',
 	languageLabel: 'ਭਾਸ਼ਾ',
-	languageHint:
-		'ਇਸ ਨਾਲ ਇਸ ਐਪ ਦੇ ਆਪਣੇ ਲੇਬਲ ਅਤੇ ਬਟਨ ਬਦਲਦੇ ਹਨ। Sammy ਦੇ ਜਵਾਬਾਂ ਦਾ ਅਨੁਵਾਦ ਅਜੇ ਨਹੀਂ ਹੁੰਦਾ।',
+	languageHint: 'ਇਸ ਨਾਲ ਇਸ ਐਪ ਦੇ ਆਪਣੇ ਲੇਬਲ ਅਤੇ ਬਟਨ ਬਦਲਦੇ ਹਨ।',
 	languageUnreviewed: 'ਮਸ਼ੀਨੀ ਅਨੁਵਾਦ। SJSU ਨੇ ਅਜੇ ਇਸ ਸ਼ਬਦਾਵਲੀ ਦੀ ਜਾਂਚ ਨਹੀਂ ਕੀਤੀ।',
 
 	costSection: 'ਇਸਨੂੰ ਚਲਾਉਣ ਦੀ ਲਾਗਤ',

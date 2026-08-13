@@ -5,8 +5,10 @@
  *
  * WHAT LIVES HERE IS PAGE CHROME - buttons, labels, headings, empty states, the frontend's
  * own error sentences, and the greeting an unused chat opens with. Sammy's replies and the
- * cards are not here: they come off the server in whatever language the server produced
- * them, and switching those is a separate job with a separate contract.
+ * cards are not here and never will be: they are written by the model, which now answers in
+ * the language of the student's own message, cards included (app/prompts.py). Two separate
+ * mechanisms reaching the same student, deliberately - this file is a translation SJSU can
+ * review line by line, and the reply is a generation nobody can review in advance.
  *
  * Interpolation is a function per string, which TypeScript checks for arity in a way a
  * `{{name}}` placeholder never would.
@@ -79,12 +81,31 @@ export const en = {
 	waitingForSammy: "Waiting for Sammy's response",
 	stageRetrieving: 'Looking through campus resources',
 
+	// The card group under a reply, named for a screen reader rather than left as an
+	// unlabelled region. The archived form carries the timestamp because a chat reopened
+	// from history has several groups, and one name for all of them tells a student
+	// stepping through the landmarks nothing about which reply they have landed on.
+	campusResources: 'Campus resources',
+	campusResourcesFrom: (timestamp: string) => `Campus resources from ${timestamp}`,
+	// The timestamp inside that label, and on screen above the group. These three are the
+	// only parts of it written here: past a day it is a date, which the browser formats in
+	// the chosen language rather than this file (lib/formatTimestamp.ts).
+	timeJustNow: 'Just now',
+	timeMinutesAgo: (minutes: number) => `${minutes}m ago`,
+	timeHoursAgo: (hours: number) => `${hours}h ago`,
+
 	// Failures the frontend says on its own behalf. Not replies: Sammy did not write these.
 	chatsLoadFailedWith: (message: string) => `Could not load your chats: ${message}`,
 	chatsLoadFailed: 'Could not load your chats.',
 	chatOpenFailedWith: (message: string) => `Could not open that chat: ${message}`,
 	chatOpenFailed: 'Could not open that chat.',
 	turnFailed: 'Something went wrong reaching Sammy. Is the chat API running?',
+
+	// The crisis panel's accessible name, and the ONLY string of that panel in this file.
+	// Everything inside it - each label, number and link - is table-authored server-side
+	// (app/safety.py) and arrives already fixed, which is the point: a crisis contact is
+	// the one thing on screen a translation bug must not be able to reword.
+	safetyContactsAria: 'Safety contacts',
 
 	// The handoff to a human, and the panel behind it. SJSU Cares, the phone number, the
 	// email and the building name are proper nouns and stay as SJSU publishes them.
@@ -150,8 +171,12 @@ export const en = {
 	settingsClose: 'Close settings',
 	close: 'Close',
 	languageLabel: 'Language',
-	languageHint:
-		"Changes this app's own labels and buttons. Sammy's answers are not translated yet.",
+	// One sentence, and it is about THIS CONTROL rather than about the app's languages. The
+	// second sentence it used to carry - that Sammy's answers are not translated - stopped
+	// being true when the system prompt started following the student's own message, and a
+	// stale caveat is worse than none: it tells a student not to bother asking in Spanish.
+	// Nothing replaces it here, because the picker does not steer Sammy. The message does.
+	languageHint: "Changes this app's own labels and buttons.",
 	languageUnreviewed: 'Machine translated. SJSU has not reviewed this wording yet.',
 
 	// The cost breakdown, nested inside settings.

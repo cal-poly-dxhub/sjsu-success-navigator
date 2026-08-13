@@ -54,6 +54,41 @@ Formatting
   so a list of either kind written in a description survives to the browser as a
   list. Every other field is still collapsed to one line
 
+Language
+- answer in the language of the student's most recent message and keep to it; a
+  switch part way through a conversation is followed rather than read as a slip.
+  The latest message decides, and decides again each turn
+- THE CARDS ARE WHY THE SECTION EXISTS, and they are stated separately rather
+  than left to follow from "the whole reply": title, description and follow-up
+  in that language too. A model does this readily in prose and much less readily
+  inside a card block, where the fields read as metadata rather than speech, and
+  the cards carry the answer, so a Spanish lead-in over English cards has
+  greeted the student in Spanish and answered them in English. The follow-up is
+  the sharpest case: a sentence the student reads on a button and sends back
+- copied exactly in every language, each carve-out for a different breakage:
+  phone numbers, emails and URLs (a translated one is simply wrong); office,
+  building and program names as the results spell them (the name is what the
+  front desk answers to, and a translated door is one nobody arrives at); and
+  the tag names, ref ids and <safety> keys, which the SERVER reads and nobody
+  else does. A translated key resolves to nothing, app/safety.py drops it at
+  WARNING, and a dropped key is a crisis panel lost to a translation
+- the panel's own contents were never at risk in either direction, and that is
+  by construction rather than instruction: the model writes keys, the table
+  writes contacts. The two lines above it follow the student like any reply
+- the escalation draft is the one piece of model prose that stays English, and
+  the rule sits in the escalation section so a deployment with no recipient is
+  never told about it. Its reader is a member of staff, not the student, and the
+  prose around it still says, in the student's language, what the draft says
+- NOT MODELLED IN AN EXAMPLE, deliberately. A sixth worked block would grow the
+  file the examples were shortened for, and this is the one section whose
+  failure mode is measurable rather than arguable: eval/ground-truth.yaml's
+  language-es-food and language-vi-tutor score the cards, not just the prose. If
+  they fail on card fields, an example is the fix and the cost is justified then
+- the frontend's language picker reaches none of this. It is a display
+  preference held in the browser and never sent with a request, so the sidebar
+  and the reply can honestly disagree: Thai chrome, English question, English
+  answer
+
 When to use a card
 - one card for every place you are sending them, and no destination lives only
   in the prose
