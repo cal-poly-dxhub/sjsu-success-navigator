@@ -235,9 +235,14 @@ class TurnSources:
     given the first time, so the model is never shown the same page under two numbers and
     never has to guess which one to cite.
 
-    Ids are NOT stable across turns and nothing persists them. A ref from a previous turn is
-    exactly as unresolvable as one the model invented, which is the intended behaviour - the
-    map is rebuilt from the sources this turn actually retrieved.
+    Ids are NOT stable across turns. A ref from a previous turn is exactly as unresolvable as
+    one the model invented, which is the intended behaviour - the map is rebuilt from the
+    sources this turn actually retrieved.
+
+    What IS persisted is the finished pairs a reply cited, and only those (see
+    `cited_source_urls` and `from_stored` below). That is what lets a stored reply be
+    re-rendered later without re-running the search: the URLs come back off the record rather
+    than out of a fresh retrieval that might resolve the same ref to a different page.
     """
 
     def __init__(self) -> None:
@@ -285,10 +290,46 @@ class TurnSources:
 
         return options
 
+    @classmethod
+    def from_stored(cls, urls_by_ref: dict[int, str] | None) -> "TurnSources":
+        """The map a stored reply cited, rebuilt from the record rather than from a search.
+
+        THE READ PATH'S HALF OF "THE MODEL NEVER AUTHORS A URL". Re-rendering a stored reply
+        means resolving its `<card ref="2">` blocks again, and the only honest way to do that
+        is against the pairs that turn actually recorded: re-running the retrieval would
+        resolve the same ref against today's index, which can be a different page from the
+        one the student was shown, and taking a URL out of the model's text is the thing this
+        whole module exists to prevent.
+
+        `title` and `text` come back empty because nothing on the display path reads them -
+        they are what the MODEL was shown during the turn, and a stored reply is finished.
+        The one field a card needs from here is the URL.
+        """
+        sources = cls()
+        for ref_id, url in (urls_by_ref or {}).items():
+            option = SourceOption(
+                ref_id=int(ref_id),
+                title="",
+                text="",
+                source_url=str(url),
+                section=None,
+            )
+            sources._by_id[option.ref_id] = option
+            sources._by_url[option.source_url] = option
+            sources._next_id = max(sources._next_id, option.ref_id + 1)
+        return sources
+
     def resolve(self, ref_id: int | None) -> SourceOption | None:
         if ref_id is None:
             return None
         return self._by_id.get(ref_id)
+
+    def ref_for_url(self, url: str) -> int | None:
+        """The id this turn gave a URL, or None. The inverse of `resolve`, and it exists for
+        one caller: working out which pairs a finished reply cited, so those and nothing else
+        are stored with it."""
+        option = self._by_url.get((url or "").strip())
+        return None if option is None else option.ref_id
 
     def known_ids(self) -> list[int]:
         return sorted(self._by_id)
@@ -647,6 +688,28 @@ def cards_from_parsed(
         )
 
     return cards
+
+
+def cited_source_urls(
+    cards: list[StatementCard],
+    sources: TurnSources,
+) -> dict[int, str]:
+    """The ref-to-URL pairs a FINISHED reply cited. What gets stored beside its text.
+
+    Read off the cards that survived rather than off the blocks the model wrote, which is
+    the difference between recording what the student was shown and recording what was
+    asked for: a block dropped for having no title, a card past the cap, and every card on a
+    safety turn are all absent here, because none of them reached the screen.
+
+    A card whose ref did not resolve contributes nothing - it has no URL to record - and
+    re-rendering it later drops the source button again, exactly as the live turn did.
+    """
+    urls: dict[int, str] = {}
+    for card in cards:
+        ref_id = sources.ref_for_url(card.source_url)
+        if ref_id is not None:
+            urls[ref_id] = card.source_url
+    return urls
 
 
 def _card_id(index: int, source: SourceOption | None) -> str:

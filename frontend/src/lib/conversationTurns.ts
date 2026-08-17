@@ -86,8 +86,10 @@ export function appendConversationTurn(
  *
  * The stored shape is one item per MESSAGE and the feed's unit is an exchange, so this
  * pairs them: a user message opens a turn, the assistant message after it closes one. Both
- * halves come from the server - the question as the student typed it and the reply with its
- * cards - so nothing here is reconstructed from a client-side store.
+ * halves come from the server - the question as the student typed it and the reply already
+ * split around its cards - so nothing here is reconstructed from a client-side store, and
+ * nothing here decides what a reply looks like. A reopened turn and a live one are built
+ * from the same fields because the server renders them with the same code.
  *
  * A user message with no reply after it is kept as a turn with no prose. That is a turn
  * that failed after the student's message was written, which is the ordering the server
@@ -120,6 +122,8 @@ export function turnsFromStoredMessages(
 		text: string,
 		options: {
 			cards?: StatementCard[];
+			trailingText?: string;
+			safetyHandoff?: StoredMessage['safetyHandoff'];
 			escalation?: StoredMessage['escalation'];
 			createdAt?: number;
 		},
@@ -127,6 +131,13 @@ export function turnsFromStoredMessages(
 		turns.push(
 			createConversationTurn(text, {
 				cards: options.cards,
+				// The half of the reply that was written UNDER the cards, so it renders under
+				// them again. The server splits it; this only has to carry it, which is the
+				// whole of the difference between a reopened turn and the turn that was sent.
+				trailingText: options.trailingText,
+				// Server-authored from the stored reply's own keys, exactly as a live turn
+				// gets it. Nothing here decides that a turn is a safety turn.
+				safetyHandoff: options.safetyHandoff,
 				// The draft as it was assembled when the turn happened, straight off the
 				// stored record. Never rebuilt here: a conversation reopened next month must
 				// show where its message was actually going, not where config points today.
@@ -156,6 +167,8 @@ export function turnsFromStoredMessages(
 
 		push(message.text, {
 			cards: message.cards,
+			trailingText: message.trailingText,
+			safetyHandoff: message.safetyHandoff,
 			escalation: message.escalation,
 			createdAt,
 		});

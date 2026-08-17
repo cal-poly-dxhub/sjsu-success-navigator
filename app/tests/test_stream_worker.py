@@ -148,18 +148,18 @@ def test_the_preview_never_contained_the_card_markup(worker):
     assert streamed == "Two places can help with that.\n\n"
 
 
-def test_the_reply_is_persisted_as_prose_with_its_cards_alongside(worker):
-    """Same two records the buffered turn writes: the prose from BOTH sides of the card
-    group with the tags resolved out, and the cards as their own attribute. What goes back
-    to the model next turn is the text and nothing else."""
+def test_the_reply_is_persisted_as_the_model_wrote_it(worker):
+    """The same record the buffered turn writes, because it is the same response object out
+    of the same run_chat: the reply whole, tags and all, plus the pairs its cards resolved
+    against. A streamed turn and a buffered one are indistinguishable on the table."""
     stream_worker.lambda_handler(_event(), _FakeContext())
 
     written = worker.store.appended[-1]
     assert written["role"] == "assistant"
-    assert "<card" not in written["text"]
+    assert "<card" in written["text"], "the record keeps the card group's position"
     assert "Two places can help with that." in written["text"]
     assert "Which of those sounds closer" in written["text"]
-    assert written["cards"][0]["title"] == "Writing Center"
+    assert written["sources"], "and the URLs those cards resolved against"
 
 
 def test_the_turn_reads_history_without_re_reading_the_message_just_written(worker):
@@ -205,7 +205,7 @@ def test_a_closed_tab_stops_the_pushing_but_the_turn_is_still_finished(monkeypat
     assert worker.frames == [], "nothing was delivered"
     written = worker.store.appended[-1]
     assert written["role"] == "assistant", "the reply is on record for when they return"
-    assert written["cards"], "with its cards, so a reopened conversation is complete"
+    assert written["sources"], "with its sources, so a reopened conversation is complete"
 
 
 def test_a_failed_loop_tells_the_student_rather_than_leaving_the_socket_silent(

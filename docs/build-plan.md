@@ -441,6 +441,29 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       EVERY NUMBER ABOVE LIVES IN lib/deckTuning.ts, one object, read at use rather than
       captured at import, so a local harness can drive them from sliders. Nothing in the app
       writes to it and the shipped build runs the defaults exactly as it would `const`s.
+- [x] a reopened conversation is the same turn that was sent, not a rebuild of one
+      (app/history.py, app/orchestrator.py replay_stored_reply). THE RECORD IS NOW THE
+      MODEL'S OWN REPLY, tags and all, plus the ref-to-URL pairs its cards cited; `cards` is
+      no longer written. It used to be stored pre-rendered - the lead-in and the closing line
+      glued together with the cards in a second attribute - and nothing in that shape could
+      say WHICH SIDE of the card group a piece of prose sat on, so a three-part reply came
+      back as one bubble with the cards below it and the closing question no longer under the
+      cards it was asking about. DIAGNOSED FIRST, against the live table: all 74 message rows
+      present, every conversation strictly alternating, the log accounting closing exactly
+      (64 turns ever completed, 27 in deleted conversations, 37 assistant rows stored), and
+      the deployed read path returning every one of them - so this was never a lost write or
+      a dropped read, which is what ruled out the three cheaper fixes. THE SAFETY PANEL IS
+      THE REASON THIS WAS WORTH A SCHEMA CHANGE rather than one more stored field: its keys
+      were parsed out at write time and discarded, so a reopened crisis turn came back as
+      prose with no contacts, and no amount of adding fields to the old shape reaches
+      something that was never recorded. Now the keys are still in the text and app/safety.py
+      resolves them again on the way out. The draft stays RECORDED rather than re-derived,
+      the one carve-out, because it was addressed from deploy config and the token that turn
+      was sent with. Tags come off at the one point history becomes model input, so the model
+      is never handed back its own markup - a `<safety>` tag copied out of last week's reply
+      would be a panel fired by imitation. No backfill: a row carrying `cards` is served the
+      way it always was, and all 19 of them on the live table were replayed through the new
+      read path to prove it.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

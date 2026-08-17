@@ -440,6 +440,59 @@ def test_history_is_trimmed_to_the_configured_window(monkeypatch, no_retrieval):
     assert "three" in sent and "four" in sent, "the window's turns must survive"
 
 
+def test_the_model_is_never_handed_back_its_own_markup(monkeypatch, no_retrieval):
+    """A stored reply is the model's RAW text - that is what makes a reopened conversation
+    re-renderable - so the tags are still in it when history is read back.
+
+    They come off here, at the one point history becomes model input. Handing them over
+    would teach the model that a transcript is a place where tags appear, and it would start
+    writing them where they do not belong. The `<safety>` half is the one worth being certain
+    about: a tag copied out of last week's reply is a crisis panel fired by imitation rather
+    than by triage.
+    """
+    fake = _FakeBedrock([_text_turn("hi")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="and financial aid?"),
+        _SETTINGS,
+        history=[
+            stored("user", "where is tutoring?"),
+            stored(
+                "assistant",
+                'Two places can help.\n\n<card ref="1"><title>Peer Connections</title>'
+                "<desc>Drop-in tutoring.</desc></card>\n\n"
+                "<safety></safety>Which one?",
+            ),
+        ],
+    )
+
+    sent = str(fake.kwargs["messages"])
+    assert "<card" not in sent and "<safety" not in sent and "<title" not in sent
+    # The words survive; only the markup goes. Both sides of the card group, because prose
+    # under the cards is prose.
+    assert "Two places can help." in sent
+    assert "Which one?" in sent
+
+
+def test_a_students_own_message_is_never_stripped_on_its_way_to_the_model(
+    monkeypatch, no_retrieval
+):
+    """Only the assistant's side is markup this server wrote the contract for. A student who
+    types an angle bracket typed an angle bracket, and quietly editing what they said is not
+    something a transcript gets to do - least of all to a disclosure."""
+    fake = _FakeBedrock([_text_turn("hi")])
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
+
+    orchestrator.run_chat(
+        ChatRequest(query="and now?"),
+        _SETTINGS,
+        history=[stored("user", "my prof said to write <card> on the form?")],
+    )
+
+    assert "<card>" in str(fake.kwargs["messages"])
+
+
 def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypatch, no_retrieval):
     """The bug this pins: `followup: true` used to append "emit no cards unless they clearly
     changed topic" to the user message, so clicking Tell me more could not produce cards while

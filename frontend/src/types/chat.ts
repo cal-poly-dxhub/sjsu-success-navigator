@@ -142,7 +142,16 @@ export type ConversationSummary = {
 export type StoredMessage = {
 	role: 'user' | 'assistant';
 	text: string;
+	/**
+	 * Prose the model wrote BELOW its card group, so a closing question comes back under the
+	 * cards it refers to rather than folded into the lead-in above them. The server re-parses
+	 * it out of the reply as the model wrote it; before it did, this side of the split had
+	 * nowhere to travel and the reply came back a different shape than it was sent.
+	 */
+	trailingText?: string;
 	cards: StatementCard[];
+	/** Resolved from the stored reply's own keys, so a reopened crisis turn keeps its contacts. */
+	safetyHandoff?: SafetyHandoff;
 	/** The draft this turn offered, as it was assembled then - not rebuilt from live config. */
 	escalation?: EmailDraft;
 	createdAt?: string;

@@ -36,6 +36,7 @@ from models import ChatRequest, ChatResponse
 from cards import (
     TurnSources,
     cards_from_parsed,
+    cited_source_urls,
     create_statement_batch,
     join_prose,
     parse_model_response,
@@ -545,17 +546,31 @@ def _build_converse_messages(
     what makes this function total. A caller that hands over more than the configured window
     gets it trimmed rather than silently billed for it.
 
-    THE TIME STAMP GOES ON THIS TURN AND NO OTHER. The history loop below copies stored
-    text through untouched, so an earlier message never acquires a timestamp it did not
-    have: the only thing the stored row records is when it was written, and stamping a
-    read-back message with the CURRENT time would tell the model a message from Tuesday
-    arrived just now. What the model gets is one clock reading, attached to the one turn
-    that is actually happening at it.
+    THE MODEL IS NEVER SHOWN ITS OWN MARKUP. A stored assistant reply is the model's RAW
+    text - that is what makes a reopened conversation re-renderable (see replay_stored_reply)
+    - so the card, safety and escalation tags are still in it, and handing them back would
+    teach the model that a transcript is a place where tags appear. It would start writing
+    them where they do not belong, and a `<safety>` tag copied out of last week's reply is a
+    panel fired by imitation rather than by triage. The tags come off HERE, at the one point
+    where history becomes model input, rather than at the store - the record stays whole and
+    every caller gets the same treatment without having to remember to ask for it.
+
+    A STUDENT'S OWN MESSAGE GOES THROUGH UNTOUCHED. It is their words, and stripping them
+    would quietly edit a disclosure; a student who types an angle bracket typed an angle
+    bracket. Only the assistant's side is markup this server wrote the contract for.
+
+    THE TIME STAMP GOES ON THIS TURN AND NO OTHER. The history loop below never restamps a
+    stored message: the only thing the stored row records is when it was written, and
+    stamping a read-back message with the CURRENT time would tell the model a message from
+    Tuesday arrived just now. What the model gets is one clock reading, attached to the one
+    turn that is actually happening at it.
     """
     messages: list[dict[str, Any]] = []
 
     for item in list(history)[-settings.max_history_messages :]:
         text = item.text.strip()
+        if item.role == "assistant":
+            text = strip_card_tags(text)
         if not text:
             continue
         messages.append({"role": item.role, "content": [{"text": text}]})
@@ -661,7 +676,83 @@ def _response_from_text(
     query: str,
     settings: Settings,
 ) -> ChatResponse:
-    """Parse one model reply into the wire response. The only place cards come from.
+    """Parse one LIVE model reply into the wire response. The only place cards come from.
+
+    The offer is built here and nowhere else in this path. A SAFETY TURN NEVER CARRIES ONE:
+    the panel is the handoff and it owns everything under the message, so an offer to email
+    an office would sit between a student in crisis and the numbers they need. The prompt
+    says so and this says so again, beside the card drop, because both are the same rule
+    about what a safety turn is allowed to contain. apply_safety_handoff_to_response drops it
+    on the other route into a safety turn - prose that names crisis lines without the tag.
+    """
+    parsed = parse_model_response(text)
+    escalation = (
+        None
+        if parsed.needs_safety
+        else build_email_draft(parsed.escalation_prose, settings=settings)
+    )
+    return _assemble_response(
+        parsed,
+        text=text,
+        sources=sources,
+        query=query,
+        settings=settings,
+        escalation=escalation,
+    )
+
+
+def replay_stored_reply(
+    *,
+    text: str,
+    urls_by_ref: dict[int, str] | None,
+    escalation: Any | None,
+    query: str,
+    settings: Settings,
+) -> ChatResponse:
+    """One STORED assistant reply, rendered by the code that rendered it live.
+
+    THE SAME PARSER AND THE SAME EXIT, which is the whole reason the record is the model's
+    own text rather than the halves it was rendered into. A reopened reply is not
+    reconstructed from fields that have to be kept in step with the live path; it is the same
+    function fed the same string, so the two cannot drift. That is the argument the streaming
+    path already makes about its final payload, applied to the one other place a turn gets
+    built.
+
+    `urls_by_ref` is what this reply cited, off the record (app/cards.py, cited_source_urls).
+    The refs resolve against those pairs and nothing else - no retrieval runs here, so
+    reopening a conversation costs one query and never a model call.
+
+    `escalation` IS PASSED IN RATHER THAN REBUILT, and it is the one field this function
+    does not derive. build_email_draft reads the recipient and subject out of today's
+    deploy config and the turn's own token, so re-deriving would render where a message
+    would go NOW instead of where the student was told it was going. The stored bytes are
+    the answer; a safety turn drops them below exactly as a live one does.
+
+    Re-parsing means a stored reply is rendered under TODAY'S rules - today's caps, today's
+    dash normalisation, today's contact roster. That is deliberate and it cuts both ways: a
+    fixed rendering bug fixes every conversation already on the table, and a changed card
+    contract re-renders history along with it.
+    """
+    return _assemble_response(
+        parse_model_response(text),
+        text=text,
+        sources=TurnSources.from_stored(urls_by_ref),
+        query=query,
+        settings=settings,
+        escalation=escalation,
+    )
+
+
+def _assemble_response(
+    parsed,
+    *,
+    text: str,
+    sources: TurnSources,
+    query: str,
+    settings: Settings,
+    escalation: Any | None,
+) -> ChatResponse:
+    """One parsed reply as the wire response, live or replayed. THE ONE EXIT.
 
     The reply reaches the student in the order it was written: `conversationalText` is the
     prose above the card group and `trailingText` the prose below it, so a closing question
@@ -674,20 +765,6 @@ def _response_from_text(
     a malformed card - an unclosed tag, a block with no title - reaches the student as the
     model's words instead of vanishing.
     """
-    parsed = parse_model_response(text)
-
-    # The offer, built once, here. A SAFETY TURN NEVER CARRIES ONE: the panel is the handoff
-    # and it owns everything under the message, so an offer to email an office would sit
-    # between a student in crisis and the numbers they need. The prompt says so and this
-    # says so again, beside the card drop, because both are the same rule about what a
-    # safety turn is allowed to contain. apply_safety_handoff_to_response drops it on the
-    # other route into a safety turn - prose that names crisis lines without the tag.
-    escalation = (
-        None
-        if parsed.needs_safety
-        else build_email_draft(parsed.escalation_prose, settings=settings)
-    )
-
     if parsed.needs_safety:
         if parsed.escalation_prose is not None:
             logger.info(
@@ -740,6 +817,12 @@ def _response_from_text(
         statementBatches=batches or None,
         escalation=escalation,
         talkToPersonAvailable=True,
+        # THE RECORD, and it is the model's own text rather than the halves above. `text` is
+        # empty in exactly one situation - the loop produced nothing before it ran out - and
+        # there the assembled prose IS what the student was shown, so falling back to it
+        # keeps the record from being an empty message the display read would skip.
+        raw_text=text or join_prose(prose, trailing),
+        sources=cited_source_urls(cards, sources),
     )
     # The whole message is screened, both sides of the split: a hotline named under the
     # cards has to attach the panel exactly as one named above them.

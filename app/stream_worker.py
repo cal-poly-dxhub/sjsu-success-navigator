@@ -176,13 +176,14 @@ def lambda_handler(event, context):
             user_id=user_id,
             conversation_id=conversation_id,
             role="assistant",
-            text=join_prose(response.conversational_text, response.trailing_text),
-            cards=[
-                card.model_dump(by_alias=True)
-                for batch in (response.statement_batches or [])
-                for card in batch.cards
-            ],
-            # Stored beside the cards, for the same reason and by the same rule as the
+            # THE SAME RECORD THE BUFFERED PATH WRITES, because it is the same response
+            # object out of the same run_chat: the model's own text plus the pairs its cards
+            # resolved against. A turn that streamed and one that did not are indis-
+            # tinguishable on the table, which is what keeps "the finished turn renders
+            # identically" true of a reopened conversation and not only of a live one.
+            text=response.raw_text,
+            sources=response.sources,
+            # The one field that is recorded rather than re-derived, by the same rule as the
             # buffered path (app/handler.py, _stored_escalation): a reopened conversation
             # re-renders the bytes the student was shown rather than reassembling them.
             escalation=(
