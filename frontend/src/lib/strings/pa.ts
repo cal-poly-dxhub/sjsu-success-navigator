@@ -55,6 +55,7 @@ export const pa: Strings = {
 	thinking: 'ਸੋਚ ਰਿਹਾ ਹਾਂ',
 	waitingForSammy: 'Sammy ਦੇ ਜਵਾਬ ਦੀ ਉਡੀਕ ਹੈ',
 	stageRetrieving: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤਾਂ ਵਿੱਚ ਲੱਭਿਆ ਜਾ ਰਿਹਾ ਹੈ',
+	stageComposingCards: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤ ਇਕੱਠੇ ਕੀਤੇ ਜਾ ਰਹੇ ਹਨ',
 
 	campusResources: 'ਕੈਂਪਸ ਦੇ ਸਰੋਤ',
 	campusResourcesFrom: (timestamp: string) => `${timestamp} ਦੇ ਕੈਂਪਸ ਸਰੋਤ`,

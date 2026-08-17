@@ -34,7 +34,7 @@ import time
 import boto3
 from botocore.config import Config
 
-from cards import preview_safe_prefix
+from cards import card_block_started, preview_safe_prefix
 from history import ConversationStore, new_conversation_id, new_ulid
 from models import ChatRequest, ChatResponse
 from ratelimit import claim_turn
@@ -62,6 +62,12 @@ WORKER_FUNCTION_NAME = os.environ.get("STREAM_WORKER_FUNCTION_NAME", "")
 # pushing per token.
 DELTA_MIN_CHARS = int(os.environ.get("STREAM_DELTA_MIN_CHARS") or 160)
 DELTA_MAX_DELAY_MS = int(os.environ.get("STREAM_DELTA_MAX_DELAY_MS") or 250)
+
+# The stage a `status` frame carries once the model has started writing card blocks. A WIRE
+# VALUE, never a sentence: what the student reads about it is a string in the frontend's
+# catalogue, in whichever language they chose. Alongside "retrieving", which the orchestrator
+# sends before any text exists; this one marks the other end of the reply.
+CARDS_STAGE = "composing_cards"
 
 # The same store the HTTP handler uses, built the same way and connected lazily. A separate
 # instance rather than an import from handler.py: importing that module would pull the whole
@@ -286,6 +292,9 @@ class ConnectionSink:
         self._sent = 0
         self._accumulated = ""
         self._last_push = time.monotonic()
+        # Whether the "the model has started writing cards" frame has gone out. Sent at
+        # most once per turn - see _announce_cards.
+        self._cards_announced = False
         self.frames = 0
 
     def _post(self, payload) -> bool:
@@ -318,12 +327,32 @@ class ConnectionSink:
         self._accumulated = accumulated
         safe = preview_safe_prefix(accumulated)
         pending = len(safe) - self._sent
-        if pending <= 0:
+        if pending > 0:
+            now = time.monotonic()
+            if pending >= self._min_chars or (now - self._last_push) >= self._max_delay:
+                self._flush_to(safe, now)
+        self._announce_cards(accumulated)
+
+    def _announce_cards(self, accumulated):
+        """Say ONCE that the model has begun writing cards, and finish the prose first.
+
+        THE SIGNAL IS THE MODEL'S OWN OUTPUT, not a timer and not a guess: `<card` in the
+        stream is the same event that stops the preview, so this frame marks the exact
+        instant the prose ended and the part the student cannot see began. A reply that
+        never writes a card never sends it, which is what stops the browser promising
+        resources that are not coming.
+
+        The tail of the preview is flushed FIRST, and that ordering is load-bearing twice
+        over. The safe prefix cannot grow past this point, so there is nothing left to wait
+        for and the last words of the lead-in should not sit in the batcher behind a
+        min_chars threshold they may never reach. And the browser clears the indicator on
+        any arriving prose, so a delta landing after this frame would take it back off.
+        """
+        if self._cards_announced or not card_block_started(accumulated):
             return
-        now = time.monotonic()
-        if pending < self._min_chars and (now - self._last_push) < self._max_delay:
-            return
-        self._flush_to(safe, now)
+        self._cards_announced = True
+        self.flush()
+        self.status(CARDS_STAGE)
 
     def flush(self):
         """Push the tail of the preview, once the model has stopped.

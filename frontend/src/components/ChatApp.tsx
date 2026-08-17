@@ -20,6 +20,9 @@ import {
 	turnsFromResponse,
 	turnsFromStoredMessages,
 } from '../lib/conversationTurns';
+import { CARDS_STAGE } from './PendingExchange';
+import { MAX_CARDS } from './StatementStack';
+import { waitingDeck } from '../lib/waitingDeck';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
 import { SammyStage } from './SammyStage';
@@ -35,6 +38,28 @@ import { loadRuntimeConfig } from '../lib/runtimeConfig';
 import type { CostModel } from '../lib/runtimeConfig';
 import { inferSjsuCaresServiceTheme } from '../lib/sjsuCares';
 import './ChatApp.css';
+
+/**
+ * How many cards this reply will actually put on screen, which is what the waiting deck
+ * compresses to.
+ *
+ * THE LAST BATCH, because that is the one the active turn shows - `turnsFromResponse` gives
+ * the reply's own prose to the final batch and the deck on screen belongs to it. A streamed
+ * reply carries exactly one in practice.
+ *
+ * CAPPED AT THE GRID'S OWN CEILING rather than reported raw. `RagGrid` trims to `MAX_CARDS`,
+ * so a reply carrying more would otherwise square the deck up to a count the grid then
+ * throws away, and the stack and the group would disagree again for a different reason.
+ *
+ * Zero is a real answer here, not a missing one: a safety turn has its cards dropped after
+ * the model wrote them, so the deck can be up with none coming. The deck declines to
+ * compress to nothing - see settleAndCompress.
+ */
+function cardCountOf(response: ChatResponse): number {
+	const batches = response.statementBatches ?? [];
+	const last = batches[batches.length - 1];
+	return Math.min(last?.cards.length ?? 0, MAX_CARDS);
+}
 
 const CHAT_FADE_OUT_MS = 160;
 const CHAT_FADE_IN_MS = 640;
@@ -522,20 +547,39 @@ export default function ChatApp() {
 			);
 
 		const streamed = () => {
-			// Held in a local rather than read back out of state: the final payload arrives
+			// Held in locals rather than read back out of state: the final payload arrives
 			// in the same tick as the last delta, and a state read there would be stale.
 			let previewed = 0;
+			let stage: string | null = null;
 			return streamChat(
 				{ query, followup: options?.followup, conversationId },
 				{
-					onStatus: (stage) => setPendingStage(stage),
+					onStatus: (next) => {
+						stage = next;
+						setPendingStage(next);
+					},
 					onPreview: (preview) => {
 						previewed = preview.length;
+						stage = null;
 						setPendingStage(null);
 						setPendingPreview(preview);
 					},
 				},
-			).then((next) => {
+			).then(async (next) => {
+				// THE HAND-OFF WAITS FOR THE DECK TO STAND SQUARE, AND AT THE RIGHT COUNT.
+				// While the model was writing its cards the pending exchange has been
+				// showing them as a cycling stack of four - four because nobody knew yet
+				// how many were coming. This payload is the first thing that does know, so
+				// it hands the number back and waits while the deck sheds the surplus
+				// (lib/waitingDeck.ts). Two waits in one: for a rest, because a card cannot
+				// be pulled out of a stack that is mid-cycle, and then for the compress, so
+				// the stack the deal comes out of is the size the group will be.
+				//
+				// Nothing the student is reading waits on this: the prose is already typed
+				// and on screen, and a turn that never showed a deck resolves immediately.
+				if (stage === CARDS_STAGE && !reduceMotion) {
+					await waitingDeck.settleAndCompress(cardCountOf(next));
+				}
 				setPendingPreview('');
 				setPendingStage(null);
 				applyChatResponse(next, query, previewed || undefined);

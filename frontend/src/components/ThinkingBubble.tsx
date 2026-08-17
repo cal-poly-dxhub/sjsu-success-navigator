@@ -17,9 +17,17 @@ type ThinkingBubbleProps = {
 	 * and the catalogue is only readable from inside the render.
 	 */
 	label?: string;
+	/**
+	 * Wear it small, under a bubble that already holds prose.
+	 *
+	 * Same words, same dots, same announcement - the chrome comes off because a second
+	 * speech bubble below the first would read as Sammy saying two things, where this is
+	 * one thing still being said.
+	 */
+	inline?: boolean;
 };
 
-export function ThinkingBubble({ label }: ThinkingBubbleProps) {
+export function ThinkingBubble({ label, inline = false }: ThinkingBubbleProps) {
 	const t = useStrings();
 	const reduceMotion = usePrefersReducedMotion();
 	const [dotCount, setDotCount] = useState(0);
@@ -38,7 +46,10 @@ export function ThinkingBubble({ label }: ThinkingBubbleProps) {
 		// Polite rather than hidden: this is the only place the server's account of what it
 		// is doing now appears, and it used to be announced by the status line this replaces.
 		// The dots stay hidden, so a screen reader is not read a new sentence every 420ms.
-		<div className="thinking-bubble" aria-live="polite">
+		<div
+			className={`thinking-bubble${inline ? ' thinking-bubble--inline' : ''}`}
+			aria-live="polite"
+		>
 			<p className="thinking-bubble__label">
 				{label ?? t.thinking}
 				<span className="thinking-bubble__dots" aria-hidden="true">

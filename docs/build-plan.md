@@ -375,6 +375,72 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       Two eval pairs added and NOT RUN (needs account): a Spanish and a Vietnamese question
       over facts already verified elsewhere in ground-truth.yaml, so a failure there is a
       language failure and never a retrieval one.
+- [x] the wait after the prose says what it is, and a landed card stops moving on its own
+      (2026-08-12, docs/cards-v2.md, Presentation). TWO FAULTS IN THE SAME SECONDS OF A
+      STREAMED TURN. (1) The preview stops at the first tag, so the reply appeared to end and
+      the student had nothing to tell them the cards were still being written; the sink now
+      pushes the prose tail and one `status` frame the instant `<card` appears in the model's
+      own output (`cards.card_block_started`, `streaming.CARDS_STAGE`), and the pending
+      exchange shows a small indicator until the finished turn replaces it. The signal is the
+      reply, not a clock: no card block, no frame, no indicator - which is the prose-only
+      reply, roughly one in ten. A `<safety>` anywhere takes it back to no, because that turn
+      drops its cards by contract. (2) The card that "jerked backward" was not a re-fired
+      entrance and not a remount: the deal ends by restoring pointer events to the group, and
+      the `:hover` lift then landed on whichever card had stopped under a mouse nobody moved,
+      pulling it ~6px back up the path it had just flown. Measured in Chrome over CDP - the
+      card under the pointer moved 5.75px, its three neighbours moved 0.00px, and the
+      transform it settled on was `translateY(-4px) scale(1.012)`. Hover is now armed by the
+      first pointer movement after the group settles; after the fix, same pointer, 0.00px on
+      all four, and an ordinary hover a moment later still lifts. Ten catalogues gain
+      `stageComposingCards`.
+- [x] the deck is a real thing, and it is dealt from the bottom (2026-08-12, docs/cards-v2.md,
+      Presentation). THE ENTRANCE ITSELF WAS THE COMPLAINT, and the measurement bore it out:
+      every card leaves the same deck for its own slot, so the four travel 21/218/514/589px -
+      but every card got the same 0.44s, which is the same thing as giving each a different
+      SPEED, 270/2316/5151/6878 px/s rising with the index. The deal accelerated as it went and
+      the last card was a blur. Flights are sized by distance now (1150px/s, floored at 0.46s,
+      capped at 0.62s) on a cubic ease rather than the quintic that put 70% of the distance in
+      the first quarter. Buffered turns always read better here for a reason worth recording:
+      the prose types straight into the deal, where a streamed turn puts dead air between them,
+      so the burst lands cold. That air is now the deck - shown face down and shuffling from the
+      moment `<card` appears, then dealt from the BOTTOM, each card turning over as it flies,
+      with the top card flipping in place because its slot is the deck's own position. THE DECK
+      WAITS rather than shuffles - four card objects on a 198px deck at a 7px step, one beat
+      each: a 1140ms 9px nudge out of the bottom of the stack and back, leaning 2.1deg from the
+      card's top edge, then 860ms in which nothing moves, then the card above. It works upward
+      through every card and comes round again. No card changes slot, so no depth ever swaps -
+      which is what let the motion shrink to this, since a card changing depth mid-move needs a
+      dip clear of the whole stack to hide the swap. THE DECK REPORTS ITS OWN STATE
+      (lib/waitingDeck.ts) instead of the caller deriving it from keyframe percentages - two
+      versions did that and both drifted out of step with the animation they described, which
+      IS the snap.
+      THE STACK IS ALWAYS FOUR AND THE DEAL IS NOT, which was the last thing making the
+      hand-off read as two objects rather than one: nobody knows how many cards are coming
+      until the payload lands, so the deck waits at four and then a group of one came out of
+      it. The reply now hands the count back (`settleAndCompress`) and the deck SHEDS THE
+      SURPLUS before the swap - the extra cards ripple up bottom-first and tuck in under the
+      top one, 260ms each on the same 2.1deg lean, 90ms apart so the moves overlap into one
+      gesture, then a 130ms settle. One card sheds three, two sheds two, three sheds one, four
+      sheds none. After it, the stack's geometry IS the real deck's opening pose, so the swap
+      is a continuation rather than a replacement. Measured at one card: deck square at
+      y=[0,7,14,21], surplus away by 367ms, all three at y=0 behind the top card.
+      THE 190ms SETTLE THAT USED TO FOLLOW THE SWAP IS GONE. A pause reads as a breath when it
+      happens to something that has just moved and as a stall when it happens to something that
+      has just appeared - held on the new deck it was dead air, so it moved to the end of the
+      compress, on the deck that is already on screen. The deal now begins on the frame the
+      real group mounts. Measured after: hand-off shift 0.15px in document coordinates, 0
+      dropped frames, 342ms between cards, group down in 1.68s.
+      THE CARD BACKS ARE SKELETONS, not blanks - a blue title bar, two grey description lines
+      and the two buttons in their own colours, flat fills at the real card's radius and
+      padding, so a card in flight says what kind of thing it is about to be. EVERY dealing
+      card carries one; only the top of the waiting stack is ever visible, but each card is in
+      full view the moment it leaves. The two faces are separated by 1px of `translateZ`
+      because coplanar children of a `preserve-3d` element cannot be depth-sorted and fall back
+      to paint order, which showed the card's real text through its own back, MIRRORED, for the
+      whole flight - `backface-visibility` alone never got a say.
+      EVERY NUMBER ABOVE LIVES IN lib/deckTuning.ts, one object, read at use rather than
+      captured at import, so a local harness can drive them from sliders. Nothing in the app
+      writes to it and the shipped build runs the defaults exactly as it would `const`s.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

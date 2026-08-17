@@ -61,6 +61,7 @@ export const th: Strings = {
 	thinking: 'กำลังคิด',
 	waitingForSammy: 'กำลังรอคำตอบจาก Sammy',
 	stageRetrieving: 'กำลังค้นหาในแหล่งช่วยเหลือของมหาวิทยาลัย',
+	stageComposingCards: 'กำลังรวบรวมแหล่งช่วยเหลือของมหาวิทยาลัย',
 
 	campusResources: 'แหล่งช่วยเหลือในมหาวิทยาลัย',
 	campusResourcesFrom: (timestamp: string) =>

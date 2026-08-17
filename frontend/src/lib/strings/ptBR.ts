@@ -58,6 +58,7 @@ export const ptBR: Strings = {
 	thinking: 'Pensando',
 	waitingForSammy: 'Aguardando a resposta do Sammy',
 	stageRetrieving: 'Procurando nos recursos do campus',
+	stageComposingCards: 'Reunindo os recursos do campus',
 
 	campusResources: 'Recursos do campus',
 	campusResourcesFrom: (timestamp: string) => `Recursos do campus de ${timestamp}`,

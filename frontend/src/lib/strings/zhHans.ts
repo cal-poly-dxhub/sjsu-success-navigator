@@ -57,6 +57,7 @@ export const zhHans: Strings = {
 	thinking: '思考中',
 	waitingForSammy: '正在等待 Sammy 的回复',
 	stageRetrieving: '正在查找校园资源',
+	stageComposingCards: '正在整理校园资源',
 
 	campusResources: '校园资源',
 	campusResourcesFrom: (timestamp: string) => `${timestamp}的校园资源`,

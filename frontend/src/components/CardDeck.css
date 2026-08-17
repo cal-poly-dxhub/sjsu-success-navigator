@@ -16,6 +16,8 @@
 	 * dead space. The lone-card rule above is about short cards; a lone long card spans.
 	 */
 	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	/* Depth for the turn-over. Far enough back that a card flips rather than lunges. */
+	perspective: 1400px;
 	/* Each card is as tall as its own content. Nothing stretches to match its row. */
 	align-items: start;
 	gap: 0.85rem;
@@ -30,9 +32,263 @@
 
 .card-deck__item {
 	min-width: 0;
+	/*
+	 * TOP CENTRE, and the horizontal half of that is load-bearing now that a dealing card
+	 * also turns over: `rotateY` pivots on the origin, so a left origin reflects the card
+	 * across its own left edge and lands it a full width away from where it belongs. The
+	 * offsets are measured centre-to-centre to match (see the measuring effect), which is
+	 * also what keeps the deck's scale from dragging a card sideways as it grows.
+	 */
 	transform-origin: top center;
+	transform-style: preserve-3d;
 }
 
-.card-deck--dealing .card-deck__item {
+/*
+ * The two faces of a dealing card. The back is what the deck has been showing all along;
+ * the front is the card itself, hidden until the turn-over passes ninety degrees. Both are
+ * inert for a group that is not dealing - an archived or reduced-motion card renders its
+ * front and nothing else, because the item is never rotated.
+ */
+/*
+ * EACH FACE IS PUSHED A HAIR ALONG ITS OWN OUTWARD NORMAL, and that `translateZ` is what
+ * actually decides which one you see.
+ *
+ * `backface-visibility: hidden` alone was not enough, and the symptom was specific: the
+ * card's real text showed through its own back, MIRRORED, for the whole flight out of the
+ * stack - text arriving before the turn that was meant to reveal it, and reversed while it
+ * did. The cause is that both faces sat at z = 0. Coplanar children of a `preserve-3d`
+ * element cannot be depth-sorted, so the browser falls back to paint order, and the front -
+ * later in the DOM - won every tie.
+ *
+ * 1px of separation breaks the tie for good. The offset is applied AFTER each face's own
+ * rotation, so it runs along that face's normal: whichever face is turned towards the viewer
+ * is also the nearer one, at 0 degrees and at 180 alike. At a 1400px perspective it scales
+ * the face by about 0.07%, which is nothing, and it costs no animation and nothing to keep
+ * in step with the rotation.
+ */
+.card-deck__front {
+	backface-visibility: hidden;
+}
+
+/*
+ * Scoped to the deal, because the two-face arrangement only exists during one. A landed or
+ * archived card drops back to an untransformed front, which is worth having: a transform
+ * makes the element a containing block, and there is no reason to leave one standing around
+ * a card that has finished arriving.
+ */
+.card-deck--dealing .card-deck__front {
+	transform: translateZ(1px);
+}
+
+/* The same plain card back the waiting deck shows, because it is the same deck. */
+.card-deck__back {
+	position: absolute;
+	inset: 0;
+	border-radius: 0.85rem;
+	backface-visibility: hidden;
+	transform: rotateY(180deg) translateZ(1px);
+	background: linear-gradient(165deg, #ffffff 0%, #fbfaf7 100%);
+	border: 1px solid rgba(8, 90, 163, 0.14);
+	box-shadow:
+		0 6px 14px rgba(8, 90, 163, 0.09),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Nothing is ever face down when the group is presented directly. */
+.card-deck:not(.card-deck--dealing) .card-deck__back {
+	display: none;
+}
+
+/*
+ * NO `will-change: transform` HERE, deliberately, and its absence is the fix for an entrance
+ * that looked soft the moment it started.
+ *
+ * A dealing card is SCALED - it starts at deck size and grows to its own - and will-change
+ * promotes it to a layer that Chrome rasterises ONCE, at the scale it had when the layer was
+ * made. Everything in it is then a magnified copy of that small bitmap for the length of the
+ * flight: the card's border, the mosaic's blocks, the type as it turns over. Dropping the
+ * hint lets the compositor re-rasterise as the scale changes, which is a little more work per
+ * frame and the entire difference between crisp and blurred. Measured at 0 dropped frames
+ * either way.
+ */
+
+/*
+ * The waiting deck: the stack the cards are about to be dealt off, drawn while the model is
+ * still writing them. Sized to ONE grid track (the same 15.5rem floor the tracks use) and
+ * placed where the first slot will be, so the cards that follow come out of it rather than
+ * out of nowhere. Deliberately much shorter than a real card - it is a deck seen as a deck,
+ * not a card-shaped hole waiting to be filled in.
+ */
+/*
+ * The row the waiting deck sits in, laid out on THE CARD GRID'S OWN TRACKS rather than as a
+ * loose flex row. The deck must be exactly as wide as the first grid slot, because the real
+ * cards are scaled to that width when they take its place - anything else and the stack
+ * changes size at the hand-off.
+ */
+.waiting-deck-row {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	gap: 0.85rem;
+	align-items: start;
+	width: 100%;
+	min-width: 0;
+	margin-top: 0.35rem;
+}
+
+.waiting-deck {
+	position: relative;
+	/*
+	 * `waitingDeckHeightPx` in lib/deckTuning.ts is this same number and the two MUST agree:
+	 * the real cards are scaled to it while face down, so a disagreement is a stack that
+	 * changes size the instant the reply lands. In px rather than rem for that reason - the
+	 * value it has to match is in px, and a root font size that is not 16 would part them.
+	 *
+	 * The variable exists so the tuning harness can move both together; nothing in the app
+	 * sets it, so the fallback is the live value.
+	 */
+	height: var(--waiting-deck-h, 198px);
+}
+
+.waiting-deck__card {
+	position: absolute;
+	inset: 0;
+	/* Depth is fixed: no card ever changes its place in the stack, so the one written first
+	   is the one on top and nothing has to restack mid-move. */
+	/* The real card's radius. Matching it is most of what makes a placeholder read as the
+	   thing arriving rather than a box standing in for it. */
+	border-radius: 20px;
+	overflow: hidden;
+	transform-origin: top center;
+	/* The pose is written by CardDeck.tsx every frame - see deckFrame. Nothing animates from
+	   here: a keyframe list would be a second model of the cycle to keep in step with the
+	   first, which is how an earlier one drifted out of step with itself. This card only ever
+	   translates and leans, so the hint costs nothing. */
 	will-change: transform;
+	/* A plain card, face down. The stack reads as cards because there are edges behind the
+	   top one, not because anything is printed on it. */
+	background: linear-gradient(165deg, #ffffff 0%, #fbfaf7 100%);
+	border: 1px solid rgba(8, 90, 163, 0.14);
+	box-shadow:
+		0 6px 14px rgba(8, 90, 163, 0.09),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+
+/*
+ * A CARD WITHHELD. The silhouette of a real StatementCard - blue title, grey description
+ * lines, the source and follow-up buttons in their own colours - reduced to plain bars, so
+ * the deck says what KIND of thing is coming without inventing a word of it.
+ *
+ * A SOLID BAR PER LINE, and nothing cleverer. This has been a censor mosaic of 4px blocks
+ * (which read as a grid: a texture with a pitch of its own that the eye locks onto) and then
+ * a set of gradient ramps standing in for blurred type (better, but still a drawing of
+ * something rather than a placeholder). A bar states the same fact with nothing left over:
+ * a line of text goes here, this wide. There is no pitch to lock onto and no rendering to
+ * scrutinise, which is what makes it sit quietly under the real card that follows.
+ *
+ * NOTHING FILTERED, and that constraint has not moved - see the note in CardDeck.tsx.
+ * `filter: blur()` was never available here: a filter rasterises in the element's own
+ * coordinate space, and this element is scaled on two axes and turned over in 3D at once, so
+ * the radius would swim as the card grows. Worse, a filter forces its own flattening context,
+ * which is the exact thing that breaks the turn-over above. Flat fills have neither problem
+ * and the compositor resamples them cleanly at any scale.
+ */
+.card-ghost {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	border-radius: inherit;
+}
+
+.card-ghost__inner {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: var(--deck-w, 100%);
+	/*
+	 * The fallback is for the WAITING deck, which sets none of these: it is already the deck's
+	 * own size, so there is nothing to counter-scale. A dealing card's back sets all four from
+	 * its measured geometry. The fallback must therefore track `waitingDeckHeightPx` - leave it
+	 * behind and the ghost lays out in a box shorter than the card it is drawn on, which parks
+	 * the buttons partway up.
+	 */
+	height: var(--deck-h, 198px);
+	transform: scale(calc(1 / var(--deck-sx, 1)), calc(1 / var(--deck-sy, 1)));
+	transform-origin: top left;
+	display: flex;
+	flex-direction: column;
+	/* The real card's own padding and gap. */
+	gap: 0.55rem;
+	padding: 0.9rem 0.95rem 1rem;
+	box-sizing: border-box;
+}
+
+/*
+ * ONE LINE OF TYPE, AS A BAR.
+ *
+ * Flat fill, and a small radius so the ends read as deliberate rather than cropped. The
+ * height is the WEIGHT of the line it stands for, not the height of its box - a body line
+ * carries less ink than a title, so it is thinner as well as longer.
+ */
+.card-ghost__bar {
+	flex: none;
+	background: currentColor;
+	border-radius: 0.2rem;
+}
+
+.card-ghost__title {
+	height: 0.72rem;
+	width: 58%;
+	color: var(--accent-blue);
+	opacity: 0.5;
+}
+
+/* The description: two lines, the second short, which is what an ending paragraph does. */
+.card-ghost__line {
+	height: 0.55rem;
+	width: 100%;
+	color: var(--card-body-color, #2a3440);
+	opacity: 0.26;
+}
+
+.card-ghost__line--short {
+	width: 71%;
+}
+
+.card-ghost__actions {
+	display: flex;
+	gap: 0.4rem;
+	margin-top: auto;
+}
+
+/*
+ * A control, not a line of type: solid in its own colour at the real control radius, and
+ * EMPTY. The fill is exact - it is the button, and a button is a shape the student is about
+ * to press, so nothing about its outline is withheld.
+ *
+ * NO LABEL INSIDE IT. A bar sitting on a button is a placeholder drawn on top of a thing that
+ * is already a placeholder, and at this size it read as a smudge on the control rather than
+ * as words. The coloured shape alone says "two buttons, here", which is the whole of what
+ * this has to say.
+ *
+ * Deliberately NOT carrying `.card-ghost__bar`: that class is a line of type, at a type
+ * weight and a type radius, and a control is neither.
+ */
+.card-ghost__button {
+	flex: none;
+	height: 1.65rem;
+	border-radius: var(--control-radius);
+	opacity: 0.62;
+}
+
+.card-ghost__button--source {
+	width: 27%;
+	background: var(--btn-secondary-face);
+	color: #ffffff;
+}
+
+.card-ghost__button--followup {
+	width: 33%;
+	background: var(--btn-primary-face);
+	color: #1a2f4a;
 }

@@ -55,6 +55,7 @@ export const ja: Strings = {
 	thinking: '考え中',
 	waitingForSammy: 'Sammy の返答を待っています',
 	stageRetrieving: 'キャンパスのリソースを調べています',
+	stageComposingCards: 'キャンパスのリソースをまとめています',
 
 	campusResources: 'キャンパスのリソース',
 	campusResourcesFrom: (timestamp: string) => `${timestamp}のキャンパスのリソース`,

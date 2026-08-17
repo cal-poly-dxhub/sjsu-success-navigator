@@ -880,6 +880,56 @@ def test_the_prefix_only_ever_grows_as_the_reply_does():
         seen = prefix
 
 
+# --- card_block_started: the one honest answer to "are cards coming?" ---------------------
+
+
+def test_a_card_opening_is_what_says_cards_are_coming():
+    """The lead-in ends where the first card block begins, so this is the same instant the
+    preview stops - which is what makes it a signal about the reply rather than a guess."""
+    assert cards.card_block_started('Two places.\n\n<card ref="2">')
+    assert cards.card_block_started("Two places.\n\n<CARD REF='2'>")
+
+
+def test_prose_alone_never_says_cards_are_coming():
+    """About one reply in ten is prose only. An indicator promising resources that never
+    arrive is worse than the gap it filled, so nothing here predicts from length or timing."""
+    for text in ("", "The deadline is 4pm.", "Take <15 units to stay part time.", "a < b"):
+        assert not cards.card_block_started(text)
+
+
+def test_a_partial_opening_is_not_an_answer_yet():
+    """preview_safe_prefix stops on a partial because the rest of the tag MIGHT arrive; this
+    waits for the whole opening, because a maybe is not something to promise a student."""
+    for partial in ("Try this. <", "Try this. <c", "Try this. <ca", "Try this. <car"):
+        assert not cards.card_block_started(partial)
+    assert cards.card_block_started("Try this. <card")
+
+
+def test_another_tag_of_the_contract_is_not_a_card():
+    """The other tags stop the preview too, and none of them puts a card group on screen."""
+    for tag in ("title", "desc", "followup", "escalate_to_human"):
+        assert not cards.card_block_started(f"prose <{tag}>x</{tag}>")
+
+
+def test_a_safety_tag_takes_it_back_to_no():
+    """Safety turns drop their cards by contract, so a reply carrying that tag has no card
+    group to announce however many blocks the model wrote beside it."""
+    assert not cards.card_block_started("Please call now.\n\n<safety>caps</safety>")
+    assert not cards.card_block_started(
+        'Please call now.\n\n<safety>caps</safety>\n<card ref="1">'
+    )
+
+
+def test_it_never_takes_back_an_answer_as_the_cards_are_written():
+    """Once it is true it stays true for the rest of the card blocks, so a caller can send
+    one frame and stop asking."""
+    reply = 'Here.\n\n<card ref="1"><title>T</title></card>\n<card ref="2"></card>'
+    first = next(
+        length for length in range(len(reply) + 1) if cards.card_block_started(reply[:length])
+    )
+    assert all(cards.card_block_started(reply[:length]) for length in range(first, len(reply) + 1))
+
+
 def test_the_preview_does_not_cap_or_normalise_anything():
     """Both belong to the finished reply and are applied there, once. Doing either here
     would be the duplication the streaming design exists to avoid - and a substitution near

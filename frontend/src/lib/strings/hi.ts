@@ -56,6 +56,7 @@ export const hi: Strings = {
 	thinking: 'सोच रहा हूँ',
 	waitingForSammy: 'Sammy के उत्तर की प्रतीक्षा है',
 	stageRetrieving: 'कैंपस संसाधनों में खोजा जा रहा है',
+	stageComposingCards: 'कैंपस संसाधन जुटाए जा रहे हैं',
 
 	campusResources: 'कैंपस संसाधन',
 	campusResourcesFrom: (timestamp: string) => `${timestamp} के कैंपस संसाधन`,

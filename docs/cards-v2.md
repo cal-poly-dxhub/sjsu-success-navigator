@@ -311,18 +311,109 @@ nowhere left to hide text.
 - **The prose stays.** It is never replaced, scaled away or scrolled off by the
   cards. The column grows underneath it and the view anchors to the top of the
   card group, once, when the group first appears.
-- **The group enters by dealing off a deck.** Cards leave the deck one at a
-  time, top card first, and land in final form; the last card is down inside
-  1.5s at the card ceiling of four (0.34s between cards, 0.44s of flight each),
-  which is paced to the prose above rather than to itself. There is no reveal button and nothing to
-  press - the prose finishing typing is what brings the cards out. The composer
-  stays interactive throughout, and a click on a card mid-entrance does nothing
-  rather than landing on a card that is about to move out from under it.
+- **The group enters by dealing off a deck, and the deck is a real thing.** It
+  is on screen before the cards are: while the model is still writing them the
+  pending exchange shows the stack, face down, CYCLING - four card objects taking
+  turns. A BEAT is one nudge and one rest: a card dips 9px out of the bottom of
+  the stack and returns to exactly where it started (1140ms, eased off both ends
+  so it stops before it comes back, leaning 2.1deg from its own top edge as it
+  goes), and then EVERYTHING STOPS for 860ms before the card above it takes its
+  turn. It works upward from the bottom through every card, then comes round
+  again. NO CARD EVER CHANGES SLOT, which is the structural point rather than a
+  simplification. Versions that cycled cards through the stack had to change a
+  card's depth mid-move, and a card swapping from behind the deck to in front of
+  it is a jump no easing hides - so it needed a dip far enough to clear the whole
+  stack first, and that dip was most of the motion. With the order fixed, what is
+  left is the small part that was saying something. There is no reveal button and
+  nothing to press.
+- **The backs are skeletons, and every dealing card carries one.** A blue title
+  bar, two grey description lines with the second short, and the source and
+  follow-up buttons in their own colours - flat fills at the real card's radius,
+  padding and gap, so a card in flight already says what kind of thing it is
+  about to be. Solid bars rather than anything cleverer: this was a censor mosaic
+  of 4px blocks, which read as a GRID with a pitch of its own that the eye locks
+  onto, and then gradient ramps standing in for blurred type, which was better
+  but still a drawing of something rather than a placeholder. Nothing is
+  filtered - a `blur()` rasterises in the element's own coordinate space, and
+  this element is scaled on two axes and turned over in 3D at once, so the radius
+  would swim as the card grows. There is no text anywhere in it and nothing to
+  read underneath, so it cannot fail in a way that reveals content.
+- **The stack is always four; the group is not. The deck compresses to fit.**
+  Nobody knows how many cards are coming until the payload lands, so the deck
+  waits at four - a row of skeletons that turns into one card is a promise the
+  reply then breaks. When the reply arrives it hands the count back, and before
+  the swap the SURPLUS CARDS RIPPLE UP AND TUCK IN under the top one: bottom-most
+  first, 260ms each on the deck's own 2.1deg lean, 90ms apart so the moves
+  overlap into a single gesture travelling up the stack, then a 130ms settle. One
+  card sheds three, two sheds two, three sheds one, four sheds none. Spread,
+  compress, deal. After the compress the stack's geometry IS the real deck's
+  opening pose, which is what turns the hand-off from a swap into a
+  continuation - and the beat that used to sit AFTER the swap, on a deck the
+  student had never seen move, now sits at the end of the compress on one that
+  just did. A pause reads as a breath after motion and as a stall after nothing.
+- **The deal is dealt from the BOTTOM, and the top card never moves.** Cards
+  leave one at a time, 0.34s apart, each turning over in the back half of its
+  flight - they have been face down, so they arrive by being turned up. The card
+  on top goes last and its slot IS the deck's position, measured at (0, 0): it
+  has nowhere to fly, so it flips where it lies. That is the geometry rather than
+  a flourish, and it is why the order reversed.
+- **A flight is sized by its distance, not by a fixed duration.** Every card
+  leaves the same deck for its own slot, so they do not travel the same way: at a
+  1440px viewport the four distances are 21, 218, 514 and 589px. One duration for
+  all of them meant one SPEED each, rising with the index - 270, 2316, 5151 and
+  6878 px/s measured in Chrome - so the deal accelerated as it went and the last
+  card was a blur, then crawled. Duration is now distance over 1150px/s, floored
+  at 0.46s (what the top card's turn-over needs) and capped at 0.62s, and the
+  ease is a cubic rather than the quintic that put 70% of the distance into the
+  first quarter of the flight. The group is down inside ~1.7s at the ceiling of
+  four.
+- **The deal never starts out of a moving deck, and that is what stops the
+  hand-off snapping.** The reply's arrival is HELD until the deck is in one of
+  its rests - at most one travel away - and the deck stops there, square, every
+  card on a slot. The compress then runs (above), and its closing settle is the
+  beat of stillness the first card slides out from under; there is no separate
+  freeze after the swap. THE DECK REPORTS THIS ITSELF
+  (`lib/waitingDeck.ts`) rather than the caller computing it: two earlier
+  versions derived the still moments from keyframe percentages, which is a second
+  model of the animation kept in step with the first by hand, and both drifted -
+  the caller believed the deck was still while it was mid-move, which is exactly
+  what the snap was. Nothing else waits on the hold: the prose is typed and on
+  screen already, and a turn that never showed a deck resolves immediately.
+- The composer stays interactive throughout, and a click on a card mid-entrance
+  does nothing rather than landing on a card that is about to move out from under
+  it.
 - **The entrance is transform-only.** The grid is laid out final-form first and
   each card animated back from a measured stack position, so the column is at
   its finished height from the first frame and nothing below the group reflows
   while cards are in the air. Hover is transform and shadow only, for the same
   reason, and only on a real pointer - touch gets no hover state.
+- **Hover is earned by the pointer MOVING, never by a card arriving under one.**
+  The deal ends by giving pointer events back to the group, and a mouse resting
+  anywhere over the panel is then suddenly over whichever card stopped beneath
+  it: that card took the hover lift on its own, ~6px BACK UP the path it had just
+  flown, a second and a half after it started moving and with nothing the student
+  did to explain it. It read as the entrance re-firing and was not - measured in
+  Chrome, the card under the pointer moved, its neighbours did not, and the
+  transform it settled on was the `:hover` rule's exactly. The rule is now gated
+  on `card-deck--hover-armed`, set by the first pointer movement after the group
+  settles and re-armed per group. Clicking is untouched; only the lift waits.
+- **The silence between the prose and the cards says what it is.** The preview
+  stops at the first tag, so the reply appears to end and nothing tells the
+  student whether anything else is coming. The server sends a `status` frame the
+  instant `<card` appears in the model's own output (`app/streaming.py`,
+  `CARDS_STAGE`), and the pending exchange answers it with the shuffling deck and
+  a line naming what it is. NEVER A TIMER: a reply with no cards emits no frame
+  and shows nothing at all, which is the case that matters - about one reply in
+  ten is prose only, and an indicator promising resources that never arrive is
+  worse than the gap it filled. It is also not shown while prose is still typing;
+  the window it fills is exactly the one with nothing in it.
+- **The waiting deck and the dealing deck are the same object.** The waiting one
+  shows three backs, which is a deck rather than a claim about the count - nobody
+  knows yet how many cards the model is writing, and three skeletons where one
+  card arrives is a promise the reply breaks. The real cards are then scaled to
+  that same 76px stack while they are face down and grow out of it as they are
+  dealt, so the student never sees the deck resize into the answer. Their LAYOUT
+  boxes are final throughout, which is what keeps the entrance transform-only.
 - **`prefers-reduced-motion: reduce` presents the grid directly.** No deck, no
   stagger, no transition. The preference is read on the first render rather than
   in an effect, so there is no animated frame to correct.
