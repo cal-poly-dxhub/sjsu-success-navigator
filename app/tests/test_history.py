@@ -179,18 +179,53 @@ def test_the_partition_key_is_built_from_the_sub_and_nothing_else(table):
     assert table.puts[0]["Item"]["pk"] == "USER#attacker"
 
 
-def test_an_assistant_message_carries_its_resolved_cards(table):
-    cards = [{"id": "card-1", "sourceUrl": "https://www.sjsu.edu/tutoring/index.php"}]
+def test_an_assistant_message_is_stored_as_the_model_wrote_it(table):
+    """THE RECORD IS THE REPLY, not the halves it was rendered into. The tags stay in, which
+    is what lets a reopened conversation be re-parsed rather than reassembled."""
+    reply = 'Two places can help.\n\n<card ref="1"><title>Writing Center</title></card>\n\nWhich one?'
     table.store.append_message(
-        user_id=_SUB, conversation_id=_CONV, role="assistant", text="Here you go.", cards=cards
+        user_id=_SUB,
+        conversation_id=_CONV,
+        role="assistant",
+        text=reply,
+        sources={1: "https://www.sjsu.edu/writingcenter/index.php"},
     )
-    assert table.puts[0]["Item"]["cards"] == cards
+    assert table.puts[0]["Item"]["text"] == reply
 
 
-def test_a_reply_with_no_cards_stores_no_cards_attribute(table):
-    """An empty list would claim the model produced a card group that it did not."""
+def test_an_assistant_message_carries_the_sources_its_cards_cited(table):
+    """The one thing in a reply the model could not have written: it never sees a URL. The
+    refs are keys of a DynamoDB map, which has no numeric key type, so they go in as strings.
+    """
     table.store.append_message(
-        user_id=_SUB, conversation_id=_CONV, role="assistant", text="Here you go.", cards=[]
+        user_id=_SUB,
+        conversation_id=_CONV,
+        role="assistant",
+        text='<card ref="1"><title>Tutoring</title></card>',
+        sources={1: "https://www.sjsu.edu/tutoring/index.php"},
+    )
+    assert table.puts[0]["Item"]["sources"] == {
+        "1": "https://www.sjsu.edu/tutoring/index.php"
+    }
+
+
+def test_a_reply_that_cited_nothing_stores_no_sources_attribute(table):
+    """An empty map would claim the model produced a card group that it did not."""
+    table.store.append_message(
+        user_id=_SUB, conversation_id=_CONV, role="assistant", text="Here you go.", sources={}
+    )
+    assert "sources" not in table.puts[0]["Item"]
+
+
+def test_a_message_never_carries_the_rendered_cards_any_more(table):
+    """The attribute is READ, for the rows already written with it, and never written. A
+    turn that wrote both shapes would be two records of one reply, free to disagree."""
+    table.store.append_message(
+        user_id=_SUB,
+        conversation_id=_CONV,
+        role="assistant",
+        text='<card ref="1"><title>Tutoring</title></card>',
+        sources={1: "https://www.sjsu.edu/tutoring/index.php"},
     )
     assert "cards" not in table.puts[0]["Item"]
 
@@ -439,14 +474,16 @@ def test_a_zero_list_window_asks_dynamodb_nothing(table):
     assert table.queries == []
 
 
-def test_the_display_read_fetches_the_cards_the_context_read_refuses_to(table):
-    """The whole difference between the two projections, in one assertion."""
+def test_the_display_read_fetches_the_sources_the_context_read_refuses_to(table):
+    """The whole difference between the two projections, in one assertion. The refs come
+    back as INTS: DynamoDB map keys are strings and there is no numeric key type, so the
+    conversion happens once, at the boundary, rather than in the card parser."""
     table.items = [
         {
             "sk": f"MSG#{_CONV}#01",
             "role": "assistant",
-            "text": "Peer Connections runs drop-in tutoring.",
-            "cards": [{"id": "c1", "sourceUrl": "https://sjsu.edu/peer"}],
+            "text": '<card ref="1"><title>Peer Connections</title></card>',
+            "sources": {"1": "https://sjsu.edu/peer"},
             "createdAt": "2026-08-10T18:04:00Z",
         }
     ]
@@ -456,11 +493,56 @@ def test_the_display_read_fetches_the_cards_the_context_read_refuses_to(table):
     )
 
     query = table.queries[0]
-    assert "#cards" in query["ExpressionAttributeNames"]
-    assert "#cards" in query["ProjectionExpression"]
+    assert "#sources" in query["ExpressionAttributeNames"]
+    assert "#sources" in query["ProjectionExpression"]
     assert query["ExpressionAttributeValues"][":prefix"] == f"MSG#{_CONV}#"
-    assert messages[0].cards == [{"id": "c1", "sourceUrl": "https://sjsu.edu/peer"}]
+    assert messages[0].sources == {1: "https://sjsu.edu/peer"}
     assert messages[0].created_at == "2026-08-10T18:04:00Z"
+
+
+def test_the_display_read_still_serves_a_row_written_before_the_record_kept_model_text(
+    table,
+):
+    """The rows already on the table. Nothing writes `cards` any more and the read still
+    fetches it, because a row that has it is a row whose text is already-rendered prose -
+    and the handler needs to know which of the two shapes it is holding."""
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "Peer Connections runs drop-in tutoring.",
+            "cards": [{"id": "c1", "sourceUrl": "https://sjsu.edu/peer"}],
+        }
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+
+    assert messages[0].cards == [{"id": "c1", "sourceUrl": "https://sjsu.edu/peer"}]
+    assert messages[0].sources == {}, "that row never recorded any"
+
+
+def test_an_unreadable_source_ref_costs_one_link_and_not_the_conversation(table, caplog):
+    """Same posture as the unreadable-item skip: the only way a non-numeric ref gets here is
+    a row this code did not write, and refusing to open the conversation over it would be a
+    worse outcome than opening it with one card missing its link."""
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "Here you go.",
+            "sources": {"1": "https://sjsu.edu/peer", "one": "https://sjsu.edu/other"},
+        }
+    ]
+
+    with caplog.at_level("WARNING"):
+        messages = table.store.conversation_messages(
+            user_id=_SUB, conversation_id=_CONV, limit=60
+        )
+
+    assert messages[0].sources == {1: "https://sjsu.edu/peer"}
+    assert "stored source ref" in caplog.text
 
 
 def test_the_display_read_comes_back_oldest_first(table):

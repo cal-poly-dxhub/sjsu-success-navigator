@@ -347,11 +347,12 @@ def test_the_context_read_excludes_the_message_this_turn_just_wrote(bedrock, sto
     assert read["limit"] == handler.SETTINGS.max_history_messages
 
 
-def test_the_assistant_message_stores_prose_and_resolved_cards(bedrock, store, monkeypatch):
-    """The model is fed original message text on the next turn, so what is stored as `text`
-    is the prose it wrote - both sides of the card group, tags already resolved out. The
-    cards ride alongside with their URLs resolved, for a display read that does not exist
-    yet."""
+def test_the_assistant_message_stores_the_reply_and_the_sources_it_cited(
+    bedrock, store, monkeypatch
+):
+    """What goes on the table is the model's own reply plus the pairs its cards resolved
+    against - not the rendered halves, which cannot say which side of the card group a piece
+    of prose belonged on."""
     from models import SourceAction, StatementBatch, StatementCard
 
     card = StatementCard(
@@ -371,6 +372,12 @@ def test_the_assistant_message_stores_prose_and_resolved_cards(bedrock, store, m
                 statementBatches=[
                     StatementBatch(id="b1", cards=[card], query="tutoring", createdAt=1)
                 ],
+                raw_text=(
+                    "Here is where to go.\n\n"
+                    '<card ref="4"><title>Peer Connections</title></card>\n\n'
+                    "Want the hours?"
+                ),
+                sources={4: "https://www.sjsu.edu/tutoring/index.php"},
             )
         ),
     )
@@ -378,9 +385,10 @@ def test_the_assistant_message_stores_prose_and_resolved_cards(bedrock, store, m
     handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None)
 
     written = store.appended[1]
-    assert written["text"] == "Here is where to go.\n\nWant the hours?"
-    assert written["cards"] == [card.model_dump(by_alias=True)]
-    assert written["cards"][0]["sourceUrl"] == "https://www.sjsu.edu/tutoring/index.php"
+    assert "<card" in written["text"], "the record keeps the card group's position"
+    assert written["text"].endswith("Want the hours?")
+    assert written["sources"] == {4: "https://www.sjsu.edu/tutoring/index.php"}
+    assert "cards" not in written
 
 
 def test_the_campus_time_reaches_the_model_and_never_the_stored_message(
@@ -523,14 +531,27 @@ def test_a_failed_list_says_so_rather_than_returning_no_conversations(store, cap
     assert "DynamoDB is unavailable" in caplog.text
 
 
+# The reply the regression tests below reopen: prose, a card group, prose. Three parts, in
+# the order the model wrote them, which is the thing a stored turn has to be able to say.
+_THREE_PART_REPLY = (
+    "Two places can help with that.\n\n"
+    '<card ref="1">'
+    "<title>Peer Connections</title>"
+    "<desc>Drop-in tutoring, no appointment.</desc>"
+    "</card>\n\n"
+    "Which of those sounds closer to what you need?"
+)
+
+
 def test_a_conversation_reads_back_its_messages_with_resolved_cards(store):
-    """The DISPLAY projection, whole: role, text, and the stored cards - which is exactly
-    what the context read must never return."""
+    """The DISPLAY projection, whole: role, the reply re-parsed out of the model's own text,
+    and the cards resolved against the pairs the turn recorded - which is exactly what the
+    context read must never return."""
     from conftest import displayed
 
     store.messages = [
         displayed("user", "where is tutoring?"),
-        displayed("assistant", "Peer Connections runs drop-in tutoring.", cards=[_card()]),
+        displayed("assistant", _THREE_PART_REPLY, sources={1: "https://sjsu.edu/peer"}),
     ]
 
     response = handler.lambda_handler(
@@ -543,6 +564,190 @@ def test_a_conversation_reads_back_its_messages_with_resolved_cards(store):
     assert [message["role"] for message in body["messages"]] == ["user", "assistant"]
     assert body["messages"][1]["cards"][0]["sourceUrl"] == "https://sjsu.edu/peer"
     assert body["messages"][0]["cards"] == []
+
+
+def test_a_reopened_reply_keeps_the_prose_that_was_written_under_its_cards(store):
+    """THE REGRESSION. A three-part reply comes back in three parts.
+
+    It used to be stored as its two prose halves glued together with the cards in a second
+    attribute, so nothing on the table could say which side of the card group a piece of
+    prose belonged on. The closing question came back inside the lead-in bubble with the
+    cards underneath it - every word still on screen, and the question no longer under the
+    cards it was asking about.
+    """
+    from conftest import displayed
+
+    store.messages = [
+        displayed("user", "where is tutoring?"),
+        displayed("assistant", _THREE_PART_REPLY, sources={1: "https://sjsu.edu/peer"}),
+    ]
+
+    reply = _body(handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None))[
+        "messages"
+    ][1]
+
+    assert reply["text"] == "Two places can help with that."
+    assert reply["trailingText"] == "Which of those sounds closer to what you need?"
+    assert [card["title"] for card in reply["cards"]] == ["Peer Connections"]
+    # And no tag survives into either half - the record carries markup, the wire never does.
+    assert "<card" not in reply["text"] + (reply["trailingText"] or "")
+
+
+def test_a_reopened_reply_that_ended_with_its_cards_has_no_trailing_prose(store):
+    """None rather than an empty string, and for the reason the store writes no empty
+    attributes: a turn that ended on its cards did not write a closing line, and saying it
+    wrote a blank one would put an empty bubble under the group."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed(
+            "assistant",
+            'Here you go.\n\n<card ref="1"><title>Peer Connections</title>'
+            "<desc>Drop-in tutoring.</desc></card>",
+            sources={1: "https://sjsu.edu/peer"},
+        )
+    ]
+
+    reply = _body(handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None))[
+        "messages"
+    ][0]
+
+    assert reply["text"] == "Here you go."
+    assert reply["trailingText"] is None
+    assert len(reply["cards"]) == 1
+
+
+def test_a_reopened_reply_resolves_its_cards_against_the_stored_pairs_only(store):
+    """A ref with no recorded pair keeps its card and loses its link, exactly as an
+    unresolvable ref does on a live turn. Nothing here invents a URL and nothing re-runs the
+    search: the map is what the turn recorded, so reopening a conversation cannot resolve a
+    ref against a page that was indexed later."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed(
+            "assistant",
+            '<card ref="1"><title>Peer Connections</title><desc>Tutoring.</desc></card>'
+            '<card ref="9"><title>Writing Center</title><desc>Essays.</desc></card>',
+            sources={1: "https://sjsu.edu/peer"},
+        )
+    ]
+
+    cards = _body(handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None))[
+        "messages"
+    ][0]["cards"]
+
+    assert [card["sourceUrl"] for card in cards] == ["https://sjsu.edu/peer", ""]
+
+
+def test_a_reopened_crisis_turn_comes_back_with_its_contacts(store):
+    """The panel is resolved from the keys in the stored reply, so it survives a reopen.
+
+    It never used to. The panel was called reproducible rather than recorded, which was true
+    of the panel and false of the keys - those were parsed out at write time and thrown away,
+    so nothing on the read path had anything to resolve. A student returning to the turn
+    where they disclosed something got the prose back with the numbers gone.
+    """
+    from conftest import displayed
+
+    store.messages = [
+        displayed("assistant", "You deserve support with this.\n\n<safety></safety>")
+    ]
+
+    reply = _body(handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None))[
+        "messages"
+    ][0]
+
+    assert reply["safetyHandoff"] is not None
+    assert reply["safetyHandoff"]["contacts"], "a panel with no numbers is not a panel"
+    assert "<safety" not in reply["text"]
+
+
+def test_a_three_part_reply_survives_the_round_trip_it_is_actually_sent_on(
+    bedrock, store, monkeypatch
+):
+    """THE WHOLE BUG, END TO END, through the real loop and the real store contract: send a
+    turn, take what the write path actually put on the table, hand exactly that back to the
+    read path, and check the reply comes off it the shape it went on in.
+
+    Nothing is hand-fed here. The reply is parsed from a model reply, stored by the code that
+    stores one, and reopened from the row that code produced - which is the only way to catch
+    a defect that lives in the SEAM between the two rather than in either one. Written as one
+    test for that reason: the write was fine on its own terms and the read was fine on its
+    own terms, and the reply still came back a different shape than it was sent.
+    """
+    import orchestrator
+    from conftest import displayed
+
+    reply = (
+        "Two places can help with that.\n\n"
+        '<card ref="1"><title>Peer Connections</title>'
+        "<desc>Drop-in tutoring, no appointment.</desc></card>\n\n"
+        "Which of those sounds closer to what you need?"
+    )
+
+    class _FakeConverse:
+        def converse(self, **kwargs):
+            return {
+                "output": {"message": {"role": "assistant", "content": [{"text": reply}]}},
+                "stopReason": "end_turn",
+            }
+
+    class _Chunk:
+        score = 1.0
+        title = "Peer Connections"
+        text = "Drop-in tutoring in SSC 600."
+        source_url = "https://www.sjsu.edu/peerconnections/index.php"
+        section = None
+
+    monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: _FakeConverse())
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [_Chunk()])
+
+    live = _body(handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None))
+    written = store.appended[1]
+
+    # The reopen, off the row the turn just wrote and nothing else.
+    store.messages = [
+        displayed("user", "tutoring?"),
+        displayed("assistant", written["text"], sources=written["sources"]),
+    ]
+    reopened = _body(
+        handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None)
+    )["messages"][1]
+
+    assert live["trailingText"], "the turn was sent in three parts"
+    assert reopened["text"] == live["conversationalText"]
+    assert reopened["trailingText"] == live["trailingText"]
+    assert [card["title"] for card in reopened["cards"]] == [
+        card["title"] for batch in live["statementBatches"] for card in batch["cards"]
+    ]
+    assert reopened["cards"][0]["sourceUrl"] == (
+        "https://www.sjsu.edu/peerconnections/index.php"
+    ), "and the link resolves off the record, without re-running the search"
+
+
+def test_a_message_stored_before_the_record_kept_model_text_still_reads_back(store):
+    """THE ROWS ALREADY ON THE TABLE. One carrying a `cards` attribute was written by the old
+    shape: its text is prose the parser has already been through once, so it is handed back
+    as it always was rather than re-parsed. Nothing in it is wrong; it is only less than a
+    new row knows, which is why there is no backfill."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed(
+            "assistant",
+            "Peer Connections runs drop-in tutoring.\n\nWant the hours?",
+            cards=[_card()],
+        )
+    ]
+
+    reply = _body(handler.lambda_handler(conversation_event("01J0000000000000000000000A"), None))[
+        "messages"
+    ][0]
+
+    assert reply["text"] == "Peer Connections runs drop-in tutoring.\n\nWant the hours?"
+    assert reply["cards"][0]["sourceUrl"] == "https://sjsu.edu/peer"
+    assert reply["trailingText"] is None, "that row never recorded where the split was"
 
 
 def test_the_display_read_asks_for_the_jwts_partition_and_the_requested_conversation(store):

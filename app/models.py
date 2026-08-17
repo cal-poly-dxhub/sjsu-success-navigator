@@ -124,6 +124,28 @@ class ChatResponse(BaseModel):
     # on a response built anywhere else, and an older client ignoring it loses nothing.
     usage: TurnUsage | None = None
 
+    # --- the STORAGE projection: what the turn records, never what it returns -------------
+    #
+    # Both are `exclude=True`, so neither reaches a browser through model_dump - which is
+    # what lets them ride on this object at all. They are here rather than on a second return
+    # value because every caller already carries a ChatResponse from the loop to the store,
+    # and threading a parallel object through both transports would be two things to keep in
+    # step instead of one.
+    #
+    # `raw_text` is the reply AS THE MODEL WROTE IT, tags and all, and it is the whole of the
+    # record: the prose split around the cards, the card blocks, the safety tag and the
+    # escalation tag are all still in it, so re-parsing it later reproduces the turn rather
+    # than approximating it. Storing the rendered halves instead is what used to flatten a
+    # three-part reply into one bubble on reopen.
+    #
+    # Not `model_text`: pydantic reserves the `model_` prefix for its own methods and warns
+    # on a field that takes it.
+    raw_text: str = Field(default="", exclude=True)
+    # The ref-to-URL pairs this reply cited (app/cards.py, cited_source_urls). Stored beside
+    # the text because the model never sees a URL and therefore never writes one: without
+    # these, re-parsing `<card ref="2">` next month has nothing to resolve against.
+    sources: dict[int, str] = Field(default_factory=dict, exclude=True)
+
 
 # A conversation id is a ULID minted by history.new_ulid(): 26 characters of Crockford
 # base32, which omits I, L, O and U. Validated because the value goes STRAIGHT INTO A SORT
@@ -191,19 +213,40 @@ class ConversationListResponse(BaseModel):
 class ConversationMessage(BaseModel):
     """One stored message on its way to the browser: the DISPLAY projection.
 
-    `cards` are the stored ones - URLs already resolved - re-validated through the same
-    StatementCard the live turn returns, so a reopened conversation and a fresh one hand the
-    renderer the identical shape. This is the projection the model never sees
-    (docs/accounts-and-storage.md, Turn lifecycle): rendered cards are not fed back.
+    THE SAME FIELDS A LIVE TURN RENDERS FROM, and that is the point of the shape rather than
+    a coincidence: an assistant message is re-parsed out of the model's own recorded text by
+    the code that parsed it the first time (app/orchestrator.py, replay_stored_reply), so a
+    reopened reply is the same object a fresh one is - prose above the cards, prose below
+    them, the card group itself, and the safety panel if the turn was one.
+
+    It used to carry `text` and `cards` alone, which could not say WHICH SIDE of the card
+    group a piece of prose belonged on. A reply written as lead-in, cards, closing question
+    came back as one bubble with the cards underneath it, and the closing question - the part
+    the student was actually being asked - was no longer under the cards it referred to.
+
+    This is the projection the model never sees (docs/accounts-and-storage.md, Turn
+    lifecycle): rendered cards are not fed back.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
     role: Literal["user", "assistant"]
     text: str
+    # Prose the model wrote BELOW its card group, which renders below it here too. None on a
+    # user message, on a reply that ended with its cards, and on every message stored before
+    # the record kept the model's own text - see the read path's legacy branch.
+    trailing_text: str | None = Field(default=None, alias="trailingText")
     cards: list[StatementCard] = Field(default_factory=list)
-    # The draft this turn offered, as it was assembled when the turn happened. Stored
-    # rather than rebuilt for the reason the cards are: it is what the student saw.
+    # Server-authored from the keys in the stored reply, exactly as the live turn resolves
+    # them (app/safety.py). Re-derived rather than recorded on purpose: the panel is a fixed
+    # roster of campus contacts, so a number that changes should change in the transcript
+    # too. A reopened crisis turn used to come back as prose with no contacts at all.
+    safety_handoff: SafetyHandoff | None = Field(default=None, alias="safetyHandoff")
+    # The draft this turn offered, as it was assembled when the turn happened. THE ONE THING
+    # HERE THAT IS RECORDED RATHER THAN RE-DERIVED, because it is the one thing that cannot
+    # be: it was addressed from a recipient in deploy config and the address on the token
+    # that turn was sent with, so rebuilding it would show where a message would go today
+    # rather than where the student was told it was going.
     escalation: EmailDraft | None = None
     created_at: str | None = Field(default=None, alias="createdAt")
 

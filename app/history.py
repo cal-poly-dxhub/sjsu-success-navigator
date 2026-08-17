@@ -16,8 +16,30 @@ The item shapes are the doc's, not this module's invention:
     conversation header   pk=USER#<sub>   sk=CONV#<convId>
                           title, createdAt, lastActivityAt, messageCount
     message               pk=USER#<sub>   sk=MSG#<convId>#<ulid>
-                          role, text, cards (URLs already resolved),
+                          role, text, sources (the ref-to-URL pairs the reply cited),
                           escalation (the assembled email draft), createdAt
+
+`text` ON AN ASSISTANT MESSAGE IS THE MODEL'S OWN REPLY, TAGS AND ALL. That is the whole of
+the record and it is deliberately not the rendered halves: the card blocks, the safety tag,
+the escalation tag and - critically - WHICH SIDE OF THE CARD GROUP each piece of prose sat on
+are all still in the string, so re-parsing it reproduces the turn instead of approximating
+it. It used to be stored pre-rendered, as the lead-in and the closing line glued together
+with the cards in a second attribute, and nothing in that shape could say where the card
+group belonged. A reply written as lead-in, cards, closing question came back as one bubble
+with the cards underneath, and the question the student was actually being asked was no
+longer under the cards it referred to.
+
+`sources` is the other half of that, and it exists because the model never sees a URL and so
+can never write one: `<card ref="2">` resolves against pairs the SERVER recorded during the
+turn (app/cards.py, cited_source_urls). Without them a stored reply re-parses into cards with
+no links, and re-running the retrieval instead would resolve the same ref against today's
+index - a different page from the one the student was shown.
+
+`cards` IS NO LONGER WRITTEN AND IS STILL READ. Every message stored before this carries one,
+and its `text` is already-rendered prose rather than model text, so the read path hands those
+back exactly as it always did rather than re-parsing prose that has already been through the
+parser once. There is no backfill: nothing in an old row is wrong, it is only less than a new
+row knows.
 
 plus two items that are not history at all and share the partition because the partition is
 already the user (app/ratelimit.py and app/streaming.py; claim_message_allowance and
@@ -42,7 +64,7 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -164,17 +186,30 @@ class DisplayMessage:
 
     The other half of the doc's two projections, and the reason this is a separate type
     rather than a flag on StoredMessage. What the browser needs is exactly what the model
-    must not be given - the stored cards, URLs already resolved - so the two reads return
+    must not be given - the reply's markup and the URLs behind it - so the two reads return
     two shapes and a caller cannot pass one where the other belongs.
+
+    IT IS THE STORED ITEM, NOT A RENDERED TURN. Turning `text` and `sources` back into prose,
+    cards and a safety panel is app/orchestrator.py's job, through the same parser the live
+    turn used. This type deliberately stops at the row, so there is no second renderer here
+    to drift from that one.
     """
 
     role: str
     text: str
-    cards: list[dict[str, Any]]
     # The email draft this turn offered, as it was assembled then. Display-only, exactly
     # like the cards beside it: it never goes back to the model.
     escalation: dict[str, Any] | None
     created_at: str | None
+    # What this reply's `<card ref="N">` blocks resolve against. Empty on a user message, on
+    # a reply that cited nothing, and on every message stored before the record kept the
+    # model's own text.
+    sources: dict[int, str] = field(default_factory=dict)
+    # LEGACY, AND READ-ONLY. Messages written before the record kept model text carry their
+    # cards already rendered, and their `text` is prose that has been through the parser
+    # once. Present means "this row was written by the old shape"; the read path renders it
+    # as it always did rather than re-parsing prose. Nothing writes this any more.
+    cards: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -229,7 +264,7 @@ class ConversationStore:
         conversation_id: str,
         role: str,
         text: str,
-        cards: list[dict[str, Any]] | None = None,
+        sources: dict[int, str] | None = None,
         escalation: dict[str, Any] | None = None,
     ) -> str:
         """Append one message and return its sort key.
@@ -238,10 +273,13 @@ class ConversationStore:
         item hits the 400 KB cap, pays a full rewrite on every reply, and loses a turn
         outright when two of them race.
 
-        `cards` is stored with URLs already resolved, which is what a display read will want
-        and what the model must never be handed back. It is absent on a user message and on
-        an assistant reply that made none - an empty list would claim the model produced a
-        card group that it did not.
+        `text` ON AN ASSISTANT MESSAGE IS WHAT THE MODEL WROTE, tags and all - see the module
+        docstring for why the rendered halves are not the record. On a user message it is the
+        student's own words, unchanged, as it always was.
+
+        `sources` is the ref-to-URL map the reply cited, and it is the only thing here the
+        model could not have written: it never sees a URL. Absent on a user message and on a
+        reply that cited nothing.
 
         `escalation` is the assembled email draft, stored for the OPPOSITE reason the safety
         panel is not (below): it is not reproducible. It was assembled from a recipient and
@@ -249,9 +287,15 @@ class ConversationStore:
         sent with, so re-deriving it later would render whatever those say today rather than
         what the student was actually shown. Absent when the turn made no offer.
 
-        The safety panel is NOT stored. It is server-authored from the model's keys against
-        the table in app/safety.py, so it is reproducible rather than recorded, and the doc
-        names exactly three attributes on a message.
+        The safety panel is NOT stored, and now it does not need to be: the model's keys are
+        still in `text`, so app/safety.py resolves them again on the way out and a reopened
+        crisis turn gets its contacts back. When the panel was the only thing derived from a
+        reply this server had already discarded, it was the one part of a turn that could
+        never come back.
+
+        DynamoDB map keys are strings, so the source refs are written as strings and read
+        back as ints at the boundary in conversation_messages - once, rather than leaving
+        every consumer to remember which side of the wire it is on.
         """
         sort_key = f"MSG#{conversation_id}#{new_ulid()}"
         item: dict[str, Any] = {
@@ -261,8 +305,8 @@ class ConversationStore:
             "text": text,
             "createdAt": _now_iso(),
         }
-        if cards:
-            item["cards"] = cards
+        if sources:
+            item["sources"] = {str(ref_id): url for ref_id, url in sources.items()}
         if escalation:
             item["escalation"] = escalation
 
@@ -699,9 +743,10 @@ class ConversationStore:
         """One conversation's messages, oldest first, as the browser renders them.
 
         The doc's second access pattern - Query `USER#<sub>`, `begins_with('MSG#<convId>#')`
-        - read through the DISPLAY projection: role, text, the stored cards with their URLs
-        already resolved, and the timestamp. This is not the context read and must never be
-        used as one; that one is `recent_messages` and it deliberately cannot see cards.
+        - read through the DISPLAY projection: role, the reply as the model wrote it, the
+        sources its cards resolve against, the stored draft and the timestamp. This is not
+        the context read and must never be used as one; that one is `recent_messages`, and it
+        deliberately fetches neither the sources nor the draft.
 
         A FORGED OR FOREIGN CONVERSATION ID RETURNS EMPTY. Not a 403, and not a lookup that
         would have to be got right: the partition comes from the JWT, so an id belonging to
@@ -722,6 +767,7 @@ class ConversationStore:
             ExpressionAttributeNames={
                 "#role": "role",
                 "#text": "text",
+                "#sources": "sources",
                 "#cards": "cards",
                 "#escalation": "escalation",
                 "#createdAt": "createdAt",
@@ -730,7 +776,9 @@ class ConversationStore:
                 ":pk": f"USER#{user_id}",
                 ":prefix": f"MSG#{conversation_id}#",
             },
-            ProjectionExpression="sk, #role, #text, #cards, #escalation, #createdAt",
+            ProjectionExpression=(
+                "sk, #role, #text, #sources, #cards, #escalation, #createdAt"
+            ),
             ScanIndexForward=False,
             Limit=limit,
             # Same reason as the list above: a student who sends a turn and immediately
@@ -753,9 +801,10 @@ class ConversationStore:
                 DisplayMessage(
                     role=role,
                     text=text,
-                    cards=list(cards) if isinstance(cards, list) else [],
                     escalation=dict(escalation) if isinstance(escalation, dict) else None,
                     created_at=item.get("createdAt"),
+                    sources=_sources_from(item.get("sources")),
+                    cards=list(cards) if isinstance(cards, list) else [],
                 )
             )
 
@@ -799,8 +848,11 @@ class ConversationStore:
                 ":pk": f"USER#{user_id}",
                 ":prefix": f"MSG#{conversation_id}#",
             },
-            # The CONTEXT projection: original message text only. Stored cards are for the
-            # display read and are never fed back to the model.
+            # The CONTEXT projection: message text only. The sources and the stored draft are
+            # for the display read and are never fed back to the model. The text of an
+            # assistant reply still carries the tags the model wrote; those come off at the
+            # one place history becomes model input (app/orchestrator.py,
+            # _build_converse_messages), not here - the record stays whole.
             ProjectionExpression="sk, #role, #text",
             ScanIndexForward=False,
             Limit=fetch,
@@ -826,6 +878,30 @@ class ConversationStore:
 
         messages.reverse()
         return messages
+
+
+def _sources_from(stored: Any) -> dict[int, str]:
+    """A stored `sources` map as ints and strings, or empty.
+
+    DynamoDB map keys are strings and there is no numeric key type, so the refs come back as
+    `"2"` and are turned into `2` HERE - one place, at the boundary, rather than leaving the
+    card parser to wonder which side of the wire it is on. Same instinct as the Decimal
+    conversion in list_conversations above.
+
+    A ref that is not a number is dropped rather than raising: the only way one gets here is
+    a row this code did not write, and refusing to open a conversation over a stray key would
+    be a worse outcome than opening it with one card missing its link.
+    """
+    if not isinstance(stored, dict):
+        return {}
+
+    urls: dict[int, str] = {}
+    for ref_id, url in stored.items():
+        try:
+            urls[int(ref_id)] = str(url)
+        except (TypeError, ValueError):
+            logger.warning("Skipping an unreadable stored source ref: %r", ref_id)
+    return urls
 
 
 def _title_from(text: str, cap: int = _TITLE_MAX_CHARS) -> str:

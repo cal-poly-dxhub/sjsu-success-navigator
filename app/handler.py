@@ -70,7 +70,7 @@ from models import (
     EmailDraft,
     StatementCard,
 )
-from orchestrator import run_chat
+from orchestrator import replay_stored_reply, run_chat
 from ratelimit import claim_turn
 from settings import load_settings
 from titles import generate_title
@@ -301,17 +301,10 @@ def _chat_response(response):
     return _response(200, response.model_dump(by_alias=True))
 
 
-def _stored_cards(response):
-    """This turn's cards as they will be stored: resolved URLs, one flat list.
-
-    A turn makes exactly one card group, so flattening the batches loses nothing. These are
-    for a display read that does not exist yet - the model is never shown them again.
-    """
-    return [
-        card.model_dump(by_alias=True)
-        for batch in (response.statement_batches or [])
-        for card in batch.cards
-    ]
+def _display_cards_from(response):
+    """A rendered turn's cards as one flat list. A turn makes exactly one card group, so
+    flattening the batches loses nothing."""
+    return [card for batch in (response.statement_batches or []) for card in batch.cards]
 
 
 def name_new_conversation(
@@ -430,11 +423,12 @@ def run_turn(request, user_id, deadline, context=None, usage=None):
             user_id=user_id,
             conversation_id=conversation_id,
             role="assistant",
-            # The prose the model wrote, both sides of the card group, with the card tags
-            # already resolved out of it. Cards ride alongside as their own attribute; what
-            # goes back to the model on the next turn is this text and nothing else.
-            text=join_prose(response.conversational_text, response.trailing_text),
-            cards=_stored_cards(response),
+            # THE REPLY AS THE MODEL WROTE IT, tags and all, plus the pairs its cards
+            # resolved against. Between them they are the turn, so reopening this
+            # conversation re-parses it rather than reassembling it from halves - which is
+            # what used to lose the prose the model wrote UNDER its cards.
+            text=response.raw_text,
+            sources=response.sources,
             escalation=_stored_escalation(response),
         )
     except Exception:
@@ -684,20 +678,89 @@ def get_conversation(event):
         logger.exception("Could not read a conversation")
         return _response(502, {"error": "Could not load that conversation."})
 
-    payload = ConversationResponse(
-        conversationId=conversation_id,
-        messages=[
-            ConversationMessage(
-                role=message.role,
-                text=message.text,
-                cards=_display_cards(message.cards),
-                escalation=_display_escalation(message.escalation),
-                createdAt=message.created_at,
-            )
-            for message in messages
-        ],
+    return _response(
+        200,
+        ConversationResponse(
+            conversationId=conversation_id,
+            messages=_rendered_messages(messages),
+        ).model_dump(by_alias=True),
     )
-    return _response(200, payload.model_dump(by_alias=True))
+
+
+def _rendered_messages(messages):
+    """Stored rows as the browser renders them, oldest first.
+
+    THE QUESTION TRAVELS WITH THE ANSWER. Each assistant message is rendered with the text of
+    the user message before it, because that is what a card group is labelled with
+    (cards.create_statement_batch). Reading it off the row above is exact - the store returns
+    one item per message in order - and it is the only thing on this path that needs more
+    than the row itself.
+    """
+    rendered = []
+    question = ""
+
+    for message in messages:
+        if message.role == "user":
+            question = message.text
+            rendered.append(
+                ConversationMessage(
+                    role="user",
+                    # The student's own words, untouched. Nothing is re-parsed here: this
+                    # server never wrote a contract for what a student may type, so there is
+                    # no markup of ours to take out.
+                    text=message.text,
+                    createdAt=message.created_at,
+                )
+            )
+            continue
+
+        rendered.append(_rendered_reply(message, question))
+        question = ""
+
+    return rendered
+
+
+def _rendered_reply(message, question):
+    """One stored assistant message, rendered.
+
+    TWO SHAPES ON THE TABLE, and the `cards` attribute is what tells them apart. A row
+    carrying one was written before the record kept the model's own text: its `text` is prose
+    that has already been through the parser, so it is handed back as it always was. Running
+    it through the parser a second time would be re-rendering a rendering, and the position
+    information a re-parse exists to recover is not in that row to recover.
+
+    Everything else is re-parsed from what the model wrote, through the same code that
+    rendered it live (app/orchestrator.py, replay_stored_reply). A reply with no tags at all
+    comes out of that as one bubble, which is exactly what an old cardless row should look
+    like - so the legacy branch does not have to catch those.
+    """
+    if message.cards:
+        return ConversationMessage(
+            role="assistant",
+            text=message.text,
+            cards=_display_cards(message.cards),
+            escalation=_display_escalation(message.escalation),
+            createdAt=message.created_at,
+        )
+
+    replayed = replay_stored_reply(
+        text=message.text,
+        urls_by_ref=message.sources,
+        # The draft as it was addressed then, not as config would address one today. The
+        # replay drops it on a safety turn exactly as the live turn does.
+        escalation=_display_escalation(message.escalation),
+        query=question,
+        settings=SETTINGS,
+    )
+    return ConversationMessage(
+        role="assistant",
+        text=replayed.conversational_text,
+        trailingText=replayed.trailing_text,
+        cards=_display_cards_from(replayed),
+        safetyHandoff=replayed.safety_handoff,
+        escalation=replayed.escalation,
+        createdAt=message.created_at,
+    )
 
 
 def _conversation_id_from(event):

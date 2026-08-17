@@ -317,14 +317,29 @@ def stored(role, text):
 
 
 def displayed(
-    role, text, cards=None, escalation=None, created_at="2026-08-11T00:00:00Z"
+    role,
+    text,
+    sources=None,
+    escalation=None,
+    created_at="2026-08-11T00:00:00Z",
+    cards=None,
 ):
+    """One stored row, as the display read hands it back.
+
+    `text` on an assistant row is the model's own reply, tags and all, and `sources` is what
+    its `<card ref="N">` blocks resolve against - the handler re-parses the two into a turn.
+
+    `cards` is the LEGACY shape and a test passing it is saying so on purpose: rows written
+    before the record kept model text carry rendered cards beside prose that has already been
+    through the parser. Nothing writes them any more; the read path still has to serve them.
+    """
     return DisplayMessage(
         role=role,
         text=text,
-        cards=list(cards or []),
         escalation=escalation,
         created_at=created_at,
+        sources=dict(sources or {}),
+        cards=list(cards or []),
     )
 
 

@@ -31,7 +31,36 @@ Single table. On-demand capacity. Point-in-time recovery on.
 | Message | `USER#<sub>` | `MSG#<convId>#<ulid>` |
 
 Header: `title`, `createdAt`, `lastActivityAt`, `messageCount`.
-Message: `role`, `text`, `cards` (URLs already resolved).
+Message: `role`, `text`, `sources`, `escalation`.
+
+`text` on an assistant message is the reply **as the model wrote it**, tags and all. Not the
+rendered halves: the card blocks, the safety tag and - critically - which side of the card
+group each piece of prose sat on are all still in the string, so reopening a conversation
+re-parses it through the same code that rendered it live rather than reassembling it.
+
+Storing it pre-rendered is what broke: the lead-in and the closing line were glued together
+with the cards in a second attribute, and nothing in that shape could say where the card
+group belonged. A reply written as lead-in, cards, closing question came back as one bubble
+with the cards underneath, and the question the student was being asked was no longer under
+the cards it referred to. The safety panel had it worse - its keys were parsed out and
+discarded, so a reopened crisis turn had no contacts at all.
+
+`sources` is the ref-to-URL map the reply cited. It is the one thing in a reply the model
+could not have written, since it never sees a URL, so `<card ref="2">` has to resolve against
+pairs the server recorded during the turn. Re-running the retrieval instead would resolve the
+same ref against today's index, which can be a different page from the one the student saw.
+
+`escalation` is the assembled email draft, and it is the one field recorded rather than
+re-derived, because it is the one that cannot be: it was addressed from a recipient in deploy
+config and the address on the token that turn was sent with.
+
+Re-parsing means a stored reply renders under **today's** rules - today's caps, today's
+contact roster. That cuts both ways on purpose: a fixed rendering bug fixes every
+conversation already on the table, and a changed card contract re-renders history with it.
+
+`cards` is legacy. Messages written before this carry rendered cards beside prose that has
+already been through the parser, and the read path serves those as it always did. There is no
+backfill: nothing in an old row is wrong, it is only less than a new row knows.
 
 ### Access patterns
 
@@ -82,9 +111,12 @@ No polling, no sync, no other table access during a turn.
 On a new conversation the server mints the `convId`. The client never chooses it.
 A forged `convId` returns empty, because the partition still comes from the JWT.
 
-Two projections of the same query. Context read: original message text, for the model.
-Display read: stored cards with resolved URLs, for the browser. Rendered cards are never
-fed back to the model.
+Two projections of the same query. Context read: message text, for the model, with the
+assistant's own markup stripped at the one point history becomes model input - handing the
+tags back would teach the model to write them where they do not belong, and a `<safety>` tag
+copied out of last week's reply is a panel fired by imitation rather than by triage. Display
+read: the same text re-parsed into prose, cards and a panel, for the browser. Rendered cards
+are never fed back to the model.
 
 The browser still holds what is on screen. What is gone is any client store treated as
 truth.
