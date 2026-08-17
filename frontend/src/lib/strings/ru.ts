@@ -66,6 +66,7 @@ export const ru: Strings = {
 	thinking: 'Думаю',
 	waitingForSammy: 'Ждём ответа Sammy',
 	stageRetrieving: 'Ищем среди ресурсов кампуса',
+	stageComposingCards: 'Собираем ресурсы кампуса',
 
 	campusResources: 'Ресурсы кампуса',
 	campusResourcesFrom: (timestamp: string) => `Ресурсы кампуса от ${timestamp}`,

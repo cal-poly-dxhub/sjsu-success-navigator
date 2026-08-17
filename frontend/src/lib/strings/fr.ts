@@ -60,6 +60,7 @@ export const fr: Strings = {
 	thinking: 'Réflexion',
 	waitingForSammy: 'En attente de la réponse de Sammy',
 	stageRetrieving: 'Recherche dans les ressources du campus',
+	stageComposingCards: 'Rassemblement des ressources du campus',
 
 	campusResources: 'Ressources du campus',
 	campusResourcesFrom: (timestamp: string) => `Ressources du campus de ${timestamp}`,

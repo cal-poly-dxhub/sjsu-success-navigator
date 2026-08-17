@@ -60,6 +60,7 @@ export const zhHant: Strings = {
 	thinking: '思考中',
 	waitingForSammy: '正在等待 Sammy 的回覆',
 	stageRetrieving: '正在查詢校園資源',
+	stageComposingCards: '正在整理校園資源',
 
 	campusResources: '校園資源',
 	campusResourcesFrom: (timestamp: string) => `${timestamp}的校園資源`,
