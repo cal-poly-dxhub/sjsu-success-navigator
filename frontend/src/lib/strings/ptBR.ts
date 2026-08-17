@@ -124,6 +124,11 @@ export const ptBR: Strings = {
 	escalationTooLong:
 		'Este rascunho é longo demais para abrir seu aplicativo de e-mail automaticamente. Copie e cole em um e-mail novo.',
 
+	placeAria: 'Local no campus',
+	placeDirections: 'Ver o caminho',
+	placeDirectionsFor: (name: string) => `Ver o caminho até ${name}`,
+	placeMapCredit: 'Dados do mapa © colaboradores do OpenStreetMap',
+
 	settingsClose: 'Fechar as configurações',
 	close: 'Fechar',
 	languageLabel: 'Idioma',

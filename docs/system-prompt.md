@@ -138,6 +138,25 @@ Campus shorthand
   the message is a question, never a guess. A wrong expansion is worse than a
   missing one, because it routes a student confidently to the wrong office
 
+Showing where a place is
+- one block, `<place>career-center</place>`, carrying a catalogue key and nothing else. No
+  attribute, no address, no map link: the server owns all three (app/places.py), the same
+  way the ref contract owns a card's URL
+- the roster is interpolated from that module's table, exactly as the safety roster is, so
+  every key the model is taught resolves and the only key that can miss is an invented one
+- ALWAYS PRESENT, unlike the escalation section, because the catalogue is code rather than
+  deploy config; there is nothing to gate it on
+- the load-bearing line is the one about a place that is NOT in the list: no block at all,
+  not the nearest key, not the building it is near. A neighbouring key produces a card that
+  resolves, renders and is wrong, which is the one failure no server-side check can see -
+  the key is valid and the address is real, it is just not where the student is going
+- keys stay English for the reason safety keys do: the server reads them and nobody else
+- not modelled in an example, on the escalation section's reasoning. An example is the
+  strongest steer in the file, and a location is a judgement about one question rather than
+  a shape to copy onto every turn that resembles the sample
+- the prompt names no address and no room number, and a test asserts it. A specific in the
+  prompt is a specific the model can paste into prose on a turn that shows no panel at all
+
 Safety
 - if a student describes being in danger or unable to cope, emit <safety>key</safety>
   with keys from the interpolated roster and no cards; the panel owns what is said

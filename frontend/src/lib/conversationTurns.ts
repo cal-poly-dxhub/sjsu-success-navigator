@@ -23,6 +23,7 @@ export function createConversationTurn(
 		trailingText?: string;
 		safetyHandoff?: ChatResponse['safetyHandoff'];
 		escalation?: ChatResponse['escalation'];
+		place?: ChatResponse['place'];
 		query?: string;
 		id?: string;
 		createdAt?: number;
@@ -41,6 +42,7 @@ export function createConversationTurn(
 		cards,
 		safetyHandoff: options?.safetyHandoff,
 		escalation: options?.escalation,
+		place: options?.place,
 		query: options?.query,
 		revealedChars: options?.revealedChars,
 		createdAt: options?.createdAt ?? Date.now(),
@@ -125,6 +127,7 @@ export function turnsFromStoredMessages(
 			trailingText?: string;
 			safetyHandoff?: StoredMessage['safetyHandoff'];
 			escalation?: StoredMessage['escalation'];
+			place?: StoredMessage['place'];
 			createdAt?: number;
 		},
 	) => {
@@ -142,6 +145,10 @@ export function turnsFromStoredMessages(
 				// stored record. Never rebuilt here: a conversation reopened next month must
 				// show where its message was actually going, not where config points today.
 				escalation: options.escalation,
+				// The location as it resolved when the turn happened, straight off the
+				// stored record and never re-resolved: a conversation reopened next month
+				// must show where the office was when the student asked.
+				place: options.place,
 				query: pendingQuery,
 				createdAt: pendingAt ?? options.createdAt,
 				id: `${conversationId}-${turns.length}`,
@@ -170,6 +177,7 @@ export function turnsFromStoredMessages(
 			trailingText: message.trailingText,
 			safetyHandoff: message.safetyHandoff,
 			escalation: message.escalation,
+			place: message.place,
 			createdAt,
 		});
 	}
@@ -203,6 +211,7 @@ export function turnsFromResponse(response: ChatResponse): ConversationTurn[] {
 			createConversationTurn(response.conversationalText, {
 				trailingText: response.trailingText,
 				escalation: response.escalation,
+				place: response.place,
 				phase: 'conversational',
 			}),
 		];
@@ -219,6 +228,9 @@ export function turnsFromResponse(response: ChatResponse): ConversationTurn[] {
 				// Same rule as the trailing prose: the response carries ONE turn's offer, and
 				// it belongs to the turn that owns the prose.
 				escalation: index === batches.length - 1 ? response.escalation : undefined,
+				// And the location, by the same rule: one turn's panel, on the turn that
+				// owns the prose.
+				place: index === batches.length - 1 ? response.place : undefined,
 				query: batch.query,
 				id: batch.id,
 				createdAt: batch.createdAt,

@@ -43,6 +43,7 @@ from cards import (
     source_options_for_tool,
     strip_card_tags,
 )
+from places import resolve_place
 from prompts import build_system_prompt
 from retrieve import retrieve_chunks
 from safety import SAFETY_FALLBACK_TEXT, apply_safety_handoff_to_response
@@ -765,10 +766,29 @@ def _assemble_response(
     a malformed card - an unclosed tag, a block with no title - reaches the student as the
     model's words instead of vanishing.
     """
+    # The location card, resolved once, here. It sits at the shared exit rather than beside
+    # the offer in _response_from_text because the key it reads is IN THE REPLY: a replayed
+    # turn parses the same `<place>` block the live one did, so this needs no argument and
+    # cannot be forgotten by a caller. The display read hands back the card it recorded
+    # instead of this one (app/handler.py, _rendered_reply) - the catalogue is a directory
+    # that gets edited - so on that path this resolves a card nobody reads. It stays here
+    # anyway: the alternative is a parameter two callers have to keep in step, for a dict
+    # lookup against a table already in memory.
+    #
+    # A SAFETY TURN NEVER CARRIES ONE, for the reason it carries no cards and no offer: the
+    # panel is the answer and it owns everything under the message. A map between a student
+    # in crisis and the numbers they need is the same mistake as a card there, in a taller
+    # box.
+    place = None if parsed.needs_safety else resolve_place(parsed.place_key)
+
     if parsed.needs_safety:
         if parsed.escalation_prose is not None:
             logger.info(
                 "chat route=safety escalation=dropped (a safety turn carries no offer)"
+            )
+        if parsed.place_key is not None:
+            logger.info(
+                "chat route=safety place=dropped (a safety turn carries no location card)"
             )
         # A safety turn carries no cards by contract. Any the model emitted anyway are
         # dropped deliberately, so this must NOT take the zero-card fallback below - that
@@ -815,6 +835,7 @@ def _assemble_response(
         conversationalText=prose,
         trailingText=trailing or None,
         statementBatches=batches or None,
+        place=place,
         escalation=escalation,
         talkToPersonAvailable=True,
         # THE RECORD, and it is the model's own text rather than the halves above. `text` is

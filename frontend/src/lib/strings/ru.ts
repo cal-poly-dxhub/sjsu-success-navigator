@@ -132,6 +132,11 @@ export const ru: Strings = {
 	escalationTooLong:
 		'Этот черновик слишком длинный, чтобы почтовое приложение открылось автоматически. Скопируйте его и вставьте в новое письмо.',
 
+	placeAria: 'Место в кампусе',
+	placeDirections: 'Построить маршрут',
+	placeDirectionsFor: (name: string) => `Построить маршрут до ${name}`,
+	placeMapCredit: 'Картографические данные © участники OpenStreetMap',
+
 	settingsClose: 'Закрыть настройки',
 	close: 'Закрыть',
 	languageLabel: 'Язык',

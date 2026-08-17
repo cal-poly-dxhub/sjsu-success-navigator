@@ -7,6 +7,7 @@ import { dealDurationMs } from './CardDeck';
 import { scrollElementToTop } from '../lib/scrollAnchor';
 import { RagGrid } from './StatementStack';
 import { EscalationDraft } from './EscalationDraft';
+import { PlaceCard } from './PlaceCard';
 import { SafetyHandoff } from './SafetyHandoff';
 import { UserPrompt } from './UserPrompt';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
@@ -56,6 +57,15 @@ export function ConversationTurnView({
 	 */
 	const escalation =
 		escalationEnabled && !turn.safetyHandoff ? turn.escalation : undefined;
+	/**
+	 * The same belt, one gate shorter. There is no deploy switch on the location catalogue -
+	 * it is a table in the server's own code, not an address somebody configures - so the
+	 * only check left is the one that matters: a turn carrying a contact panel shows nothing
+	 * else. The server drops it before this component sees it; this is the last thing
+	 * between a stored card and the screen, and a map above a crisis number would put an
+	 * errand in front of a call.
+	 */
+	const place = turn.safetyHandoff ? undefined : turn.place;
 
 	/**
 	 * IS THIS TURN ARRIVING, and therefore the one thing in this component that decides
@@ -127,6 +137,10 @@ export function ConversationTurnView({
 	// turn has nothing in flight and shows it immediately.
 	const showEscalation = Boolean(escalation) && (!hasRag || (showCards && dealt));
 
+	// The location waits on exactly what the draft waits on, and for the same reason: a panel
+	// appearing under a group still in the air is the reflow the deal was built to avoid.
+	const showPlace = Boolean(place) && (!hasRag || (showCards && dealt));
+
 	// Anchor to the top of the card group the first time it appears, once. Re-anchoring on
 	// every render would fight the student's own scrolling.
 	useEffect(() => {
@@ -188,6 +202,15 @@ export function ConversationTurnView({
 							onLanded={() => setDealt(true)}
 							archived={!isActive}
 						/>
+					</div>
+				) : null}
+
+				{/* Where to go, directly under the cards that named it: it is part of the
+				    answer, not an afterthought to it, so it sits above the offer to write to
+				    a person rather than under it. */}
+				{showPlace && place ? (
+					<div className="conversation-turn__place">
+						<PlaceCard place={place} />
 					</div>
 				) : null}
 

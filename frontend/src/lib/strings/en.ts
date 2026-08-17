@@ -168,6 +168,24 @@ export const en = {
 	escalationTooLong:
 		'This draft is too long to open your email app automatically. Copy it and paste it into a new email instead.',
 
+	// The campus location panel. The model names a place from a fixed catalogue and the
+	// server attaches the name, the address, the map and the link (app/places.py), so NONE of
+	// the panel's values are here: the building's name and its address are what SJSU puts on
+	// the door, and a translated door is one nobody arrives at.
+	//
+	// `placeAria` names the region for a screen reader and is the only label on the panel:
+	// it used to carry a visible "Where to go" strap above the building's name, which said in
+	// three words what the two lines under it already said.
+	//
+	// `placeMapCredit` is the attribution the OpenStreetMap tile licence asks for, and it
+	// DOES follow the language, unlike the proper nouns above it: "OpenStreetMap" is a name
+	// and stays, the sentence around it is ordinary words. It is drawn into the image too, so
+	// this copy is the one a screen reader and a text selection can reach.
+	placeAria: 'Campus location',
+	placeDirections: 'Get directions',
+	placeDirectionsFor: (name: string) => `Get directions to ${name}`,
+	placeMapCredit: 'Map data © OpenStreetMap contributors',
+
 	// Settings.
 	settingsClose: 'Close settings',
 	close: 'Close',

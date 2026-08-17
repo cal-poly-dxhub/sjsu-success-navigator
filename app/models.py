@@ -45,6 +45,34 @@ class StatementBatch(BaseModel):
     created_at: int = Field(alias="createdAt")
 
 
+class PlaceCard(BaseModel):
+    """One campus location, resolved from a catalogue key the model wrote.
+
+    EVERY FIELD IS THE SERVER'S. The model contributes the key and nothing else, so a
+    model-authored address or map URL is unrepresentable in the same way a model-authored
+    source URL is (app/places.py). `key` rides along because it is what the log line and the
+    stored record are keyed on, and because it is the one field here that is not display
+    text - it is how a reopened turn is traced back to the table entry that produced it.
+
+    `mapImageUrl` is a ROOT-RELATIVE PATH to an image this project rendered and committed,
+    not a third-party URL: the map is served from the same distribution as the page, so a
+    turn arriving contacts nobody. None means the building has no rendered map yet, and the
+    card is complete without one - name, address and directions answer the question.
+
+    NO LENGTH CAP APPLIES TO ANY OF THIS. The card contract's caps guard model-authored
+    text against a runaway response; there is none here, and an address cut at a word
+    boundary is a student sent to a room number that stops mid-way.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    key: str
+    name: str
+    address: str
+    directions_url: str = Field(alias="directionsUrl")
+    map_image_url: str | None = Field(default=None, alias="mapImageUrl")
+
+
 class SafetyContact(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -107,6 +135,10 @@ class ChatResponse(BaseModel):
         alias="statementBatches",
     )
     safety_handoff: SafetyHandoff | None = Field(default=None, alias="safetyHandoff")
+    # The campus location this turn points at, or None - which is every turn the model
+    # emitted no <place> block on, every key that is not in the catalogue, and every safety
+    # turn. Additive: an older client that ignores it renders exactly what it did before.
+    place: PlaceCard | None = None
     # The email draft this turn offers to send to a human, or None - which is every turn
     # the model did not tag, every deployment with no recipient configured, and every
     # safety turn (the panel is the handoff there, and it owns the whole message under it).
@@ -242,11 +274,17 @@ class ConversationMessage(BaseModel):
     # roster of campus contacts, so a number that changes should change in the transcript
     # too. A reopened crisis turn used to come back as prose with no contacts at all.
     safety_handoff: SafetyHandoff | None = Field(default=None, alias="safetyHandoff")
-    # The draft this turn offered, as it was assembled when the turn happened. THE ONE THING
-    # HERE THAT IS RECORDED RATHER THAN RE-DERIVED, because it is the one thing that cannot
-    # be: it was addressed from a recipient in deploy config and the address on the token
-    # that turn was sent with, so rebuilding it would show where a message would go today
-    # rather than where the student was told it was going.
+    # The location card this turn showed, as it resolved when the turn happened. RECORDED
+    # RATHER THAN RE-DERIVED, which puts it beside the draft below rather than beside the
+    # panel above: the key is still in the stored reply and app/places.py would resolve it
+    # again, but the catalogue is a directory that gets edited, and an office that moves next
+    # month must not rewrite where a turn last month said it was.
+    place: PlaceCard | None = None
+    # The draft this turn offered, as it was assembled when the turn happened. THE OTHER
+    # THING HERE THAT IS RECORDED RATHER THAN RE-DERIVED, and the one that cannot be
+    # re-derived at all: it was addressed from a recipient in deploy config and the address
+    # on the token that turn was sent with, so rebuilding it would show where a message would
+    # go today rather than where the student was told it was going.
     escalation: EmailDraft | None = None
     created_at: str | None = Field(default=None, alias="createdAt")
 

@@ -128,6 +128,11 @@ export const fr: Strings = {
 	escalationTooLong:
 		'Ce brouillon est trop long pour ouvrir automatiquement ton application e-mail. Copie-le et colle-le dans un nouvel e-mail.',
 
+	placeAria: 'Lieu sur le campus',
+	placeDirections: "Voir l'itinéraire",
+	placeDirectionsFor: (name: string) => `Voir l'itinéraire vers ${name}`,
+	placeMapCredit: 'Données cartographiques © les contributeurs d\'OpenStreetMap',
+
 	settingsClose: 'Fermer les paramètres',
 	close: 'Fermer',
 	languageLabel: 'Langue',

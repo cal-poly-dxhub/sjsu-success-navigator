@@ -129,6 +129,11 @@ export const th: Strings = {
 	escalationTooLong:
 		'ร่างนี้ยาวเกินกว่าจะเปิดแอปอีเมลของคุณโดยอัตโนมัติ กรุณาคัดลอกแล้ววางในอีเมลฉบับใหม่',
 
+	placeAria: 'ตำแหน่งในมหาวิทยาลัย',
+	placeDirections: 'ดูเส้นทาง',
+	placeDirectionsFor: (name: string) => `ดูเส้นทางไป ${name}`,
+	placeMapCredit: 'ข้อมูลแผนที่ © ผู้ร่วมสร้าง OpenStreetMap',
+
 	settingsClose: 'ปิดการตั้งค่า',
 	close: 'ปิด',
 	languageLabel: 'ภาษา',

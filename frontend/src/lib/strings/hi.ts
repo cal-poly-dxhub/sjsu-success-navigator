@@ -122,6 +122,11 @@ export const hi: Strings = {
 	escalationTooLong:
 		'यह मसौदा इतना लंबा है कि आपका ईमेल ऐप अपने आप नहीं खुल सकता। इसे कॉपी करके एक नए ईमेल में पेस्ट कर दें।',
 
+	placeAria: 'कैंपस में जगह',
+	placeDirections: 'रास्ता देखें',
+	placeDirectionsFor: (name: string) => `${name} तक का रास्ता देखें`,
+	placeMapCredit: 'मानचित्र डेटा © OpenStreetMap योगदानकर्ता',
+
 	settingsClose: 'सेटिंग्स बंद करें',
 	close: 'बंद करें',
 	languageLabel: 'भाषा',

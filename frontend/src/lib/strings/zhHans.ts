@@ -122,6 +122,11 @@ export const zhHans: Strings = {
 		'你的浏览器不允许我们使用剪贴板，所以内容已为你选中：复制后粘贴到一封新邮件里。',
 	escalationTooLong: '这份草稿太长，无法自动打开你的邮箱应用。请复制后粘贴到一封新邮件里。',
 
+	placeAria: '校园位置',
+	placeDirections: '查看路线',
+	placeDirectionsFor: (name: string) => `查看前往 ${name} 的路线`,
+	placeMapCredit: '地图数据 © OpenStreetMap 贡献者',
+
 	settingsClose: '关闭设置',
 	close: '关闭',
 	languageLabel: '语言',

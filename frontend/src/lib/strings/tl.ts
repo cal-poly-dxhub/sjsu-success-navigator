@@ -123,6 +123,11 @@ export const tl: Strings = {
 	escalationTooLong:
 		'Masyadong mahaba ang draft na ito para kusang buksan ang email app mo. Kopyahin ito at i-paste sa bagong email.',
 
+	placeAria: 'Lokasyon sa campus',
+	placeDirections: 'Kunin ang direksyon',
+	placeDirectionsFor: (name: string) => `Kunin ang direksyon papuntang ${name}`,
+	placeMapCredit: 'Datos ng mapa © mga kontribyutor ng OpenStreetMap',
+
 	settingsClose: 'Isara ang mga setting',
 	close: 'Isara',
 	languageLabel: 'Wika',

@@ -100,6 +100,31 @@ def test_the_output_scanner_attaches_the_default_panel_when_prose_cites_a_hotlin
     assert result.statement_batches is None
 
 
+def test_the_panel_takes_a_location_card_with_it():
+    """THE OTHER ROUTE INTO A SAFETY TURN, which is the one that can actually carry a map:
+    the model wrote an ordinary reply, named a place, and mentioned a crisis line in prose
+    without tagging the turn. The panel gets bolted on here, and it takes everything else
+    with it - a map and a walking route are an errand, and this turn is a phone call."""
+    from models import PlaceCard
+
+    response = _plain_response("Please call 988. The Wellness Center is open too.")
+    response.place = PlaceCard(
+        key="student-wellness-center",
+        name="Student Wellness Center",
+        address="Across from the Event Center",
+        directionsUrl="https://www.google.com/maps/dir/?api=1&destination=x",
+    )
+
+    result = safety.apply_safety_handoff_to_response(
+        response,
+        conversational_text=response.conversational_text,
+        safety_keys=None,
+    )
+
+    assert result.safety_handoff is not None
+    assert result.place is None
+
+
 def test_plain_answers_pass_through_untouched():
     result = safety.apply_safety_handoff_to_response(
         _plain_response("The tutoring office is in SSC 600."),

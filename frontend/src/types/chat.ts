@@ -41,6 +41,29 @@ export type SafetyHandoff = {
 };
 
 /**
+ * One campus location, resolved server-side from a catalogue key the model wrote.
+ *
+ * EVERY STRING HERE IS THE SERVER'S (app/places.py). The model names a place from a fixed
+ * list and nothing else, so there is no address, room number or map URL in this payload that
+ * a model could have authored - the same property the card contract's `ref` buys, applied to
+ * a second kind of destination. A place that is not in the catalogue produces no card at all
+ * rather than a guessed one, which is why the browser can render these strings as facts.
+ *
+ * `mapImageUrl` is a ROOT-RELATIVE PATH to an image this project rendered from OpenStreetMap
+ * tiles and committed under frontend/public/places/. It is served by the same distribution as
+ * this page, so a turn arriving makes NO request to any third party. Absent means the
+ * building has no render yet, and the panel shows the name, the address and the directions
+ * link - a whole card, not a degraded one.
+ */
+export type PlaceCard = {
+	key: string;
+	name: string;
+	address: string;
+	directionsUrl: string;
+	mapImageUrl?: string | null;
+};
+
+/**
  * A message to a human, assembled server-side and sent by the student themselves.
  *
  * THESE ARE THE EXACT BYTES that go to the mail client, and they are the bytes on screen:
@@ -109,6 +132,11 @@ export type ChatResponse = {
 	statementBatches?: StatementBatch[];
 	safetyHandoff?: SafetyHandoff;
 	/**
+	 * The campus location this turn points at, or absent - which is every turn the model
+	 * named no place on, every key that was not in the catalogue, and every safety turn.
+	 */
+	place?: PlaceCard;
+	/**
 	 * The email draft this turn offers to send to a human, or absent.
 	 *
 	 * Absent is every turn the model did not tag, every deployment with no recipient
@@ -154,6 +182,8 @@ export type StoredMessage = {
 	safetyHandoff?: SafetyHandoff;
 	/** The draft this turn offered, as it was assembled then - not rebuilt from live config. */
 	escalation?: EmailDraft;
+	/** The location this turn showed, as it resolved then - not re-resolved from the key. */
+	place?: PlaceCard;
 	createdAt?: string;
 };
 
@@ -217,6 +247,11 @@ export type ConversationTurn = {
 	 * turn that carries a safetyHandoff - the server drops one before the other can exist.
 	 */
 	escalation?: EmailDraft;
+	/**
+	 * The campus location this turn pointed at. Renders under the cards, and never on a turn
+	 * that carries a safetyHandoff, by the same rule the draft above follows.
+	 */
+	place?: PlaceCard;
 	/** Active RAG flow phase; talk-only turns stay conversational. */
 	phase: RagPhase | 'done';
 	/**

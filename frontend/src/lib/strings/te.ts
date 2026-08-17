@@ -121,6 +121,11 @@ export const te: Strings = {
 	escalationTooLong:
 		'ఈ ముసాయిదా చాలా పొడవుగా ఉంది, మీ ఇమెయిల్ యాప్ దానంతట అదే తెరుచుకోలేదు. దాన్ని కాపీ చేసి కొత్త ఇమెయిల్‌లో పేస్ట్ చేయండి.',
 
+	placeAria: 'క్యాంపస్‌లో ప్రదేశం',
+	placeDirections: 'దారి చూడండి',
+	placeDirectionsFor: (name: string) => `${name} కు దారి చూడండి`,
+	placeMapCredit: 'మ్యాప్ డేటా © OpenStreetMap సహకారులు',
+
 	settingsClose: 'సెట్టింగ్‌లను మూసివేయండి',
 	close: 'మూసివేయండి',
 	languageLabel: 'భాష',

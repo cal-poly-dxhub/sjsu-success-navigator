@@ -122,6 +122,15 @@ confident wrong destination costs more than a missing one. The list is deliberat
 the full building directory - the codes students type, the offices they ask for by initials -
 and the rule under it sends everything else to a question rather than to a guess.
 
+THE PLACE SECTION IS A KEY VOCABULARY and is always present, which is what makes it unlike
+the escalation section beside it: there is no deploy config to gate it on, because the
+catalogue is a table in app/places.py rather than an address somebody has to configure. It
+is the safety roster's shape applied to a second problem - the model picks a key, the table
+owns the name, the address and the links - so the section's load-bearing sentence is the one
+saying that a place NOT in the roster gets no block at all. The alternative is a model
+reaching for the nearest key and sending a student to the wrong building, which is a worse
+outcome than the address it would have written in a card anyway.
+
 The examples mark their annotations as [bracketed] stage directions with the reply under an
 explicit [your reply] marker. The first shipped format ran the reply directly under a bare
 "Results:" line, and the model learned that annotating the situation is part of the output:
@@ -134,6 +143,7 @@ themselves, not just banned in the Never list.
 from __future__ import annotations
 
 from escalation import escalation_available
+from places import place_roster_for_prompt
 from safety import safety_roster_for_prompt
 from settings import Settings
 
@@ -151,18 +161,53 @@ def build_system_prompt(settings: Settings) -> str:
     can see. The same value gates both halves (escalation.escalation_available), so the
     prompt cannot come to promise something the deployment cannot deliver."""
     roster = "\n".join(f"- {key}: when {when}" for key, when in safety_roster_for_prompt())
+    places = "\n".join(f"- {key}: {when}" for key, when in place_roster_for_prompt())
     return _TEMPLATE.format(
         max_cards=settings.card_max_cards,
         title_max=settings.card_title_max_chars,
         desc_max=settings.card_desc_max_chars,
         followup_max=settings.card_followup_max_chars,
         safety_roster=roster,
+        place_section=_PLACE_SECTION.format(place_roster=places),
         escalation_section=(
             _ESCALATION_SECTION.format(escalation_max=settings.escalation_max_chars)
             if escalation_available(settings)
             else ""
         ),
     )
+
+
+# Interpolated into the template above, always. Its own block rather than a paragraph in the
+# card rules, and for a different reason from the escalation section's: this one is a KEY
+# VOCABULARY, and a vocabulary belongs where the roster it draws from can be read beside it.
+# The roster comes from app/places.py's table, exactly as the safety roster comes from
+# app/safety.py's, so a key the model is taught always resolves and the only key that can
+# miss is one it invented.
+#
+# The rule that carries the feature is the LAST paragraph, not the first: the model has to be
+# told, in a sentence it cannot read as a soft preference, that a place it cannot find in the
+# list gets no block at all. A model that reaches for the nearest key is how a student ends up
+# walking to the wrong building, and it is the failure mode this section is written against.
+# No worked example models it, for the reason the escalation section has none: an example is
+# the strongest steer in this file, and a location is a judgement about one question rather
+# than a shape to copy onto every turn that looks like the sample.
+_PLACE_SECTION = """
+Showing a student where a place is:
+When a student needs to physically go somewhere, and that somewhere is in the list below, end your reply with one location block naming it:
+
+<place>career-center</place>
+
+The server turns that key into a panel with the building, the address and a directions link. You write the key and nothing else: no address, no room, no map link, no attributes. Keep writing the answer as you would anyway, the office's contacts included, because the panel is a way there rather than the answer.
+
+The keys, and what each one is for:
+{place_roster}
+
+Use it when getting there is part of what they asked: where somewhere is, how to find it, whether to go in person, or a walk-in they are about to make. Skip it when the answer is a form, a phone call or a page, and never write one just because an office came up.
+
+If the place they need is not in that list, write no block at all. Not the nearest key, not the building it is near, not the office upstairs from it. A student walking to the wrong door because of a good guess is worse off than one who was simply told the address in a card, so the rest of your reply carries the location as usual and no panel appears. The keys stay in English exactly as spelled here, whatever language the reply is in, because the server reads them and nobody else does.
+
+At most one block in a turn, and never on a turn where you emit a safety block.
+"""
 
 
 # Interpolated into the template above, or replaced by nothing at all. Its own block rather
@@ -355,7 +400,7 @@ Your two lines are in the student's language, the same as any other reply, becau
 Triage carefully in both directions. A routine question about housing options, accommodations paperwork, money, or any office is a normal answer with cards, not a handoff; a student in real danger is a handoff even if they phrase it calmly. When one message carries both, the handoff comes first and the rest of the answer can follow in the same reply's prose.
 
 The panel is for the student in front of you being in danger. Worry about someone else is not that: a roommate or friend acting strangely routes, with cards, to the Behavioral Intervention Team and the humans who can check on them. And a question ABOUT crisis resources, like whether to call CAPS or 988, is an ordinary informational answer with cards, not a handoff.
-{escalation_section}
+{place_section}{escalation_section}
 Never:
 - A word about your machinery. Searching, results, retrieval, tools, deciding whether to search: none of it is mentioned, because every word you write is read by the student, and narration of your own process is not spoken to them. When you cannot answer, say you do not have a page for it, never that a search or your results came up short.
 - A word about how you are displayed. What your screen renders and what it does not is yours to work within, never something you explain or apologise for: a student who asks for italics gets italics, not a sentence about what your display supports.

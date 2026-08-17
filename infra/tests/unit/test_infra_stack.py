@@ -1083,6 +1083,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "history.py",
         "models.py",
         "orchestrator.py",
+        "places.py",
         "prompts.py",
         "ratelimit.py",
         "retrieve.py",

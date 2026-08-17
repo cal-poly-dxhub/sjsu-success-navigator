@@ -305,3 +305,53 @@ def test_a_streamed_turn_stores_its_draft_beside_its_cards(worker, monkeypatch):
         "subject": "S",
         "body": "B",
     }
+
+
+def test_a_streamed_turn_stores_its_location_beside_its_cards(worker, monkeypatch):
+    """Storage parity with the buffered path, which is what keeps a conversation the same
+    conversation whichever transport answered it."""
+    from models import ChatResponse, PlaceCard
+
+    place = PlaceCard(
+        key="career-center",
+        name="Career Center",
+        address="Clark Hall, 1st floor, room 140",
+        directionsUrl="https://www.google.com/maps/dir/?api=1&destination=Clark+Hall",
+    )
+    monkeypatch.setattr(
+        stream_worker,
+        "run_chat",
+        lambda request, settings, **kwargs: ChatResponse(
+            conversationalText="Clark Hall, first floor.", place=place
+        ),
+    )
+
+    stream_worker.lambda_handler(_event(), _FakeContext())
+
+    assert worker.store.appended[0]["place"] == place.model_dump(by_alias=True)
+
+
+def test_the_final_payload_carries_the_location(worker, monkeypatch):
+    """The authoritative payload is a dump of the whole response, so a new field rides along
+    by construction. Asserted once, because "by construction" is the claim being made."""
+    from models import ChatResponse, PlaceCard
+
+    monkeypatch.setattr(
+        stream_worker,
+        "run_chat",
+        lambda request, settings, **kwargs: ChatResponse(
+            conversationalText="Clark Hall, first floor.",
+            place=PlaceCard(
+                key="career-center",
+                name="Career Center",
+                address="Clark Hall, 1st floor, room 140",
+                directionsUrl="https://www.google.com/maps/dir/?api=1&destination=Clark+Hall",
+            ),
+        ),
+    )
+
+    stream_worker.lambda_handler(_event(), _FakeContext())
+
+    final = worker.of_type("final")
+    assert final, worker.types
+    assert final[-1]["payload"]["place"]["name"] == "Career Center"

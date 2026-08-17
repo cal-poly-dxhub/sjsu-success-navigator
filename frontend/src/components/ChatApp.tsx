@@ -394,6 +394,9 @@ export default function ChatApp() {
 				// The draft the server assembled for THIS turn, carried straight onto it. The
 				// component renders these bytes; nothing here builds, edits or addresses one.
 				escalation: next.escalation,
+				// The location the server resolved for THIS turn, carried straight onto it.
+				// Nothing here builds an address or a map link; the panel renders these bytes.
+				place: next.place,
 				query,
 				// What a streamed preview already typed out, so the finished turn picks up
 				// where it stopped instead of replaying prose the student has read. This is

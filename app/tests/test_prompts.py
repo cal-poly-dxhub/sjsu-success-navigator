@@ -484,3 +484,64 @@ def test_asking_for_a_person_also_points_at_the_pill():
     # The display ban is unchanged for everything else, and the exception says so in the
     # same breath rather than leaving the two rules to be reconciled by the model.
     assert "Do not describe the draft, how it opens, or what it looks like on screen" in prompt
+
+
+def test_the_place_roster_in_the_prompt_is_the_resolvers_table():
+    """The location keys are the model's whole vocabulary for this feature, so every key the
+    prompt teaches must be one the server resolves. Both halves read app/places.py's table,
+    which is what this pins: a new place is one table entry away from being teachable and
+    resolvable, and an entry removed disappears from both at once."""
+    import places
+
+    prompt = build_system_prompt(_SETTINGS)
+    roster = places.place_roster_for_prompt()
+    assert roster
+    for key, when in roster:
+        assert f"- {key}: {when}" in prompt
+
+
+def test_the_prompt_shows_the_place_block_as_a_key_and_nothing_else():
+    """The shape the model copies. An attribute or a second field in the sketch is how a
+    model learns it may write an address, which is the one thing this contract exists to
+    make unrepresentable."""
+    prompt = build_system_prompt(_SETTINGS)
+    assert "<place>career-center</place>" in prompt
+    assert "no address, no room, no map link, no attributes" in prompt
+
+
+def test_the_prompt_says_an_unlisted_place_gets_no_block():
+    """THE LOAD-BEARING SENTENCE. A model that reaches for the nearest key sends a student
+    to the wrong building, and no server-side check can catch that - the key resolves, the
+    address is real, and it is the wrong one. So the rule has to land in the prompt, and it
+    has to be unambiguous rather than a preference."""
+    prompt = build_system_prompt(_SETTINGS)
+    assert "write no block at all" in prompt
+    assert "Not the nearest key" in prompt
+
+
+def test_the_place_section_bans_a_location_on_a_safety_turn():
+    prompt = build_system_prompt(_SETTINGS)
+    place_section = prompt.split("Showing a student where a place is:")[1]
+    assert "never on a turn where you emit a safety block" in place_section
+
+
+def test_the_place_keys_are_not_translated_with_the_rest_of_the_reply():
+    """A translated key resolves to nothing, exactly as a translated safety key does. The
+    carve-out is stated inside the section rather than left to the language rules, because
+    that is where a model reading about the tag will be."""
+    prompt = build_system_prompt(_SETTINGS)
+    place_section = prompt.split("Showing a student where a place is:")[1]
+    assert "stay in English" in place_section
+
+
+def test_the_prompt_never_writes_an_address_the_model_could_copy():
+    """The roster is keys and one-line purposes, never addresses. A building name or a room
+    number in the prompt is a specific the model can paste into prose on a turn where no
+    panel appears at all, and it would be a hardcoded fact in a file that has none."""
+    import places
+
+    prompt = build_system_prompt(_SETTINGS)
+    for place in places.CAMPUS_PLACES.values():
+        assert place.address not in prompt
+        assert place.directions_destination not in prompt
+        assert "google.com/maps" not in prompt

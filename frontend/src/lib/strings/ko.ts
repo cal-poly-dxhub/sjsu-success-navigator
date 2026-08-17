@@ -121,6 +121,11 @@ export const ko: Strings = {
 	escalationTooLong:
 		'이 초안은 너무 길어서 이메일 앱이 자동으로 열리지 않아요. 복사해서 새 이메일에 붙여넣어 주세요.',
 
+	placeAria: '캠퍼스 위치',
+	placeDirections: '길찾기',
+	placeDirectionsFor: (name: string) => `${name}까지 길찾기`,
+	placeMapCredit: '지도 데이터 © OpenStreetMap 기여자',
+
 	settingsClose: '설정 닫기',
 	close: '닫기',
 	languageLabel: '언어',

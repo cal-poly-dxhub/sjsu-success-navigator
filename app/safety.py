@@ -202,7 +202,12 @@ def apply_safety_handoff_to_response(
     to write, and wait on, between them and a number that answers now. The orchestrator
     already skips building one when the model tagged the turn itself, so what this catches
     is the other route in - prose that names crisis lines without the tag, where the model
-    thought it was writing an ordinary reply and offered to email an office."""
+    thought it was writing an ordinary reply and offered to email an office.
+
+    THE LOCATION CARD GOES WITH THEM TOO, on the same line and for the same reason. It is
+    the same rule about what a safety turn may contain rather than a new one: a map and a
+    walking route are an errand, and a turn that attached the panel did so because somebody
+    needs a number now."""
     if response.safety_handoff is not None:
         return response
 
@@ -222,10 +227,14 @@ def apply_safety_handoff_to_response(
     if response.escalation is not None:
         logger.info("Dropping an escalation offer from a safety turn.")
 
+    if response.place is not None:
+        logger.info("Dropping a location card from a safety turn.")
+
     return response.model_copy(
         update={
             "safety_handoff": handoff,
             "statement_batches": None,
+            "place": None,
             "escalation": None,
             "conversational_text": whole_message,
             "trailing_text": None,
