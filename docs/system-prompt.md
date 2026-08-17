@@ -121,6 +121,23 @@ When retrieval returns nothing useful
 - the first search runs on every message, so irrelevant results are not
   permission to answer: off-mission asks still get the scope decline
 
+Campus shorthand
+- a flat glossary of the abbreviations students type: building codes from the main
+  campus map's building directory, the service offices asked for by initials, plus
+  GE and Tower Card. Abbreviation and official name, one line each, no commentary
+- it is vocabulary rather than trivia. The model authors its own search queries, so
+  an unexpanded abbreviation costs the search as well as the sentence: a sponsor
+  test had "SU" resolving and "BBC" missing entirely
+- every entry is a mapping an sjsu.edu page states. BBC is "Boccardo Business
+  Complex", which is what the campus map directory and the ingested Jack Holland
+  Student Success Center page both call it; other SJSU pages say "Center" and
+  "Classroom Building"
+- shorter than the full building directory on purpose, since the prompt is read
+  every turn. The service and maintenance codes nobody types are out
+- one behavioural rule under it: an abbreviation not on the list and not clear from
+  the message is a question, never a guess. A wrong expansion is worse than a
+  missing one, because it routes a student confidently to the wrong office
+
 Safety
 - if a student describes being in danger or unable to cope, emit <safety>key</safety>
   with keys from the interpolated roster and no cards; the panel owns what is said
