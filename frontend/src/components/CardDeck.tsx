@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+	type CSSProperties,
+} from 'react';
 import { motion } from 'motion/react';
 import type { StatementCard as StatementCardData } from '../types/chat';
 import { StatementCard } from './StatementCard';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { waitingDeck } from '../lib/waitingDeck';
+import { deckTuning } from '../lib/deckTuning';
 import './CardDeck.css';
 
 /**
@@ -25,14 +33,13 @@ import './CardDeck.css';
  *
  * The floor keeps a short hop from being over before it registers; the ceiling keeps the
  * longest flight from dragging, and is what `dealDurationMs` can bound the group by without
- * knowing any distances.
+ * knowing any distances. The floor is what the card on TOP gets: it does not travel at all,
+ * so that is the time its turn-over has to read in.
+ *
+ * The numbers themselves are `dealStaggerS`, `dealSpeedPxS`, `dealMinDurationS` and
+ * `dealMaxDurationS` in lib/deckTuning.ts, along with every other number that decides how
+ * this deck moves - see the note there for why they live in one object.
  */
-const DEAL_STAGGER_S = 0.34;
-const DEAL_SPEED_PX_S = 1150;
-// The floor is what the card on TOP gets: it does not travel at all, so this is the time
-// its turn-over has to read in.
-const DEAL_MIN_DURATION_S = 0.46;
-const DEAL_MAX_DURATION_S = 0.62;
 
 /**
  * Ease-out, but not a quintic one. `[0.22, 1, 0.36, 1]` put ~70% of the distance into the
@@ -42,20 +49,24 @@ const DEAL_MAX_DURATION_S = 0.62;
  */
 const DEAL_EASE = [0.33, 1, 0.68, 1] as const;
 
-/**
- * The beat between the deck standing square and the first card leaving it.
+/*
+ * THE SETTLE BEAT USED TO LIVE HERE, as a 190ms freeze between this deck mounting and its
+ * first card leaving. It has moved to the compress (`deckTuning.compressSettleMs`), and the move is
+ * the point rather than the duration.
  *
- * The deal already begins on a square deck - the reply's arrival is held for one
- * (lib/waitingDeck.ts) - but "square for one frame" is not something an eye reads as
- * settled. This is the pause that lets it.
+ * A pause reads as a breath when it happens to something that has just moved, and as a stall
+ * when it happens to something that has just appeared. Held here, it landed on a deck the
+ * student had never seen animate: the waiting deck stopped dead, was replaced, and the new
+ * stack sat inert for a fifth of a second before anything happened. That gap was the freeze.
+ * Held on the waiting deck instead, it is the pause after the deck squares itself up, and the
+ * deal then begins on the frame the real one mounts - by which point the beat has been taken.
  */
-const DEAL_SETTLE_MS = 190;
 
 /** How long one card's flight takes, from how far it has to go. */
 function flightDurationS(distancePx: number): number {
 	return Math.min(
-		DEAL_MAX_DURATION_S,
-		Math.max(DEAL_MIN_DURATION_S, distancePx / DEAL_SPEED_PX_S),
+		deckTuning.dealMaxDurationS,
+		Math.max(deckTuning.dealMinDurationS, distancePx / deckTuning.dealSpeedPxS),
 	);
 }
 
@@ -73,11 +84,9 @@ function flightDurationS(distancePx: number): number {
  */
 export function dealDurationMs(cardCount: number): number {
 	if (cardCount <= 0) return 0;
-	return Math.round(((cardCount - 1) * DEAL_STAGGER_S + DEAL_MAX_DURATION_S) * 1000);
+	return Math.round(((cardCount - 1) * deckTuning.dealStaggerS + deckTuning.dealMaxDurationS) * 1000);
 }
 
-/** Per-card depth in the stack, waiting and dealing alike. */
-const DECK_STEP_PX = 7;
 
 /**
  * A card whose body runs past this is LONG and takes its whole grid row rather than one
@@ -101,20 +110,12 @@ const WIDE_CARD_MIN_CHARS = 280;
 const WAITING_DECK_DEPTH = 4;
 
 /**
- * How tall the deck stands. Kept in step with `.waiting-deck`'s own height in CardDeck.css,
- * because the real cards are scaled to it: the deck the cards come out of has to be the deck
- * that was sitting there.
- */
-const WAITING_DECK_HEIGHT_PX = 76;
-
-/**
  * THE CYCLE: one card nudges out of the stack and back, then the next one up, then a rest.
  *
- * A BEAT is one nudge and one rest. The card dips a little way out of the bottom of the stack
- * and returns to exactly where it started; the deck then stands still before the card above it
- * takes its turn. It works UPWARD - bottom, then second from bottom, then second from top -
- * and THE TOP CARD NEVER MOVES, which is what stops the whole thing reading as restless: there
- * is always a fixed object at the front for the eye to hold on to.
+ * A BEAT is one nudge and one rest (`cyclePopMs` then `cyclePauseMs`). The card dips
+ * `cyclePopPx` out of the bottom of the stack and returns to exactly where it started; the
+ * deck then stands still before the card above it takes its turn. It works UPWARD from the
+ * bottom and then comes round again.
  *
  * NO CARD EVER CHANGES SLOT, and that is the structural point rather than a simplification.
  * Earlier versions cycled cards through the stack, which meant depth changing mid-move - and a
@@ -123,24 +124,82 @@ const WAITING_DECK_HEIGHT_PX = 76;
  * Here the order is fixed, the depths are constant, and what is left is the small part that
  * was actually saying something.
  *
- * PURELY VERTICAL AND NEVER TILTED. No arc, no lean, no swing: each was decoration that made
- * the motion harder to read rather than easier.
+ * IT LEANS AS IT GOES, through `cycleTiltDeg`, pivoting from the top of the card so the swing
+ * is on the free bottom edge - a card drawn out of a stack rather than lowered on rails. Square
+ * again by the time it is home, which is what keeps the resting pose identical to the one the
+ * real deck is built in, and identical to the one the compress leaves behind.
  *
  * A CONTINUOUS FUNCTION OF THE CLOCK, not a keyframe list. `deckFrame` answers "where is
  * everything, and is any of it moving?" for any instant, which is why there is nothing here to
  * keep in step with anything else.
+ *
+ * `deckStepPx` is the per-card depth, waiting and dealing alike, and `waitingDeckHeightPx` is
+ * how tall the deck stands - the latter mirrored into CSS as `--waiting-deck-h`, because the
+ * real cards are scaled to it and a disagreement is a stack that resizes at the hand-off.
+ * All of these live in lib/deckTuning.ts.
  */
-const CYCLE_POP_MS = 380;
-const CYCLE_PAUSE_MS = 520;
+
+type DeckPose = { y: number; lean: number };
+
 /**
- * How far the card nudges. Small on purpose: all it has to do is grow the sliver of itself
- * showing below the card in front of it, which at a 7px step is a few pixels of edge to start.
+ * THE COMPRESS: the deck shedding the cards the reply turned out not to need.
+ *
+ * The deck waits at four because nobody knows yet how many are coming. The reply then arrives
+ * knowing exactly, and a stack of four dealing out one card is two different objects pretending
+ * to be one. So before the hand-off the surplus cards RIPPLE UP AND TUCK IN under the top one,
+ * bottom-most first, until the stack is the size the group is about to be.
+ *
+ * BOTTOM-MOST FIRST, one after another rather than together, because together is a shrink and
+ * one after another is a hand squaring up a deck. The stagger is short enough that the moves
+ * overlap, so it reads as one gesture travelling up the stack.
+ *
+ * ON THE DECK'S OWN LEAN. Each card leans out and back through `deckTuning.cycleTiltDeg` on its way,
+ * the same swing the idle cycle uses, so this is recognisably the same object doing the same
+ * kind of move - a card being drawn out of a stack, not a new effect arriving at the end.
+ *
+ * AND THEN A BEAT. `deckTuning.compressSettleMs` is the pause after the last card lands, and it is what
+ * the deal's own settle used to be: an eye needs a moment to read a stack as square before a
+ * card slides out from underneath it. It sits HERE, on a deck that is already on screen and
+ * has just moved, rather than after the swap on a deck that has not - which is what made that
+ * beat read as a freeze rather than as a breath.
  */
-const CYCLE_POP_PX = 12;
 
 /** Ease in and out. The card leaves from rest and comes back to rest. */
 function easeInOut(t: number): number {
 	return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+/** Out and back: 0 at both ends, 1 in the middle. The lean, and the idle nudge, share it. */
+function outAndBack(t: number): number {
+	return t < 0.5 ? easeInOut(t * 2) : 1 - easeInOut((t - 0.5) * 2);
+}
+
+/**
+ * Where every card is during the compress, and whether it has finished.
+ *
+ * Cards below `target` are already where they belong and never move. Each surplus card runs
+ * from its own slot to the top card's, which is where it disappears: the stack's depths are
+ * fixed, so a card at slot 0's position with a lower z-index is simply behind the top card.
+ */
+function compressFrame(elapsed: number, target: number): { poses: DeckPose[]; done: boolean } {
+	const poses: DeckPose[] = Array.from({ length: WAITING_DECK_DEPTH }, (_, index) => ({
+		y: index * deckTuning.deckStepPx,
+		lean: 0,
+	}));
+
+	// Bottom of the stack first, working up to the last card the reply does not need.
+	const surplus: number[] = [];
+	for (let index = WAITING_DECK_DEPTH - 1; index >= target; index--) surplus.push(index);
+
+	for (const [order, index] of surplus.entries()) {
+		const through = (elapsed - order * deckTuning.rippleStaggerMs) / deckTuning.rippleMs;
+		const t = Math.min(1, Math.max(0, through));
+		poses[index].y = index * deckTuning.deckStepPx * (1 - easeInOut(t));
+		poses[index].lean = deckTuning.cycleTiltDeg * outAndBack(t);
+	}
+
+	const rippleMs = surplus.length ? (surplus.length - 1) * deckTuning.rippleStaggerMs + deckTuning.rippleMs : 0;
+	return { poses, done: elapsed >= rippleMs + deckTuning.compressSettleMs };
 }
 
 /**
@@ -151,23 +210,73 @@ function easeInOut(t: number): number {
  * and everything else sits still. At rest every card is exactly on its slot, which is also
  * the pose the real deck is built in - see the hand-off.
  */
-function deckFrame(elapsed: number): { poses: number[]; moving: boolean } {
-	const beatMs = CYCLE_POP_MS + CYCLE_PAUSE_MS;
+function deckFrame(elapsed: number): { poses: DeckPose[]; moving: boolean } {
+	const beatMs = deckTuning.cyclePopMs + deckTuning.cyclePauseMs;
 	const beat = Math.floor(elapsed / beatMs);
-	const through = Math.min(1, Math.max(0, (elapsed % beatMs) / CYCLE_POP_MS));
+	const through = Math.min(1, Math.max(0, (elapsed % beatMs) / deckTuning.cyclePopMs));
 
-	// Bottom slot first, working up, and never the top one.
-	const movers = WAITING_DECK_DEPTH - 1;
-	const mover = WAITING_DECK_DEPTH - 1 - (beat % movers);
+	// Bottom slot first, working up through every card, then round again.
+	const mover = WAITING_DECK_DEPTH - 1 - (beat % WAITING_DECK_DEPTH);
 
 	// Out and back, each half eased off its own end, so it comes to a stop before returning.
-	const out = through < 0.5 ? easeInOut(through * 2) : 1 - easeInOut((through - 0.5) * 2);
+	const out = outAndBack(through);
 
-	const poses = Array.from(
-		{ length: WAITING_DECK_DEPTH },
-		(_, index) => index * DECK_STEP_PX + (index === mover ? CYCLE_POP_PX * out : 0),
-	);
+	const poses = Array.from({ length: WAITING_DECK_DEPTH }, (_, index) => ({
+		y: index * deckTuning.deckStepPx + (index === mover ? deckTuning.cyclePopPx * out : 0),
+		lean: index === mover ? deckTuning.cycleTiltDeg * out : 0,
+	}));
 	return { poses, moving: through < 1 };
+}
+
+/**
+ * A card withheld: the silhouette of a real one, redacted into a mosaic.
+ *
+ * MIRRORS THE REAL CARD RATHER THAN INVENTING A SHAPE - the same 20px radius, the same
+ * padding and gap, a blue title bar where the title goes, grey lines where the description
+ * goes, and the source and follow-up buttons in their own colours at the foot. That match is
+ * the technique: what makes a placeholder feel like the thing arriving rather than a spinner
+ * in its place is that its silhouette is already the answer's.
+ *
+ * A SOLID BAR PER LINE, and nothing cleverer. This was a censor mosaic of 4px blocks, which
+ * read as a GRID - a texture with a pitch of its own that the eye locks onto and that fights
+ * the card under it - and then a set of gradient ramps standing in for blurred type, which
+ * was better but still a drawing of something rather than a placeholder. A bar states the
+ * same fact with nothing left over: a line of text goes here, this wide.
+ *
+ * FLAT FILLS, NOTHING FILTERED, and that is why it survives being animated. `filter: blur()`
+ * was never available here for two separate reasons. A filter is RASTERISED in the element's
+ * own coordinate space, and this element is scaled on two axes and turned over in 3D at the
+ * same time, so a blur radius would swim as the card grows. And a filter forces its own
+ * flattening context, which is precisely what stops the two faces being depth-sorted - the
+ * bug this card back exists to avoid. A flat fill has neither problem.
+ *
+ * There is no text here and nothing to read even underneath, which matters: nothing about it
+ * can fail in a way that reveals content, because there is no content to reveal.
+ */
+function CardGhost() {
+	return (
+		<div className="card-ghost" aria-hidden="true">
+			{/*
+			 * Counter-scales the deck's own squash, so everything inside is written in real
+			 * pixels. The card is scaled down to deck size while it is face down, and without
+			 * this the title bar and the buttons would be flattened by exactly that amount.
+			 */}
+			<div className="card-ghost__inner">
+				<span className="card-ghost__bar card-ghost__title" />
+				<span className="card-ghost__bar card-ghost__line" />
+				<span className="card-ghost__bar card-ghost__line card-ghost__line--short" />
+				{/*
+				 * Empty, and no `card-ghost__bar` on them: a control is not a line of type,
+				 * and a label drawn on a button is a placeholder on top of a placeholder.
+				 * See the note in the CSS.
+				 */}
+				<div className="card-ghost__actions">
+					<span className="card-ghost__button card-ghost__button--source" />
+					<span className="card-ghost__button card-ghost__button--followup" />
+				</div>
+			</div>
+		</div>
+	);
 }
 
 /**
@@ -192,37 +301,67 @@ export function CardDeckPlaceholder() {
 		if (!deck) return;
 		const cards = Array.from(deck.children) as HTMLElement[];
 
-		const paint = (elapsed: number) => {
-			const { poses, moving } = deckFrame(elapsed);
+		const write = (poses: DeckPose[]) => {
 			cards.forEach((card, index) => {
-				card.style.transform = `translate3d(0, ${poses[index].toFixed(2)}px, 0)`;
+				const pose = poses[index];
+				card.style.transform =
+					`translate3d(0, ${pose.y.toFixed(2)}px, 0) rotate(${pose.lean.toFixed(2)}deg)`;
 			});
-			return moving;
 		};
 
 		// Reduced motion gets the deck standing square and never moving, which is the same
 		// posture the grid itself takes: present, not performed.
 		if (reduceMotion) {
-			paint(0);
+			write(deckFrame(0).poses);
 			return;
 		}
 
-		waitingDeck.release();
+		waitingDeck.attach(WAITING_DECK_DEPTH);
 		const started = performance.now();
 		let frame = 0;
 		let stopped = false;
+		/** When the compress began, and to what. Null until the reply says how many it needs. */
+		let compressAt: number | null = null;
+		let compressTo: number | null = null;
 
+		/*
+		 * THREE STATES, and the loop runs until the deck unmounts rather than stopping at the
+		 * first of them. It used to stop dead the moment it was held, which was fine when
+		 * being held was the last thing that ever happened to it - but the count arrives
+		 * AFTER the hold, and a stopped loop has no way to hear it.
+		 */
 		const tick = () => {
 			if (stopped) return;
-			// HELD means the hand-off is imminent. The deck is in a pause when that happens -
-			// that is what the hand-off waited for - so it simply stops where it stands, which
-			// is the pose the real deck is about to be built in.
-			if (waitingDeck.isHeld()) {
-				stopped = true;
+			const now = performance.now();
+
+			// 1. COMPRESSING. Started once, on the frame the count first appears.
+			const asked = waitingDeck.compressTarget();
+			if (asked !== null && compressTo === null) {
+				compressTo = asked;
+				compressAt = now;
+			}
+			if (compressTo !== null) {
+				const { poses, done } = compressFrame(now - (compressAt ?? now), compressTo);
+				write(poses);
+				if (done) {
+					// Square at the new count. Report it, then hold this pose - the real deck
+					// is about to be built in exactly it.
+					compressTo = null;
+					waitingDeck.compressDone();
+				}
+				frame = window.requestAnimationFrame(tick);
 				return;
 			}
-			if (paint(performance.now() - started)) waitingDeck.beginMove();
-			else waitingDeck.endMove();
+
+			// 2. HELD: settled, square, waiting to be told the count. Nothing to paint - the
+			// last idle frame left every card on its slot, which is where they belong.
+			if (!waitingDeck.isHeld()) {
+				// 3. IDLE: the cycle, on its own clock.
+				const { poses, moving } = deckFrame(now - started);
+				write(poses);
+				if (moving) waitingDeck.beginMove();
+				else waitingDeck.endMove();
+			}
 			frame = window.requestAnimationFrame(tick);
 		};
 		frame = window.requestAnimationFrame(tick);
@@ -230,7 +369,7 @@ export function CardDeckPlaceholder() {
 		return () => {
 			stopped = true;
 			window.cancelAnimationFrame(frame);
-			waitingDeck.release();
+			waitingDeck.detach();
 		};
 	}, [reduceMotion]);
 
@@ -244,7 +383,10 @@ export function CardDeckPlaceholder() {
 					key={index}
 					className="waiting-deck__card"
 					style={{ zIndex: WAITING_DECK_DEPTH - index }}
-				/>
+				>
+					{/* Only the card on top is ever seen; the rest are edges behind it. */}
+					{index === 0 ? <CardGhost /> : null}
+				</div>
 			))}
 		</div>
 	);
@@ -257,7 +399,7 @@ export function CardDeckPlaceholder() {
  * dimensions, and it is invisible on the way out because the card is face down until the
  * back half of its flight - a squashed box with a flat pattern on it is just a card back.
  */
-type DeckOffset = { x: number; y: number; sx: number; sy: number };
+type DeckOffset = { x: number; y: number; sx: number; sy: number; deckWidth: number };
 
 /**
  * Grid placement for each card, as a 1-based start line for `grid-column: <start> / -1`,
@@ -323,17 +465,17 @@ export function CardDeck({ cards, onFollowup, deal = false, onLanded }: CardDeck
 	/**
 	 * Whether the cards have started leaving the stack.
 	 *
-	 * A BEAT OF STILLNESS FIRST, and never a card pulled out of a deck that is mid-shuffle.
-	 * The group is only mounted at a rest point in the cycle - the turn's arrival is held
-	 * back for it (components/ChatApp.tsx, lib/waitingDeck.ts) - so the stack this waits on is
-	 * already motionless; what the pause buys is the moment an eye needs to read it as
-	 * settled before the first card slides out from underneath.
+	 * ONE FRAME, not a timer. The stillness this used to wait out has already happened on the
+	 * waiting deck, which squared itself up and held the pose before letting this group mount
+	 * at all (lib/waitingDeck.ts, and `deckTuning.compressSettleMs` above). What is left to do here is
+	 * only to let motion paint the stacked pose ONCE before animating out of it - flipping
+	 * straight to the finished values in the same commit would skip the entrance entirely.
 	 */
 	const [dealStarted, setDealStarted] = useState(false);
 	useEffect(() => {
 		if (!dealing || !offsets || dealStarted) return;
-		const timer = window.setTimeout(() => setDealStarted(true), DEAL_SETTLE_MS);
-		return () => window.clearTimeout(timer);
+		const frame = window.requestAnimationFrame(() => setDealStarted(true));
+		return () => window.cancelAnimationFrame(frame);
 	}, [dealing, offsets, dealStarted]);
 
 	// The group is down. Reported rather than timed, because a flight is sized by a distance
@@ -405,7 +547,8 @@ export function CardDeck({ cards, onFollowup, deal = false, onLanded }: CardDeck
 					// finishes at. A long card spans its whole row, so without this the
 					// stack would be a row-wide slab rather than a deck.
 					sx: rect.width ? deck.width / rect.width : 1,
-					sy: rect.height ? WAITING_DECK_HEIGHT_PX / rect.height : 1,
+					sy: rect.height ? deckTuning.waitingDeckHeightPx / rect.height : 1,
+					deckWidth: deck.width,
 				};
 			}),
 		);
@@ -461,8 +604,20 @@ export function CardDeck({ cards, onFollowup, deal = false, onLanded }: CardDeck
 				// top - the one the student has been watching, face down, since before the
 				// reply finished - is last. Its slot IS the deck's own position, measured at
 				// (0, 0), so it has nowhere to fly. It turns over where it lies.
-				const dealDelay = (cards.length - 1 - index) * DEAL_STAGGER_S;
+				const dealDelay = (cards.length - 1 - index) * deckTuning.dealStaggerS;
 				const flight = offset ? flightDurationS(Math.hypot(offset.x, offset.y)) : 0;
+
+				/*
+				 * THE TURN OVER, as three numbers the two faces and the rotation all read
+				 * from, rather than three copies of the same arithmetic that drift apart.
+				 * The flip is held until the card is most of the way to its slot, so it
+				 * lands face up rather than arriving as a spinning object.
+				 */
+				const flipDelay = dealDelay + flight * deckTuning.flipStartFraction;
+				const flipDuration = Math.max(
+					deckTuning.flipMinS,
+					flight * deckTuning.flipDurationFraction,
+				);
 
 				// First pass with `dealing` renders the finished layout so it can be
 				// measured. It is hidden rather than unmounted because the measurement
@@ -498,7 +653,7 @@ export function CardDeck({ cards, onFollowup, deal = false, onLanded }: CardDeck
 					// No lift off the first slot, and no lean. The stack sits exactly where the
 					// waiting deck was standing and in exactly its pose, which is what stops
 					// the whole thing jumping the instant the reply arrives.
-					y: offset.y + index * DECK_STEP_PX,
+					y: offset.y + index * deckTuning.deckStepPx,
 					scaleX: offset.sx,
 					scaleY: offset.sy,
 					rotateY: 180,
@@ -525,22 +680,52 @@ export function CardDeck({ cards, onFollowup, deal = false, onLanded }: CardDeck
 							duration: flight,
 							ease: DEAL_EASE,
 							delay: dealDelay,
-							// THE TURN OVER, in the back half of the flight. Held until the
-							// card is most of the way to its slot so it lands face up rather
-							// than arriving as a spinning object, and eased in and out
-							// because a flip has to start and stop on its own axis.
+							// THE TURN OVER, in the back half of the flight. Eased in and out
+							// because a flip has to start and stop on its own axis. See
+							// `flipDelay` above for why it waits.
 							rotateY: {
-								duration: Math.max(0.26, flight * 0.6),
+								duration: flipDuration,
 								ease: 'easeInOut',
-								delay: dealDelay + flight * 0.4,
+								delay: flipDelay,
 							},
 						}}
 						onAnimationComplete={
-							// The card on top is dealt LAST, so its landing is the group's.
-							index === 0 ? handleLanded : undefined
+							/*
+							 * The card on top is dealt LAST, so its landing is the group's -
+							 * but ONLY once the deal has actually started. While the stack is
+							 * being held, `animate` is handed the same values as `initial`, so
+							 * motion has nothing to run and reports completion on the spot.
+							 * Taking that as the landing ended the deal before it began: the
+							 * group lost `card-deck--dealing`, which is what hides the card
+							 * backs, so the face-down stack rendered as nothing at all.
+							 */
+							index === 0 && dealStarted ? handleLanded : undefined
 						}
 					>
-						<div className="card-deck__back" aria-hidden="true" />
+						{/*
+						 * THE TWO FACES. Which one is visible is settled entirely in CSS - see
+						 * the `translateZ` note on `.card-deck__back` - so there is no second
+						 * animation here to keep in step with the rotation above.
+						 *
+						 * EVERY CARD CARRIES A GHOST, not just the one on top. In the deck only
+						 * the top card is visible, but each card is fully in view the moment it
+						 * flies out, and a card that flew out blank was half of what made the
+						 * entrance look wrong.
+						 */}
+						<div
+							className="card-deck__back"
+							aria-hidden="true"
+							style={
+								{
+									'--deck-sx': offset.sx,
+									'--deck-sy': offset.sy,
+									'--deck-w': `${offset.deckWidth}px`,
+									'--deck-h': `${deckTuning.waitingDeckHeightPx}px`,
+								} as CSSProperties
+							}
+						>
+							<CardGhost />
+						</div>
 						<div className="card-deck__front">
 							<StatementCard card={card} onFollowup={onFollowup} />
 						</div>

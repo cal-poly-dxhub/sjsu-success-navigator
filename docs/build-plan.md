@@ -405,19 +405,42 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       so the burst lands cold. That air is now the deck - shown face down and shuffling from the
       moment `<card` appears, then dealt from the BOTTOM, each card turning over as it flies,
       with the top card flipping in place because its slot is the deck's own position. THE DECK
-      WAITS rather than shuffles - four card objects, one beat each: a 380ms 12px nudge out of
-      the bottom of the stack and back, then 520ms in which nothing moves, then the card above.
-      Bottom, second from bottom, second from top; THE TOP CARD NEVER MOVES. No card changes
-      slot, so no depth ever swaps - which is what let the motion shrink to this, since a card
-      changing depth mid-move needs a dip clear of the whole stack to hide the swap. No tilt
-      and no arc anywhere. Measured: top card 0.0px, the other three 12.0px each, never two out
-      at once. The deal cannot start out of a
-      moving stack: the reply's arrival is held until the deck is in one of those rests, plus a
-      190ms settle. THE DECK REPORTS ITS OWN STATE (lib/waitingDeck.ts) instead of the caller
-      deriving it from keyframe percentages - two versions did that and both drifted out of
-      step with the animation they described, which IS the snap. Measured after: hand-off shift
-      0.15px in document coordinates, 0 dropped frames, 342ms between cards, group down in
-      1.68s.
+      WAITS rather than shuffles - four card objects on a 198px deck at a 7px step, one beat
+      each: a 1140ms 9px nudge out of the bottom of the stack and back, leaning 2.1deg from the
+      card's top edge, then 860ms in which nothing moves, then the card above. It works upward
+      through every card and comes round again. No card changes slot, so no depth ever swaps -
+      which is what let the motion shrink to this, since a card changing depth mid-move needs a
+      dip clear of the whole stack to hide the swap. THE DECK REPORTS ITS OWN STATE
+      (lib/waitingDeck.ts) instead of the caller deriving it from keyframe percentages - two
+      versions did that and both drifted out of step with the animation they described, which
+      IS the snap.
+      THE STACK IS ALWAYS FOUR AND THE DEAL IS NOT, which was the last thing making the
+      hand-off read as two objects rather than one: nobody knows how many cards are coming
+      until the payload lands, so the deck waits at four and then a group of one came out of
+      it. The reply now hands the count back (`settleAndCompress`) and the deck SHEDS THE
+      SURPLUS before the swap - the extra cards ripple up bottom-first and tuck in under the
+      top one, 260ms each on the same 2.1deg lean, 90ms apart so the moves overlap into one
+      gesture, then a 130ms settle. One card sheds three, two sheds two, three sheds one, four
+      sheds none. After it, the stack's geometry IS the real deck's opening pose, so the swap
+      is a continuation rather than a replacement. Measured at one card: deck square at
+      y=[0,7,14,21], surplus away by 367ms, all three at y=0 behind the top card.
+      THE 190ms SETTLE THAT USED TO FOLLOW THE SWAP IS GONE. A pause reads as a breath when it
+      happens to something that has just moved and as a stall when it happens to something that
+      has just appeared - held on the new deck it was dead air, so it moved to the end of the
+      compress, on the deck that is already on screen. The deal now begins on the frame the
+      real group mounts. Measured after: hand-off shift 0.15px in document coordinates, 0
+      dropped frames, 342ms between cards, group down in 1.68s.
+      THE CARD BACKS ARE SKELETONS, not blanks - a blue title bar, two grey description lines
+      and the two buttons in their own colours, flat fills at the real card's radius and
+      padding, so a card in flight says what kind of thing it is about to be. EVERY dealing
+      card carries one; only the top of the waiting stack is ever visible, but each card is in
+      full view the moment it leaves. The two faces are separated by 1px of `translateZ`
+      because coplanar children of a `preserve-3d` element cannot be depth-sorted and fall back
+      to paint order, which showed the card's real text through its own back, MIRRORED, for the
+      whole flight - `backface-visibility` alone never got a say.
+      EVERY NUMBER ABOVE LIVES IN lib/deckTuning.ts, one object, read at use rather than
+      captured at import, so a local harness can drive them from sliders. Nothing in the app
+      writes to it and the shipped build runs the defaults exactly as it would `const`s.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

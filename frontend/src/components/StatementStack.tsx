@@ -4,8 +4,14 @@ import { useLanguage, useStrings } from '../lib/i18n';
 import { CardDeck } from './CardDeck';
 import './StatementStack.css';
 
-/** Card ceiling, per docs/cards-v2.md. */
-const MAX_CARDS = 4;
+/**
+ * Card ceiling, per docs/cards-v2.md.
+ *
+ * Exported because the hand-off has to agree with it: the waiting deck compresses to the
+ * number of cards that will actually be SHOWN, and a reply carrying five would otherwise
+ * leave the deck squaring up to a count this grid then trims.
+ */
+export const MAX_CARDS = 4;
 
 type RagGridProps = {
 	cards: StatementCardData[];

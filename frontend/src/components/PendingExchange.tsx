@@ -122,10 +122,14 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 					onTypingChange={setTyping}
 					placeholder={<ThinkingBubble label={label} />}
 				/>
+				{/*
+				 * THE DECK SAYS IT, so nothing needs to be written. A stack of cards where the
+				 * cards are about to be is already the sentence, and a line of copy beside it
+				 * was saying the same thing twice.
+				 */}
 				{awaitingCards ? (
 					<div className="waiting-deck-row" ref={deckRef}>
 						<CardDeckPlaceholder />
-						<ThinkingBubble label={t.stageComposingCards} inline />
 					</div>
 				) : null}
 			</div>

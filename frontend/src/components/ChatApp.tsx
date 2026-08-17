@@ -21,6 +21,7 @@ import {
 	turnsFromStoredMessages,
 } from '../lib/conversationTurns';
 import { CARDS_STAGE } from './PendingExchange';
+import { MAX_CARDS } from './StatementStack';
 import { waitingDeck } from '../lib/waitingDeck';
 import { Composer } from './Composer';
 import { ConversationFeed } from './ConversationFeed';
@@ -37,6 +38,28 @@ import { loadRuntimeConfig } from '../lib/runtimeConfig';
 import type { CostModel } from '../lib/runtimeConfig';
 import { inferSjsuCaresServiceTheme } from '../lib/sjsuCares';
 import './ChatApp.css';
+
+/**
+ * How many cards this reply will actually put on screen, which is what the waiting deck
+ * compresses to.
+ *
+ * THE LAST BATCH, because that is the one the active turn shows - `turnsFromResponse` gives
+ * the reply's own prose to the final batch and the deck on screen belongs to it. A streamed
+ * reply carries exactly one in practice.
+ *
+ * CAPPED AT THE GRID'S OWN CEILING rather than reported raw. `RagGrid` trims to `MAX_CARDS`,
+ * so a reply carrying more would otherwise square the deck up to a count the grid then
+ * throws away, and the stack and the group would disagree again for a different reason.
+ *
+ * Zero is a real answer here, not a missing one: a safety turn has its cards dropped after
+ * the model wrote them, so the deck can be up with none coming. The deck declines to
+ * compress to nothing - see settleAndCompress.
+ */
+function cardCountOf(response: ChatResponse): number {
+	const batches = response.statementBatches ?? [];
+	const last = batches[batches.length - 1];
+	return Math.min(last?.cards.length ?? 0, MAX_CARDS);
+}
 
 const CHAT_FADE_OUT_MS = 160;
 const CHAT_FADE_IN_MS = 640;
@@ -543,17 +566,19 @@ export default function ChatApp() {
 					},
 				},
 			).then(async (next) => {
-				// THE HAND-OFF WAITS FOR THE DECK TO STAND SQUARE. While the model was
-				// writing its cards the pending exchange has been showing them as a cycling
-				// stack, and this swap is the moment that stack becomes the real one and is
-				// dealt from. Landing it mid-cycle pulls a card out of a deck that is
-				// halfway round, which is exactly the snap this is here to prevent - so the
-				// reply is held for the few hundred milliseconds until the deck is square,
-				// and held there (lib/waitingDeck.ts). Nothing else waits on it: the prose
-				// is already typed and on screen, and a turn that never showed a deck
-				// resolves immediately.
+				// THE HAND-OFF WAITS FOR THE DECK TO STAND SQUARE, AND AT THE RIGHT COUNT.
+				// While the model was writing its cards the pending exchange has been
+				// showing them as a cycling stack of four - four because nobody knew yet
+				// how many were coming. This payload is the first thing that does know, so
+				// it hands the number back and waits while the deck sheds the surplus
+				// (lib/waitingDeck.ts). Two waits in one: for a rest, because a card cannot
+				// be pulled out of a stack that is mid-cycle, and then for the compress, so
+				// the stack the deal comes out of is the size the group will be.
+				//
+				// Nothing the student is reading waits on this: the prose is already typed
+				// and on screen, and a turn that never showed a deck resolves immediately.
 				if (stage === CARDS_STAGE && !reduceMotion) {
-					await waitingDeck.settleAndHold();
+					await waitingDeck.settleAndCompress(cardCountOf(next));
 				}
 				setPendingPreview('');
 				setPendingStage(null);

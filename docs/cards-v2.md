@@ -314,21 +314,43 @@ nowhere left to hide text.
 - **The group enters by dealing off a deck, and the deck is a real thing.** It
   is on screen before the cards are: while the model is still writing them the
   pending exchange shows the stack, face down, CYCLING - four card objects taking
-  turns. A BEAT is one nudge and one rest: a card dips 12px out of the bottom of
-  the stack and returns to exactly where it started (380ms, eased off both ends
-  so it stops before it comes back), and then EVERYTHING STOPS for 520ms before
-  the card above it takes its turn. It works upward - bottom, second from bottom,
-  second from top - and THE TOP CARD NEVER MOVES, which is what stops the deck
-  reading as restless: there is always a fixed object at the front to hold on to.
-  NO CARD EVER CHANGES SLOT, which is the structural point rather than a
+  turns. A BEAT is one nudge and one rest: a card dips 9px out of the bottom of
+  the stack and returns to exactly where it started (1140ms, eased off both ends
+  so it stops before it comes back, leaning 2.1deg from its own top edge as it
+  goes), and then EVERYTHING STOPS for 860ms before the card above it takes its
+  turn. It works upward from the bottom through every card, then comes round
+  again. NO CARD EVER CHANGES SLOT, which is the structural point rather than a
   simplification. Versions that cycled cards through the stack had to change a
   card's depth mid-move, and a card swapping from behind the deck to in front of
   it is a jump no easing hides - so it needed a dip far enough to clear the whole
   stack first, and that dip was most of the motion. With the order fixed, what is
-  left is the small part that was saying something. Nothing tilts and nothing
-  arcs. The backs are plain: a stack reads as cards because there are edges
-  behind the top one, not because anything is printed on them. There is no reveal
-  button and nothing to press.
+  left is the small part that was saying something. There is no reveal button and
+  nothing to press.
+- **The backs are skeletons, and every dealing card carries one.** A blue title
+  bar, two grey description lines with the second short, and the source and
+  follow-up buttons in their own colours - flat fills at the real card's radius,
+  padding and gap, so a card in flight already says what kind of thing it is
+  about to be. Solid bars rather than anything cleverer: this was a censor mosaic
+  of 4px blocks, which read as a GRID with a pitch of its own that the eye locks
+  onto, and then gradient ramps standing in for blurred type, which was better
+  but still a drawing of something rather than a placeholder. Nothing is
+  filtered - a `blur()` rasterises in the element's own coordinate space, and
+  this element is scaled on two axes and turned over in 3D at once, so the radius
+  would swim as the card grows. There is no text anywhere in it and nothing to
+  read underneath, so it cannot fail in a way that reveals content.
+- **The stack is always four; the group is not. The deck compresses to fit.**
+  Nobody knows how many cards are coming until the payload lands, so the deck
+  waits at four - a row of skeletons that turns into one card is a promise the
+  reply then breaks. When the reply arrives it hands the count back, and before
+  the swap the SURPLUS CARDS RIPPLE UP AND TUCK IN under the top one: bottom-most
+  first, 260ms each on the deck's own 2.1deg lean, 90ms apart so the moves
+  overlap into a single gesture travelling up the stack, then a 130ms settle. One
+  card sheds three, two sheds two, three sheds one, four sheds none. Spread,
+  compress, deal. After the compress the stack's geometry IS the real deck's
+  opening pose, which is what turns the hand-off from a swap into a
+  continuation - and the beat that used to sit AFTER the swap, on a deck the
+  student had never seen move, now sits at the end of the compress on one that
+  just did. A pause reads as a breath after motion and as a stall after nothing.
 - **The deal is dealt from the BOTTOM, and the top card never moves.** Cards
   leave one at a time, 0.34s apart, each turning over in the back half of its
   flight - they have been face down, so they arrive by being turned up. The card
@@ -348,8 +370,9 @@ nowhere left to hide text.
 - **The deal never starts out of a moving deck, and that is what stops the
   hand-off snapping.** The reply's arrival is HELD until the deck is in one of
   its rests - at most one travel away - and the deck stops there, square, every
-  card on a slot. Then the stack stands still for a further 190ms before the
-  first card slides out from under. THE DECK REPORTS THIS ITSELF
+  card on a slot. The compress then runs (above), and its closing settle is the
+  beat of stillness the first card slides out from under; there is no separate
+  freeze after the swap. THE DECK REPORTS THIS ITSELF
   (`lib/waitingDeck.ts`) rather than the caller computing it: two earlier
   versions derived the still moments from keyframe percentages, which is a second
   model of the animation kept in step with the first by hand, and both drifted -
