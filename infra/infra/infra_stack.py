@@ -520,7 +520,7 @@ class NavigatorStack(Stack):
         scraper_deps_layer = _lambda.LayerVersion(
             self,
             "ScraperDepsLayer",
-            description="trafilatura/lxml/regex/httpx (manylinux x86_64) for the scraper Lambda.",
+            description="trafilatura/lxml/regex/httpx/pypdf (manylinux x86_64) for the scraper Lambda.",
             compatible_runtimes=[_LAMBDA_PYTHON],
             compatible_architectures=[_LAMBDA_ARCH],
             code=_lambda.Code.from_asset(

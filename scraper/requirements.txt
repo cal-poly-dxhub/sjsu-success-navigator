@@ -6,3 +6,7 @@ trafilatura>=1.12
 # imports it directly for the template-aware supplement pass.
 lxml>=4.9
 PyYAML>=6.0
+# PDF text extraction. Pure Python and dependency-free, so the manylinux layer bundler's
+# --only-binary=:all: finds a py3-none-any wheel and nothing has to compile. Chosen over
+# pdfminer.six on measured output quality against this corpus - see the PDF section of scraper.py.
+pypdf>=5.1
