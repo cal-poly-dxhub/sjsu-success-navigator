@@ -969,3 +969,72 @@ def test_a_stored_message_with_no_draft_reads_back_as_none(table):
     )
 
     assert messages[0].escalation is None
+
+
+# --- the location card --------------------------------------------------------------------
+
+
+def test_an_assistant_message_carries_its_location_card(table):
+    place = {
+        "key": "career-center",
+        "name": "Career Center",
+        "address": "Clark Hall, 1st floor, room 140",
+        "directionsUrl": "https://www.google.com/maps/dir/?api=1&destination=Clark+Hall",
+        "embedUrl": None,
+    }
+    table.store.append_message(
+        user_id=_SUB,
+        conversation_id=_CONV,
+        role="assistant",
+        text="Clark Hall, first floor.",
+        place=place,
+    )
+    assert table.puts[0]["Item"]["place"] == place
+
+
+def test_a_reply_with_no_location_stores_no_place_attribute(table):
+    table.store.append_message(
+        user_id=_SUB, conversation_id=_CONV, role="assistant", text="Here you go."
+    )
+    assert "place" not in table.puts[0]["Item"]
+
+
+def test_the_display_read_fetches_the_location_and_the_context_read_does_not(table):
+    """The two projections one more time. A location is display-only, exactly like a card:
+    the model is fed message text and never handed back the panel it produced last turn."""
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "Clark Hall, first floor.",
+            "place": {"key": "career-center", "name": "Career Center"},
+            "createdAt": "2026-08-10T18:04:00Z",
+        }
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+    assert messages[0].place == {"key": "career-center", "name": "Career Center"}
+    assert "#place" in table.queries[0]["ProjectionExpression"]
+
+    table.queries.clear()
+    table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=12)
+    assert "place" not in table.queries[0]["ProjectionExpression"]
+
+
+def test_a_stored_message_with_no_location_reads_back_as_none(table):
+    table.items = [
+        {
+            "sk": f"MSG#{_CONV}#01",
+            "role": "assistant",
+            "text": "Peer Connections runs drop-in tutoring.",
+            "createdAt": "2026-08-10T18:04:00Z",
+        }
+    ]
+
+    messages = table.store.conversation_messages(
+        user_id=_SUB, conversation_id=_CONV, limit=60
+    )
+
+    assert messages[0].place is None

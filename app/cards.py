@@ -47,6 +47,15 @@ cap and the decision to offer at all. One block per turn: a second is ignored an
 because a turn produces one offer and picking among two would be this module inventing an
 editorial rule.
 
+THE PLACE TAG IS THE SAME TRICK A THIRD TIME. `<place>career-center</place>` carries ONE
+CATALOGUE KEY - no attributes, no address, no URL - so the name, the address and the map
+links come from app/places.py's table and a model-authored address is unrepresentable. The
+block is removed WHOLE from the prose, the way a safety block's keys are, because a key is
+addressed to the server. One block per turn: a location card has one address on it, and
+picking among two would be this module inventing an editorial rule. Nothing here checks the
+key against the table, so a key that is not in it is a logged drop and no card, never a
+guessed one.
+
 AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
 reason is observability: a card that renders without its source button is a visible symptom,
 where a silently dropped card is a student seeing three cards instead of four and nobody
@@ -116,6 +125,13 @@ _SAFETY_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
 _ESCALATION_BLOCK_RE = re.compile(
     r"<escalate_to_human\s*>(.*?)</escalate_to_human\s*>", re.DOTALL | re.IGNORECASE
 )
+# The campus location block: <place>career-center</place>. ONE CATALOGUE KEY AND NOTHING
+# ELSE, which is the same shape as a safety block's keys and for the same reason - the
+# content is addressed to the server, not to the student, so the whole block comes out of
+# the prose. No attribute group, no second field: an address or a map URL the model wrote
+# has nowhere to arrive (app/places.py).
+_PLACE_BLOCK_RE = re.compile(r"<place\s*>(.*?)</place\s*>", re.DOTALL | re.IGNORECASE)
+_PLACE_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
 
 
 def _field_re(name: str) -> re.Pattern[str]:
@@ -132,14 +148,14 @@ _FOLLOWUP_RE = _field_re("followup")
 # eat legitimate content the model might write about, and the guarantee needed here is only
 # that OUR tags never surface.
 _ANY_KNOWN_TAG_RE = re.compile(
-    r"</?\s*(?:card|title|desc|followup|safety|escalate_to_human)\b[^>]*/?>",
+    r"</?\s*(?:card|title|desc|followup|safety|escalate_to_human|place)\b[^>]*/?>",
     re.IGNORECASE,
 )
 
 # The same vocabulary again, as literals rather than a pattern, for preview_safe_prefix
 # below. Derived from one tuple so the two can never come to disagree about what one of
 # this contract's tags looks like.
-_TAG_NAMES = ("card", "title", "desc", "followup", "safety", "escalate_to_human")
+_TAG_NAMES = ("card", "title", "desc", "followup", "safety", "escalate_to_human", "place")
 _TAG_OPENINGS = tuple(
     f"<{slash}{name}" for name in _TAG_NAMES for slash in ("", "/")
 )
@@ -363,6 +379,10 @@ class ParsedResponse:
     # app/escalation.py's job. An empty string is a tag the model opened and left empty,
     # which is a different fault from not offering at all and is logged as one there.
     escalation_prose: str | None = None
+    # The <place> block's catalogue key, or None when the model emitted no tag. NOT a
+    # location: nothing here knows whether the key exists, what it is called or where it is,
+    # which is app/places.py's table. A key that is not in that table yields no card.
+    place_key: str | None = None
 
     @property
     def needs_safety(self) -> bool:
@@ -413,7 +433,51 @@ def parse_model_response(text: str) -> ParsedResponse:
         safety_keys=_safety_keys_in(lead, trailing),
         trailing_prose=_clean_prose(trailing),
         escalation_prose=_escalation_prose_in(lead, trailing),
+        place_key=_place_key_in(lead, trailing),
     )
+
+
+def _place_key_in(*parts: str) -> str | None:
+    """The one campus-location key, read from both sides of the split.
+
+    Both sides for the reason the safety keys and the escalation block are read from both:
+    the split point says where PROSE renders, not which tags count, and a location named
+    under the cards is the same location. Called with the card blocks already removed, so a
+    stray tag inside a card body cannot conjure a card.
+
+    ONE BLOCK PER TURN, and one KEY inside it. A second block is ignored and logged, the
+    same way a second escalation block is: a turn points at one place, and choosing among
+    two would be a parser making an editorial decision. A block carrying several keys keeps
+    the first for the same reason - unlike the safety panel, which lists every resource that
+    fits, a location card is one card with one address on it.
+
+    Nothing here checks that the key exists. That is places.resolve_place's job, and keeping
+    it there is what makes an unknown key a logged drop rather than a parse failure.
+    """
+    contents = [content for part in parts for content in _PLACE_BLOCK_RE.findall(part)]
+    if not contents:
+        return None
+    if len(contents) > 1:
+        logger.warning(
+            "The model emitted %s place blocks; keeping the first and ignoring the rest. "
+            "One turn points at one place.",
+            len(contents),
+        )
+    keys = _PLACE_KEY_RE.findall(contents[0])
+    if not keys:
+        # An empty or punctuation-only block. Distinct from no block at all - the model
+        # reached for the contract and wrote nothing usable - so it is logged rather than
+        # quietly treated as a turn that never asked for a location.
+        logger.warning("An empty place block; no location card.")
+        return None
+    if len(keys) > 1:
+        logger.warning(
+            "A place block carried %s keys (%s); keeping the first. A location card has "
+            "one address on it.",
+            len(keys),
+            ", ".join(keys),
+        )
+    return keys[0].lower()
 
 
 def _escalation_prose_in(*parts: str) -> str | None:
@@ -529,9 +593,12 @@ def _clean_prose(text: str) -> str:
     "crisis-988, caps" into the bubble as text. An escalation block goes the same way and for
     the same kind of reason - its content is the body of an email the student has not sent
     yet, so leaving it in the bubble would say the message twice and say it as if it had
-    already gone."""
+    already gone. A place block goes whole for the safety block's own reason: its content is
+    a catalogue key the server reads, and a fallback that stripped only the tags would leak
+    "career-center" into the bubble as text."""
     stripped = _SAFETY_BLOCK_RE.sub("\n\n", text)
     stripped = _ESCALATION_BLOCK_RE.sub("\n\n", stripped)
+    stripped = _PLACE_BLOCK_RE.sub("\n\n", stripped)
     stripped = _ANY_KNOWN_TAG_RE.sub("", stripped)
     stripped = normalise_dashes(stripped)
     stripped = _BLANK_LINES_RE.sub("\n\n", stripped)

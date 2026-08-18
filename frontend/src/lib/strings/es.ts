@@ -129,6 +129,11 @@ export const es: Strings = {
 	escalationTooLong:
 		'Este borrador es demasiado largo para abrir tu aplicación de correo automáticamente. Cópialo y pégalo en un correo nuevo.',
 
+	placeAria: 'Ubicación en el campus',
+	placeDirections: 'Cómo llegar',
+	placeDirectionsFor: (name: string) => `Cómo llegar a ${name}`,
+	placeMapCredit: 'Datos del mapa © colaboradores de OpenStreetMap',
+
 	settingsClose: 'Cerrar la configuración',
 	close: 'Cerrar',
 	languageLabel: 'Idioma',

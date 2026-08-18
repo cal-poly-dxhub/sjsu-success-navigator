@@ -121,6 +121,11 @@ export const pa: Strings = {
 	escalationTooLong:
 		'ਇਹ ਖਰੜਾ ਇੰਨਾ ਲੰਮਾ ਹੈ ਕਿ ਤੁਹਾਡਾ ਈਮੇਲ ਐਪ ਆਪਣੇ ਆਪ ਨਹੀਂ ਖੁੱਲ੍ਹ ਸਕਦਾ। ਇਸਨੂੰ ਕਾਪੀ ਕਰਕੇ ਨਵੀਂ ਈਮੇਲ ਵਿੱਚ ਪੇਸਟ ਕਰ ਦਿਓ।',
 
+	placeAria: 'ਕੈਂਪਸ ਵਿੱਚ ਥਾਂ',
+	placeDirections: 'ਰਾਹ ਵੇਖੋ',
+	placeDirectionsFor: (name: string) => `${name} ਤੱਕ ਦਾ ਰਾਹ ਵੇਖੋ`,
+	placeMapCredit: 'ਨਕਸ਼ਾ ਡਾਟਾ © OpenStreetMap ਯੋਗਦਾਨੀ',
+
 	settingsClose: 'ਸੈਟਿੰਗਾਂ ਬੰਦ ਕਰੋ',
 	close: 'ਬੰਦ ਕਰੋ',
 	languageLabel: 'ਭਾਸ਼ਾ',

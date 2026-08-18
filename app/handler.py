@@ -68,6 +68,7 @@ from models import (
     ConversationSummary,
     ConversationTitleResponse,
     EmailDraft,
+    PlaceCard,
     StatementCard,
 )
 from orchestrator import replay_stored_reply, run_chat
@@ -358,6 +359,18 @@ def _stored_escalation(response):
     return response.escalation.model_dump(by_alias=True)
 
 
+def _stored_place(response):
+    """This turn's location card as it will be stored, or None.
+
+    Stored rather than re-resolved from the key on the way out, for the reason the draft
+    beside it is stored: an office that moves next month must not silently rewrite where an
+    old turn said it was. What a reopened conversation shows is what the student was shown.
+    """
+    if response.place is None:
+        return None
+    return response.place.model_dump(by_alias=True)
+
+
 def run_turn(request, user_id, deadline, context=None, usage=None):
     """One turn against the store, in the order docs/accounts-and-storage.md fixes.
 
@@ -429,6 +442,11 @@ def run_turn(request, user_id, deadline, context=None, usage=None):
             # what used to lose the prose the model wrote UNDER its cards.
             text=response.raw_text,
             sources=response.sources,
+            # The location card is the exception the re-parse does not cover, and it is
+            # recorded for the reason the draft below it is: the `<place>` key survives in
+            # the text and would resolve again, but against TODAY'S catalogue. What the
+            # student was sent to is what comes back.
+            place=_stored_place(response),
             escalation=_stored_escalation(response),
         )
     except Exception:
@@ -562,9 +580,10 @@ def post_chat(event, context):
     # reading only the FIRST statement batch. The counts say strictly more and cannot go
     # stale against the response shape.
     logger.info(
-        "chat cards=%s safety=%s escalation=%s calls=%s in=%s out=%s",
+        "chat cards=%s safety=%s place=%s escalation=%s calls=%s in=%s out=%s",
         sum(len(batch.cards) for batch in (response.statement_batches or [])),
         response.safety_handoff is not None,
+        response.place.key if response.place is not None else None,
         response.escalation is not None,
         usage.model_calls,
         usage.input_tokens,
@@ -604,6 +623,21 @@ def _display_escalation(stored):
         return EmailDraft.model_validate(stored)
     except Exception:
         logger.warning("Skipping a stored escalation draft that no longer fits its contract")
+        return None
+
+
+def _display_place(stored):
+    """A stored location card, re-validated through the live contract. None if it no longer fits.
+
+    Same posture as the two above: a card written by an older version of this code costs the
+    reopened turn its map, never the whole conversation.
+    """
+    if not stored:
+        return None
+    try:
+        return PlaceCard.model_validate(stored)
+    except Exception:
+        logger.warning("Skipping a stored location card that no longer fits its contract")
         return None
 
 
@@ -739,6 +773,7 @@ def _rendered_reply(message, question):
             role="assistant",
             text=message.text,
             cards=_display_cards(message.cards),
+            place=_display_place(message.place),
             escalation=_display_escalation(message.escalation),
             createdAt=message.created_at,
         )
@@ -758,6 +793,12 @@ def _rendered_reply(message, question):
         trailingText=replayed.trailing_text,
         cards=_display_cards_from(replayed),
         safetyHandoff=replayed.safety_handoff,
+        # THE RECORDED CARD, NOT `replayed.place`. The replay resolves the key again and
+        # would usually agree, but "usually" is the whole point: the catalogue is a directory
+        # that gets edited, and a reopened turn must say where the student was sent, not
+        # where that office is today. The panel above it goes the other way deliberately -
+        # a crisis number that changes SHOULD change in the transcript.
+        place=_display_place(message.place),
         escalation=replayed.escalation,
         createdAt=message.created_at,
     )

@@ -323,6 +323,7 @@ def displayed(
     escalation=None,
     created_at="2026-08-11T00:00:00Z",
     cards=None,
+    place=None,
 ):
     """One stored row, as the display read hands it back.
 
@@ -332,6 +333,10 @@ def displayed(
     `cards` is the LEGACY shape and a test passing it is saying so on purpose: rows written
     before the record kept model text carry rendered cards beside prose that has already been
     through the parser. Nothing writes them any more; the read path still has to serve them.
+
+    `place` is neither of those. It is the location card as it resolved on the turn that
+    stored it, and it is still written - the read path hands back the recorded card rather
+    than resolving the key in `text` a second time (app/history.py, append_message).
     """
     return DisplayMessage(
         role=role,
@@ -340,6 +345,7 @@ def displayed(
         created_at=created_at,
         sources=dict(sources or {}),
         cards=list(cards or []),
+        place=place,
     )
 
 

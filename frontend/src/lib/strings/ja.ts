@@ -121,6 +121,11 @@ export const ja: Strings = {
 	escalationTooLong:
 		'この下書きは長すぎるため、メールアプリを自動で開けません。コピーして新しいメールに貼り付けてください。',
 
+	placeAria: 'キャンパス内の場所',
+	placeDirections: 'ルートを見る',
+	placeDirectionsFor: (name: string) => `${name} までのルートを見る`,
+	placeMapCredit: '地図データ © OpenStreetMap コントリビューター',
+
 	settingsClose: '設定を閉じる',
 	close: '閉じる',
 	languageLabel: '言語',

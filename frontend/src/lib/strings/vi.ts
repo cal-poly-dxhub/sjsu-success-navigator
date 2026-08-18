@@ -125,6 +125,11 @@ export const vi: Strings = {
 	escalationTooLong:
 		'Thư nháp này quá dài để tự động mở ứng dụng email của bạn. Hãy sao chép và dán vào một email mới.',
 
+	placeAria: 'Vị trí trong khuôn viên',
+	placeDirections: 'Chỉ đường',
+	placeDirectionsFor: (name: string) => `Chỉ đường đến ${name}`,
+	placeMapCredit: 'Dữ liệu bản đồ © những người đóng góp cho OpenStreetMap',
+
 	settingsClose: 'Đóng cài đặt',
 	close: 'Đóng',
 	languageLabel: 'Ngôn ngữ',

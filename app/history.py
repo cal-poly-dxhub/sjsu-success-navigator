@@ -17,7 +17,8 @@ The item shapes are the doc's, not this module's invention:
                           title, createdAt, lastActivityAt, messageCount
     message               pk=USER#<sub>   sk=MSG#<convId>#<ulid>
                           role, text, sources (the ref-to-URL pairs the reply cited),
-                          escalation (the assembled email draft), createdAt
+                          escalation (the assembled email draft),
+                          place (the resolved location card), createdAt
 
 `text` ON AN ASSISTANT MESSAGE IS THE MODEL'S OWN REPLY, TAGS AND ALL. That is the whole of
 the record and it is deliberately not the rendered halves: the card blocks, the safety tag,
@@ -210,6 +211,12 @@ class DisplayMessage:
     # once. Present means "this row was written by the old shape"; the read path renders it
     # as it always did rather than re-parsing prose. Nothing writes this any more.
     cards: list[dict[str, Any]] = field(default_factory=list)
+    # The location card this turn showed, resolved as it was then. Display-only for the same
+    # reason, and STILL WRITTEN, which is what separates it from `cards` above: the key is in
+    # the stored reply and would resolve again, but it is where the office WAS when the
+    # student asked. All three are last and defaulted so an older caller building one of
+    # these positionally still does.
+    place: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -266,6 +273,7 @@ class ConversationStore:
         text: str,
         sources: dict[int, str] | None = None,
         escalation: dict[str, Any] | None = None,
+        place: dict[str, Any] | None = None,
     ) -> str:
         """Append one message and return its sort key.
 
@@ -287,11 +295,20 @@ class ConversationStore:
         sent with, so re-deriving it later would render whatever those say today rather than
         what the student was actually shown. Absent when the turn made no offer.
 
+        `place` is the resolved location card, stored for a version of the same reason: it
+        is reproducible from the key in principle - the key is still in `text` - but the
+        catalogue it resolves against is a directory that gets edited, and an office that
+        moves must not rewrite where a turn last month said it was. Absent when the turn
+        showed no location.
+
         The safety panel is NOT stored, and now it does not need to be: the model's keys are
         still in `text`, so app/safety.py resolves them again on the way out and a reopened
-        crisis turn gets its contacts back. When the panel was the only thing derived from a
-        reply this server had already discarded, it was the one part of a turn that could
-        never come back.
+        crisis turn gets its contacts back. That is the same argument the location card
+        declines, and the difference is what the two tables are: a fixed roster of crisis
+        contacts, where a changed number SHOULD change in the transcript, against a campus
+        directory where a changed address should not. When the panel was the only thing
+        derived from a reply this server had already discarded, it was the one part of a turn
+        that could never come back.
 
         DynamoDB map keys are strings, so the source refs are written as strings and read
         back as ints at the boundary in conversation_messages - once, rather than leaving
@@ -309,6 +326,8 @@ class ConversationStore:
             item["sources"] = {str(ref_id): url for ref_id, url in sources.items()}
         if escalation:
             item["escalation"] = escalation
+        if place:
+            item["place"] = place
 
         self._table_resource().put_item(Item=item)
         self._touch_header(
@@ -770,6 +789,7 @@ class ConversationStore:
                 "#sources": "sources",
                 "#cards": "cards",
                 "#escalation": "escalation",
+                "#place": "place",
                 "#createdAt": "createdAt",
             },
             ExpressionAttributeValues={
@@ -777,7 +797,7 @@ class ConversationStore:
                 ":prefix": f"MSG#{conversation_id}#",
             },
             ProjectionExpression=(
-                "sk, #role, #text, #sources, #cards, #escalation, #createdAt"
+                "sk, #role, #text, #sources, #cards, #escalation, #place, #createdAt"
             ),
             ScanIndexForward=False,
             Limit=limit,
@@ -797,6 +817,7 @@ class ConversationStore:
                 continue
             cards = item.get("cards")
             escalation = item.get("escalation")
+            place = item.get("place")
             messages.append(
                 DisplayMessage(
                     role=role,
@@ -805,6 +826,7 @@ class ConversationStore:
                     created_at=item.get("createdAt"),
                     sources=_sources_from(item.get("sources")),
                     cards=list(cards) if isinstance(cards, list) else [],
+                    place=dict(place) if isinstance(place, dict) else None,
                 )
             )
 

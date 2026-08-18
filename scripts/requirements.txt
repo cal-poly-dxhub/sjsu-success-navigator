@@ -1,0 +1,11 @@
+# Dependencies for the one-off scripts in this directory. NOT shipped to any Lambda and not
+# installed by CI: the chat function's requirements live in app/, and the images these
+# scripts produce are committed rather than built.
+#
+#   python -m pip install -r scripts/requirements.txt
+#   python scripts/render_place_maps.py
+
+pillow>=11,<13
+# The tile server is HTTPS and a stock python.org install on macOS ships no CA bundle, so the
+# fetch fails on certificate verification without this.
+certifi>=2024.2.2

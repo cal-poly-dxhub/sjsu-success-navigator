@@ -425,6 +425,71 @@ timing machine and the one-at-a-time progress bar, none of which have a caller
 left. `RagPhase` is down to `conversational` and `grid`, and there is no longer a
 phase in which the prose is off screen.
 
+## The campus location card
+
+Additive: a new block, a new response field, and nothing about the four existing card
+types or the safety path changes shape.
+
+```
+<place>career-center</place>
+```
+
+ONE CATALOGUE KEY, exactly as `ref` is one id and a `<safety>` block is a list of keys. No
+attributes, no address, no URL, so a model-authored address is unrepresentable rather than
+validated and rejected. The server owns the name, the address and both links
+(`app/places.py`), and the catalogue is code - a table like `app/safety.py`'s, not deploy
+config, which is why the prompt section is always present rather than gated.
+
+**A place not in the catalogue yields NO card.** Not the nearest key, not a search query
+standing in for a location, not the building it is near. An unknown key is dropped with a
+WARNING and the reply keeps its prose and its cards. That rule is enforced in two places
+because only one of them can actually catch it: the server drops a key it does not know, and
+the prompt states, in its own load-bearing sentence, that an unlisted place gets no block -
+because a model reaching for a NEIGHBOURING key produces a card that resolves, renders and
+is wrong, which no server-side check can see.
+
+**No length cap touches it.** The caps are guards on model-authored text and there is none
+on this path, so an address is never shortened. A room number cut at a word boundary is the
+exact failure the caps exist to prevent elsewhere.
+
+**No Google Maps API, no key anywhere, and no third-party request at all.**
+
+- **The map is a picture we render and serve ourselves.** `scripts/render_place_maps.py`
+  stitches OpenStreetMap tiles around each building's coordinate, draws the pin, bakes in the
+  attribution and writes `frontend/public/places/<building>.webp`, which is committed. The
+  deployed site serves it from the same distribution as the page, so a student reading an
+  answer contacts nobody but us - not on render, not on a press. Google's Static Maps
+  endpoint returns exactly this picture and was rejected on both counts: it needs a key and a
+  billing account, and its terms forbid storing what it returns, which is the whole idea here.
+  The standard OSM style was kept over CARTO's sharper, retina-capable one because CARTO
+  renders campus buildings as anonymous blocks, and the building's NAME under the pin is what
+  makes the picture useful.
+- **The directions link is a Maps URL**, `google.com/maps/dir/?api=1&destination=...`, built
+  from a per-entry `directions_destination` the table owns and requested only when a student
+  presses it. That string is a curated QUERY rather than the coordinate beside it: the
+  coordinate is more precise, but Maps then labels the destination with six decimal places
+  instead of the building's name.
+
+**A card with no map is a complete card.** `map_image_url` is None when a catalogue entry's
+building has not been rendered, which is where a new entry lands before anybody runs the
+script. Name, address and directions answer "where is it?"; the map is what makes it quick.
+The frontend treats absence as ordinary, and a test asserts every building in the table has a
+committed image and that no image is orphaned - because the images are committed rather than
+built, nothing at deploy time would otherwise notice one missing.
+
+**Sixteen offices, five buildings.** Four of these places are inside Clark Hall and five
+inside the Student Services Center, so the coordinate and the image belong to the BUILDING
+while the room number belongs to the place. That is what stops five near-identical renders and
+five chances to mis-key one of them.
+
+**A safety turn carries none**, by the same rule that drops its cards and its email draft,
+enforced in the same two places (`orchestrator._response_from_text` for a tagged turn,
+`apply_safety_handoff_to_response` for a reply whose prose named a hotline without the tag).
+
+The resolved card is STORED with the turn, like the email draft and unlike the safety panel:
+the panel resolves against a fixed crisis roster, where this resolves against an editable
+directory, so an office that moves must not rewrite where last month's turn said it was.
+
 ## Fallback
 
 If zero cards parse, render the entire response as one bubble with any tags

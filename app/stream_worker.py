@@ -191,6 +191,13 @@ def lambda_handler(event, context):
                 if response.escalation is not None
                 else None
             ),
+            # And the location card, by the same rule again (_stored_place): what a
+            # reopened turn shows is where the office was when the student asked.
+            place=(
+                response.place.model_dump(by_alias=True)
+                if response.place is not None
+                else None
+            ),
         )
     except Exception:
         logger.exception("Could not record the assistant's reply; sending it anyway")
@@ -223,9 +230,11 @@ def lambda_handler(event, context):
     sink.final(response.model_dump(by_alias=True))
 
     logger.info(
-        "ws turn cards=%s safety=%s escalation=%s calls=%s in=%s out=%s frames=%s gone=%s",
+        "ws turn cards=%s safety=%s place=%s escalation=%s calls=%s in=%s out=%s "
+        "frames=%s gone=%s",
         sum(len(batch.cards) for batch in (response.statement_batches or [])),
         response.safety_handoff is not None,
+        response.place.key if response.place is not None else None,
         response.escalation is not None,
         usage.model_calls,
         usage.input_tokens,

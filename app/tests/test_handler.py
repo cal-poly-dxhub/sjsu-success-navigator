@@ -1280,3 +1280,75 @@ def test_a_stored_draft_that_no_longer_fits_the_contract_is_dropped_not_fatal(st
 
     assert body["messages"][0]["escalation"] is None
     assert "escalation draft" in caplog.text
+
+
+# --- the campus location card, stored and read back -------------------------------------
+
+_PLACE = {
+    "key": "career-center",
+    "name": "Career Center",
+    "address": "Clark Hall, 1st floor, room 140",
+    "directionsUrl": "https://www.google.com/maps/dir/?api=1&destination=Clark+Hall",
+    "mapImageUrl": "/places/clark-hall.webp",
+}
+
+
+def test_the_assistant_message_stores_its_location_beside_the_cards(
+    bedrock, store, monkeypatch
+):
+    """Stored rather than re-resolved from the key. The catalogue is editable, and an office
+    that moves next month must not rewrite where a turn last month said it was."""
+    from models import PlaceCard
+
+    monkeypatch.setattr(
+        handler,
+        "run_chat",
+        _FakeLoop(
+            ChatResponse(
+                conversationalText="Clark Hall, first floor.",
+                place=PlaceCard(**_PLACE),
+            )
+        ),
+    )
+
+    handler.lambda_handler(_event(json.dumps({"query": "where is the career center?"})), None)
+
+    assert store.appended[1]["place"] == _PLACE
+
+
+def test_a_turn_with_no_location_stores_no_place_attribute(bedrock, store, loop):
+    handler.lambda_handler(_event(json.dumps({"query": "tutoring?"})), None)
+
+    assert store.appended[1]["place"] is None
+
+
+def test_a_reopened_conversation_re_renders_its_stored_location(store):
+    """The acceptance criterion for history: the panel comes back off the record, through
+    the same contract the live turn returns, so a student who scrolls back to last week's
+    answer still has the address they were given."""
+    from conftest import displayed
+
+    store.messages = [
+        displayed("user", "where is the career center?"),
+        displayed("assistant", "Clark Hall, first floor.", place=dict(_PLACE)),
+    ]
+
+    body = _body(handler.lambda_handler(conversation_event("01J8ZK9V6H7Q2R3T4W5X6Y7Z8A"), None))
+
+    assert body["messages"][1]["place"] == _PLACE
+    assert body["messages"][0]["place"] is None
+
+
+def test_a_stored_location_that_no_longer_fits_the_contract_is_dropped_not_fatal(
+    store, caplog
+):
+    """Same posture as a stale card or a stale draft: the conversation opens without one
+    panel rather than not opening at all."""
+    from conftest import displayed
+
+    store.messages = [displayed("assistant", "Over there.", place={"name": "no address"})]
+
+    body = _body(handler.lambda_handler(conversation_event("01J8ZK9V6H7Q2R3T4W5X6Y7Z8A"), None))
+
+    assert body["messages"][0]["place"] is None
+    assert "location card" in caplog.text

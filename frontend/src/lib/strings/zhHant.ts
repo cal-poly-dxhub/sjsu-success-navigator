@@ -125,6 +125,11 @@ export const zhHant: Strings = {
 		'你的瀏覽器不允許我們使用剪貼簿，所以內容已為你選取：複製後貼到一封新郵件裡。',
 	escalationTooLong: '這份草稿太長，無法自動開啟你的郵件應用程式。請複製後貼到一封新郵件裡。',
 
+	placeAria: '校園位置',
+	placeDirections: '查看路線',
+	placeDirectionsFor: (name: string) => `查看前往 ${name} 的路線`,
+	placeMapCredit: '地圖資料 © OpenStreetMap 貢獻者',
+
 	settingsClose: '關閉設定',
 	close: '關閉',
 	languageLabel: '語言',

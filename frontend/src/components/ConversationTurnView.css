@@ -66,6 +66,18 @@
 	margin-top: 0.9rem;
 }
 
+/*
+ * The location panel. Less air above it than the draft gets and the same ceiling on its
+ * width: it is part of the answer the cards above it gave, so it sits close to them, where
+ * the draft is a different kind of thing and is spaced away from both.
+ */
+.conversation-turn__place {
+	width: 100%;
+	min-width: 0;
+	max-width: 32rem;
+	margin-top: 0.55rem;
+}
+
 .conversation-turn__static-bubble {
 	width: 100%;
 	max-width: 28rem;

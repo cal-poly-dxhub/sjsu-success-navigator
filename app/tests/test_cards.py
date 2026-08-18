@@ -732,6 +732,86 @@ def test_the_fallback_scrub_removes_a_safety_block_whole():
     assert strip_card_tags(text) == "Support is below."
 
 
+# --- The place block ----------------------------------------------------------------------
+
+
+def test_a_place_block_yields_its_key_and_leaks_nothing_into_the_prose():
+    """A catalogue key is addressed to the server, exactly as a safety key is, so the WHOLE
+    block leaves the bubble. A student who reads "career-center" in their answer is reading
+    machinery."""
+    parsed = parse_model_response(
+        "The Career Center does this all day.\n\n<place>career-center</place>"
+    )
+
+    assert parsed.place_key == "career-center"
+    assert parsed.prose == "The Career Center does this all day."
+    assert "career-center" not in parsed.prose
+
+
+def test_a_place_key_survives_odd_spacing_and_case():
+    parsed = parse_model_response("<place>\n  Career-Center\n</place>\n\nGo early.")
+    assert parsed.place_key == "career-center"
+
+
+def test_no_place_block_means_no_key():
+    parsed = parse_model_response("Here is the tutoring office.")
+    assert parsed.place_key is None
+
+
+def test_a_place_block_under_the_cards_still_counts():
+    """Both sides of the split are read, for the reason the safety keys are: the split point
+    says where PROSE renders, not which tags count."""
+    parsed = parse_model_response(
+        '<card ref="1"><title>t</title><desc>d</desc></card>\n\n'
+        "<place>spartan-food-pantry</place>"
+    )
+    assert parsed.place_key == "spartan-food-pantry"
+
+
+def test_a_second_place_block_is_ignored_and_logged(caplog):
+    """One turn points at one place. Choosing between two would be a parser making an
+    editorial decision, and the first one written is the one the reply was built around."""
+    with caplog.at_level(logging.WARNING, logger="cards"):
+        parsed = parse_model_response(
+            "<place>career-center</place>\n\n<place>writing-center</place>"
+        )
+    assert parsed.place_key == "career-center"
+    assert "2 place blocks" in caplog.text
+
+
+def test_a_place_block_with_two_keys_keeps_the_first_and_logs(caplog):
+    """Unlike a safety block, which lists every resource that fits, a location card has one
+    address on it."""
+    with caplog.at_level(logging.WARNING, logger="cards"):
+        parsed = parse_model_response("<place>career-center, writing-center</place>")
+    assert parsed.place_key == "career-center"
+    assert "2 keys" in caplog.text
+
+
+def test_an_empty_place_block_is_logged_rather_than_treated_as_absent(caplog):
+    """Reaching for the contract and writing nothing usable is a different fault from never
+    reaching for it, so it is not folded into the quiet case."""
+    with caplog.at_level(logging.WARNING, logger="cards"):
+        parsed = parse_model_response("<place>  </place>\n\nHere you go.")
+    assert parsed.place_key is None
+    assert "empty place block" in caplog.text.lower()
+
+
+def test_the_fallback_scrub_removes_a_place_block_whole():
+    """The zero-card fallback rebuilds the bubble from the raw reply, so it has to drop the
+    key content too and not only the tags around it."""
+    assert strip_card_tags("Go here.\n\n<place>career-center</place>") == "Go here."
+
+
+def test_the_preview_stops_at_a_place_tag():
+    """The streamed preview must never type a tag onto the screen, and `place` is one of
+    ours now - which it is by construction, since the stop list is built from the same tuple
+    the scrub pattern is."""
+    assert cards.preview_safe_prefix("Head to Clark Hall. <place>career") == (
+        "Head to Clark Hall. "
+    )
+
+
 # --- The id map ---------------------------------------------------------------------------
 
 

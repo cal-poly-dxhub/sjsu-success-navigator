@@ -1380,3 +1380,163 @@ def test_four_blocks_back_to_back_are_still_one_offer(monkeypatch, no_retrieval)
     assert response.escalation.body.startswith("Draft number 1.")
     for n in range(1, 5):
         assert f"Draft number {n}" not in response.conversational_text
+
+
+# --- the campus location card -----------------------------------------------------------
+#
+# The loop's part in this is the same small one it plays for the draft above: resolve once,
+# and enforce a safety turn's ban beside the card drop. Everything about WHICH places exist
+# and what they resolve to is app/places.py's (test_places.py).
+
+
+def test_a_named_place_reaches_the_response_as_a_resolved_card(monkeypatch, no_retrieval):
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "The Career Center handles resumes.\n\n<place>career-center</place>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake)
+
+    assert response.place is not None
+    assert response.place.name == "Career Center"
+    assert response.place.address.startswith("Clark Hall")
+    assert response.place.directions_url.startswith("https://www.google.com/maps/dir/")
+    # The key was an instruction to the server; it never becomes bubble copy.
+    assert response.conversational_text == "The Career Center handles resumes."
+
+
+def test_an_unlisted_place_yields_no_card_at_all(monkeypatch, no_retrieval):
+    """THE ACCEPTANCE CRITERION, end to end. Not a guessed card and not one whose location
+    is a search for whatever the model typed: the reply keeps its prose and shows no panel."""
+    fake = _FakeBedrock(
+        [_text_turn("Try the bowling alley.\n\n<place>student-union-bowling-alley</place>")]
+    )
+
+    response = _run(monkeypatch, fake)
+
+    assert response.place is None
+    assert response.conversational_text == "Try the bowling alley."
+
+
+def test_an_untagged_turn_carries_no_place(monkeypatch, no_retrieval):
+    fake = _FakeBedrock([_text_turn("Peer Connections runs drop-in tutoring.")])
+    assert _run(monkeypatch, fake).place is None
+
+
+def test_a_safety_turn_never_carries_a_location(monkeypatch, no_retrieval):
+    """Same rule as the offer above, in a taller box: a map and a walking route are an
+    errand, and a turn that attached the panel did so because somebody needs a number now."""
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "<safety>crisis-988</safety>\n\nPlease reach someone below.\n\n"
+                "<place>student-wellness-center</place>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake)
+
+    assert response.safety_handoff is not None
+    assert response.place is None
+    assert "student-wellness-center" not in response.conversational_text
+
+
+def test_a_location_is_dropped_from_an_untagged_crisis_reply(monkeypatch, no_retrieval):
+    """The OTHER route into a safety turn: prose that names crisis lines without the tag.
+    The model thought it was writing an ordinary reply, so it attached a place - and the
+    panel that gets bolted on has to take the map with it."""
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "Please call or text 988 right now.\n\n<place>student-wellness-center</place>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake)
+
+    assert response.safety_handoff is not None
+    assert response.place is None
+
+
+def test_the_place_rides_on_a_reply_that_also_has_cards(monkeypatch):
+    """A location is not an alternative to a card, it is the other half of one: the card
+    carries the office and its contacts, the panel carries the walk."""
+    monkeypatch.setattr(
+        orchestrator,
+        "retrieve_chunks",
+        lambda query, settings: [
+            RetrievedChunk(
+                text="Clark Hall room 140.",
+                score=0.9,
+                source_url="https://careercenter.sjsu.edu/",
+                title="Career Center",
+                section="career",
+                s3_uri=None,
+            )
+        ],
+    )
+    fake = _FakeBedrock(
+        [
+            _text_turn(
+                "Here is the office.\n\n"
+                '<card ref="1"><title>Resume help</title>'
+                "<desc>Walk in for a review.</desc></card>\n\n"
+                "<place>career-center</place>"
+            )
+        ]
+    )
+
+    response = _run(monkeypatch, fake)
+
+    assert len(response.statement_batches[0].cards) == 1
+    assert response.place.name == "Career Center"
+
+
+def test_the_streamed_turn_resolves_the_same_place_as_the_buffered_one(monkeypatch):
+    """One parser, one exit, so this is a property of the structure rather than a thing to
+    keep re-checking - which is exactly why it is worth one assertion."""
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+    reply = "Head over there.\n\n<place>spartan-food-pantry</place>"
+
+    monkeypatch.setattr(
+        orchestrator, "_bedrock_client", lambda region: _FakeBedrock([_text_turn(reply)])
+    )
+    buffered = orchestrator.run_chat(ChatRequest(query="where is the pantry?"), _SETTINGS)
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_bedrock_client",
+        lambda region: _FakeStreamingBedrock([_text_events(reply)]),
+    )
+    streamed = orchestrator.run_chat(
+        ChatRequest(query="where is the pantry?"), _SETTINGS, stream=_RecordingSink()
+    )
+
+    assert buffered.place == streamed.place
+    assert buffered.place is not None
+
+
+def test_the_preview_never_shows_a_place_key(monkeypatch):
+    """A catalogue key is machinery. preview_safe_prefix stops at the tag, and this is that
+    rule reaching the socket - the student watching prose arrive never sees the word."""
+    sink = _RecordingSink()
+    monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
+    monkeypatch.setattr(
+        orchestrator,
+        "_bedrock_client",
+        lambda region: _FakeStreamingBedrock(
+            [_text_events("Clark Hall it is.\n\n<place>career-center</place>")]
+        ),
+    )
+
+    orchestrator.run_chat(ChatRequest(query="where?"), _SETTINGS, stream=sink)
+
+    from cards import preview_safe_prefix
+
+    for accumulated in sink.texts:
+        assert "career-center" not in preview_safe_prefix(accumulated)
