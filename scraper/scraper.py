@@ -1,9 +1,16 @@
-"""Static-HTML scraper for the curated SJSU student-services page list.
+"""Static-source scraper for the curated SJSU student-services page list.
 
-Fetches the pages named in the curated crawl list over plain HTTP (every page on the list was
-confirmed server-rendered HTML - no SPA, no browser automation), extracts main-content markdown
-with trafilatura plus a template-aware supplement pass (see extract_markdown), and - via the CLI -
-writes a markdown file plus a JSON metadata sidecar per page for manual inspection.
+Fetches the documents named in the curated crawl list over plain HTTP (no SPA, no browser
+automation), extracts text, and - via the CLI - writes a markdown file plus a JSON metadata
+sidecar per document for manual inspection.
+
+TWO SOURCE FORMATS, ONE PATH. `extract_document` is the only extraction entry point and it
+dispatches on what the server actually sent: server-rendered HTML through trafilatura plus a
+template-aware supplement pass (extract_markdown), and PDF through pypdf plus a repeated-furniture
+strip (extract_pdf). Callers - scrape_page, and through it the Lambda - never branch on format.
+PDF is not an afterthought on this corpus: SJSU publishes most of its academic-coaching material
+(how to email a professor, how to use office hours) only as Writing Center and Peer Connections
+handout PDFs, so an HTML-only extractor cannot answer the questions the sponsors asked for.
 
 Split of concerns, so the Lambda wrapper needs none of the local-only surface:
   - `scrape_pages(pages)` does fetch + extract only and returns `ScrapeResult` objects. It
@@ -26,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import logging
 import re
@@ -37,6 +45,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import httpx
+import pypdf
 import trafilatura
 from lxml import html as lxml_html
 
@@ -48,7 +57,8 @@ DEFAULT_USER_AGENT = "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
 DEFAULT_OUTPUT_DIR = "./scraper_output"
 
 # The crawl list's required columns. The file carries two more (static_html, body_text_chars)
-# that are page-selection evidence, not scraper input, and are ignored here.
+# that are page-selection evidence, not scraper input, and are ignored here - including for the
+# PDF rows, which record "pdf" and the extracted-text length rather than anything about HTML.
 #
 # `section` is required, not optional: it rides into the metadata sidecar and app/cards.py uses
 # it to deprioritize noisy sections and to pick a page's follow-up button. A page with no section
@@ -68,6 +78,20 @@ _HASH_LEN = 8
 
 class SeedListError(Exception):
     """The crawl list is missing, empty, or malformed. Fatal by design - see load_seed_pages."""
+
+
+class ExtractionError(Exception):
+    """A fetched document could not be turned into usable text.
+
+    Raised only by the PDF path, and deliberately: a PDF is opaque in a way HTML is not. An
+    HTML page that extracts to nothing is visibly empty in the browser too, but a PDF that
+    extracts to nothing looks perfectly readable to the human who added it to the crawl list -
+    it is a scan, or text drawn as vector art. Silently ingesting that empty (or near-empty)
+    document would put a titled, cited, contentless page in the knowledge base, which retrieval
+    can rank and the model can cite. So the PDF path raises, scrape_page turns it into
+    `ok=False` with the reason, and the page is counted in the run summary's failures. The
+    corpus keeps the last-good version of that URL and a human sees the error in the log.
+    """
 
 
 @dataclass
@@ -412,6 +436,170 @@ def _merge_new_blocks(seen: str, blocks: List[str]) -> tuple[List[str], str]:
     return added, seen
 
 
+# --- PDF extraction ---------------------------------------------------------------------------
+#
+# pypdf, because it is pure Python (no poppler, no system binary, no OCR) and it ships a
+# py3-none-any wheel, which is what the manylinux layer bundler in infra/ needs - it runs pip with
+# --only-binary=:all:, so a dep that has to compile would fail the build. pdfminer.six was the
+# other pure-Python candidate and it was measured against this corpus, not assumed: on the Writing
+# Center's "Email Etiquette" handout it emits one character per line down the page ("S\na\nn\n
+# J\no\ns\ne") while pypdf returns clean prose. Same file, same call. That decided it.
+#
+# Two things then stand between pypdf's output and a usable document:
+#
+#   1. REPEATED FURNITURE. Every page of a handout carries the same running header or footer -
+#      "Email Etiquette for Students, Fall 2013. Rev. Summer 2014  2 of 3". Text is chunked at
+#      FIXED_SIZE for retrieval, with no idea where pages ended, so that line lands in the middle
+#      of chunks as noise, several times per document. _furniture_keys finds the lines that repeat
+#      across pages and drops them. Page numbers are normalised away first, or "1 of 3" and "2 of
+#      3" would look like different lines and neither would ever be caught.
+#   2. DOCUMENTS THAT ARE NOT TEXT. See ExtractionError.
+
+# A page number differs on every page; without folding digits away, no running footer that carries
+# one is ever seen twice.
+_PDF_DIGITS_RE = re.compile(r"\d+")
+# Furniture is short by nature - a header, a footer, a page number. The cap is what stops a
+# repeated-by-coincidence sentence of real content from being mistaken for it.
+_PDF_FURNITURE_MAX_CHARS = 120
+# A line has to repeat on at least this SHARE of the pages to count as furniture, and on at least
+# two pages in absolute terms. Both, so a two-page handout still gets its running header stripped
+# while a line appearing on 2 of 16 slides does not.
+_PDF_FURNITURE_MIN_SHARE = 0.6
+_PDF_FURNITURE_MIN_PAGES = 2
+# The floor for "this document is actually text". A real handout runs to thousands of letters; the
+# fragments a scan or an image-only slide deck yields (a stray caption, a page number) run to tens.
+_PDF_MIN_LETTERS = 200
+# ...and it has to be prose, not symbol soup: a vector-art or badly-encoded PDF can emit plenty of
+# characters that are almost all punctuation and stray glyphs.
+_PDF_MIN_LETTER_RATIO = 0.5
+
+
+def _pdf_page_lines(data: bytes) -> List[List[str]]:
+    """Each page's text as a list of whitespace-normalised, non-empty lines.
+
+    Structure is kept per page rather than flattened because the furniture pass needs to know
+    which page a line came from - a line repeated ACROSS pages is furniture, the same line twice
+    on one page is just the document.
+    """
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        raw_pages = [(page.extract_text() or "") for page in reader.pages]
+    except Exception as exc:  # noqa: BLE001 - encrypted, truncated, or malformed: all the same here
+        raise ExtractionError(f"PDF could not be parsed ({type(exc).__name__}: {exc})") from exc
+
+    pages: List[List[str]] = []
+    for raw in raw_pages:
+        lines = []
+        for line in raw.splitlines():
+            line = _WS_RE.sub(" ", line).strip()
+            if line:
+                lines.append(line)
+        pages.append(lines)
+    return pages
+
+
+def _furniture_keys(pages: List[List[str]]) -> set:
+    """The digit-normalised lines that repeat across pages often enough to be running furniture."""
+    if len(pages) < _PDF_FURNITURE_MIN_PAGES:
+        return set()
+    page_counts: Dict[str, int] = {}
+    for lines in pages:
+        for key in {
+            _PDF_DIGITS_RE.sub("#", line)
+            for line in lines
+            if len(line) <= _PDF_FURNITURE_MAX_CHARS
+        }:
+            page_counts[key] = page_counts.get(key, 0) + 1
+    threshold = max(_PDF_FURNITURE_MIN_PAGES, len(pages) * _PDF_FURNITURE_MIN_SHARE)
+    return {key for key, count in page_counts.items() if count >= threshold}
+
+
+def _has_usable_text(text: str) -> bool:
+    """Whether extracted text is prose a knowledge base can use, rather than scan residue."""
+    letters = sum(1 for ch in text if ch.isalpha())
+    if letters < _PDF_MIN_LETTERS:
+        return False
+    non_space = sum(1 for ch in text if not ch.isspace())
+    return bool(non_space) and letters / non_space >= _PDF_MIN_LETTER_RATIO
+
+
+def extract_pdf(data: bytes, url: Optional[str] = None) -> tuple[Optional[str], str]:
+    """Extract (title, text) from a PDF. Raises ExtractionError if it holds no usable text.
+
+    THE TITLE IS ALWAYS None, so scrape_page falls back to the crawl list's curated title. That
+    is a decision about what a student sees, not an omission: the title is rendered as the source
+    attribution on an answer card, and this corpus's PDF metadata titles do not survive that bar.
+    Measured across the handouts on the list, seven of nine carry an empty /Title, one carries the
+    unedited template placeholder "Title of Handout", and the useful remainder is a single file.
+    The common failure mode elsewhere is worse still - "Microsoft Word - handout_v2final.docx" -
+    and a filename on a card is exactly what the crawl list's curated title exists to prevent.
+    """
+    pages = _pdf_page_lines(data)
+    furniture = _furniture_keys(pages)
+    kept = [
+        line
+        for lines in pages
+        for line in lines
+        if _PDF_DIGITS_RE.sub("#", line) not in furniture
+    ]
+    text = _scrub_replacement_chars("\n".join(kept).strip()) or ""
+
+    if not _has_usable_text(text):
+        raise ExtractionError(
+            f"PDF holds no usable text ({sum(ch.isalpha() for ch in text)} letters across "
+            f"{len(pages)} page(s)) - an image-only scan or a slide deck of pictures. It needs "
+            "OCR, which this scraper deliberately does not do; drop it from the crawl list."
+        )
+    if url:
+        LOG.info(
+            "pdf extracted: %d page(s), %d furniture line(s) stripped: %s",
+            len(pages),
+            len(furniture),
+            url,
+        )
+    return None, text
+
+
+def _is_pdf(content_type: str, body: bytes) -> bool:
+    """PDF by magic bytes first, declared content type second.
+
+    The bytes lead because they are the document; a Content-Type header is only a claim about it,
+    and this corpus has seen both claims go wrong. A handout served as `application/octet-stream`
+    still has to be read as a PDF, so magic bytes alone are enough to say yes. A soft-404 HTML
+    page served as `application/pdf` must NOT be, so an opening angle bracket is enough to say no
+    before the header is consulted at all - otherwise that page reaches pypdf, which raises, and a
+    loud extraction failure is the wrong story to tell about a URL whose real problem is that it
+    now serves an error page. The header decides only what the bytes leave open.
+    """
+    head = body[:1024].lstrip()
+    if head.startswith(b"%PDF-"):
+        return True
+    if head[:1] == b"<":  # an HTML or XML document, whatever the header says it is
+        return False
+    return "application/pdf" in content_type.lower()
+
+
+def extract_document(
+    body: bytes,
+    text: str,
+    content_type: str,
+    url: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """THE extraction entry point: (title, content) for one fetched document, whatever its format.
+
+    `body` is the raw bytes and `text` is the same bytes decoded by the HTTP client using the
+    charset the server declared. Both are passed rather than one derived from the other because
+    each format needs its own: PDF is binary and must never be decoded, HTML is text and its
+    charset handling is not ours to reimplement.
+
+    Dispatching here rather than in the caller is the point - scrape_page, and through it the
+    Lambda, does not know or care which formats the corpus contains.
+    """
+    if _is_pdf(content_type, body):
+        return extract_pdf(body, url=url)
+    return extract_markdown(text, url=url)
+
+
 def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """Extract (title, content markdown) from a page's HTML.
 
@@ -490,9 +678,23 @@ def scrape_page(page: Dict[str, str], client: httpx.Client) -> ScrapeResult:
             error=f"{exc.__class__.__name__}: {exc}",
         )
 
-    # response.text honors the page's declared charset; extract_markdown scrubs any
-    # replacement-char garbage baked into the source content.
-    title, markdown = extract_markdown(response.text, url=url)
+    # One extraction path for both formats - see extract_document. response.text honors the
+    # page's declared charset for the HTML branch; the PDF branch reads response.content, which
+    # must stay bytes. Both branches scrub replacement-char garbage baked into the source.
+    try:
+        title, markdown = extract_document(
+            response.content,
+            response.text,
+            response.headers.get("content-type", ""),
+            url=url,
+        )
+    except ExtractionError as exc:
+        # ERROR, not WARNING: unlike a 404 or a timeout this does not resolve itself on the next
+        # run. The document will keep extracting to nothing every day until someone removes it
+        # from the crawl list, so it should read as a curation bug, which is what it is.
+        LOG.error("extraction failed: %s (%s)", url, exc)
+        return ScrapeResult(url=url, slug=slug, section=section, ok=False, error=str(exc))
+
     if not markdown:
         LOG.warning("no main content extracted: %s", url)
         return ScrapeResult(
