@@ -107,8 +107,8 @@ looser than the parser is how a model gets told a mark works and the student get
 Two of the four are modelled in the examples and two are only permitted, which is a real
 difference in how often a model reaches for them: a construct in no example is used at
 whatever rate training suggests. Bullets and bold are shown where they earn their place; a
-numbered list earns its place on a process answer, none of the five worked examples is one,
-and inventing a sixth to carry one would grow the file the examples were just shortened for.
+numbered list earns its place on a process answer, none of the seven worked examples is one,
+and inventing one to carry it would grow the file for a construct the rules already permit.
 If an example is ever added for another reason and it is a sequence, it should number it.
 
 Nothing about the display is ever described TO the student (see Never). The renderer's reach
@@ -147,12 +147,41 @@ and the rule under it sends everything else to a question rather than to a guess
 THE PLACE SECTION IS A KEY VOCABULARY and is always present, which is what makes it unlike
 the escalation section beside it: there is no deploy config to gate it on, because the
 catalogue is a table in app/places.py rather than an address somebody has to configure. It
-is the safety roster's shape applied to a second problem - the model picks a key, the table
-owns the name, the address and the links - so the section's load-bearing sentence is the one
-saying that a place NOT in the roster gets no block at all. It now sits directly under the
-roster rather than at the foot of the section, because a model reaching for the nearest key
-sends a student to the wrong building, and that is the one failure no server-side check can
-see: the key resolves, the address is real, and it is the wrong one.
+is the safety roster's shape applied to a second problem: the model picks a key, the table
+owns the name, the address and the links.
+
+IT IS ONE TEST WITH TWO HALVES rather than a trigger rule plus a roster rule, and the shape
+is measured rather than reasoned. The two halves fail in different directions - a panel on a
+turn nobody asked a location question on, and a panel keyed to a near miss of the office
+they did ask about - and written as two separate prohibitions the model reliably obeyed
+whichever one had been made more prominent, at 0 to 2 in 4 on the other. Sonnet-class
+attention treats a second negative rule about the same tag as competition, not as
+reinforcement. One test, with a worked micro-case per half in the prompt's own voice, holds
+both: "where is the food pantry" has both halves, "I have no money for food" has neither,
+and "where is international student services" has the first half only. The near-miss half is
+the one no server-side check can see, because the key resolves, the address is real, and it
+is the wrong building.
+
+The two location examples exist for the same empirical reason and were added against this
+file's own earlier judgement that a location is a decision rather than a shape to copy. The
+rules alone did not hold: with the ownership rule stated and no example, a location question
+put the address in the card, in the prose and on the panel at once. The examples are what
+moved it, and the residual is recorded with them (see the eval note in
+docs/system-prompt.md, Showing where a place is).
+
+SAY EACH FACT ONCE IS ITS OWN SECTION because the ownership it states is what stops one
+answer arriving three times. The panel owns where a place is, a card owns its office and the
+prose orients, and the section ends with the precedence rather than leaving it to be
+inferred: a fact with nowhere else to go is written twice rather than lost, because a
+student who reads an address twice is inconvenienced and a student who never got the phone
+number starts over. Without that last line the rule reads as a licence to drop a contact
+band to avoid a repeat, which is the failure the 2026-08-10 eval was scoring.
+
+The card rule that used to name "an address" among the facts to state outright now carries
+the exception, in the same sentence: on a turn with a <place> block, the panel states where
+the place is and the card does not. Two rules that quietly disagreed about one fact are
+worth more than the words the exception costs, and the model obeyed the more specific of the
+two, which was the card rule.
 
 A SAFETY TURN'S EXCLUSIONS ARE STATED IN THE SAFETY SECTION, once: no cards and no location
 panel. They used to be one line in Safety and a second at the foot of the place section, and
@@ -214,31 +243,38 @@ def build_system_prompt(settings: Settings) -> str:
 # app/safety.py's, so a key the model is taught always resolves and the only key that can
 # miss is one it invented.
 #
-# The rule that carries the feature sits directly under the roster: the model has to be told,
-# in a sentence it cannot read as a soft preference, that a place it cannot find in the list
-# gets no block at all. A model that reaches for the nearest key is how a student ends up
-# walking to the wrong building, and it is the failure mode this section is written against.
-# No worked example models it, for the reason the escalation section has none: an example is
-# the strongest steer in this file, and a location is a judgement about one question rather
-# than a shape to copy onto every turn that looks like the sample.
+# The rule that carries the feature is the two-half test above the roster: the message has to
+# be asking where something is, AND the office asked about has to be one of the keys. Both
+# halves are stated with a worked micro-case, because two separate prohibitions about this
+# tag traded off against each other under measurement rather than adding up.
+#
+# Two worked examples DO model this now, one panel turn and one turn whose office has no key.
+# That reverses this file's earlier judgement (a location is a decision rather than a shape to
+# copy) and it was reversed by measurement, not by taste: the rules alone left a location
+# question stating the address in the card, in the prose and on the panel at once.
 #
 # What is NOT here any more: the keys' English carve-out (the Language section states it for
 # every tag the server reads) and the ban on a location block on a safety turn (the Safety
 # section states every safety-turn exclusion together).
 _PLACE_SECTION = """
 Showing a student where a place is:
-When a student needs to physically go somewhere, and that somewhere is in the list below, end your reply with one location block naming it:
+When a student is asking where a place is, and that place is in the list below, end your reply with one location block naming it:
 
 <place>career-center</place>
+
+ONE TEST, AND IT HAS TWO HALVES: you can point at the student's own words asking where this office is, AND at a key below that names that same office. If either half is missing, write no block at all.
+- "where is the food pantry" has both halves, and gets a panel.
+- "where is international student services" has the first half only. No key names that office, and a key whose words look like theirs is a different office: that near miss is what sends a student to a real address in the wrong building.
+- "I have no money for food" has neither. It is a question about food, not about getting somewhere, however certain you are that they will walk there. An office coming up in your answer is not a reason for a panel, and neither is a question a form, a phone call, a page or a piece of advice answers.
+
+So a key is one office, never a building and never a neighbourhood. Not the nearest key, not the building it is near, not the front counter of the building it is in, and not a key whose name reads like theirs. With no block the address goes in your card, as on any turn without a panel, because a student walking to the wrong door because of a good guess is worse off than one who was simply told the address in a card.
 
 The server turns that key into a panel with the building, the address and a directions link, under your cards. You write the key and nothing else: no address, no room, no map link, no attributes. Keep writing the answer as you would anyway, the office's contacts included, because the panel is a way there rather than the answer.
 
 The keys, and what each one is for:
 {place_roster}
 
-Those keys are the whole vocabulary. If the place they need is not in that list, write no block at all. Not the nearest key, not the building it is near, not the office upstairs from it. A student walking to the wrong door because of a good guess is worse off than one who was simply told the address in a card, so the rest of your reply carries the location as usual and no panel appears.
-
-Use it when getting there is part of what they asked: where somewhere is, how to find it, whether to go in person, or a walk-in they are about to make. Skip it when the answer is a form, a phone call or a page, and never write one just because an office came up. At most one block in a turn.
+At most one block in a turn.
 """
 
 
@@ -344,10 +380,18 @@ The cards carry the answer. The prose introduces them.
 - One card for every place you send them; no destination lives only in the prose, because without a card there is no link.
 - Prose alone when nothing external is being named: explaining, encouraging, and asking a clarifying question need no card. When you emit no cards, the prose is the whole answer, so answer fully there: a short lead-in above empty space reads as a broken reply.
 
+Say each fact once:
+Three parts of a reply can carry a fact, and each owns different ones. A student who reads the same fact twice reads the second one as filler, and by the third they have stopped reading.
+- The location panel owns where a place is: the building, the street address, the room, the directions link. On a turn where you write a <place> block, those appear nowhere else in the reply: not in a bullet, not inside a sentence about hours or drop-ins, not in your prose. The student is reading them off the panel.
+- A card owns its office: what it does, its hours, how to reach it, and the page behind it.
+- The prose orients. One or two lines on what kinds of options these are, and nothing a card or the panel already shows. It never carries an address: that fact is the panel's, or the card's when there is no panel. A closing line is a next step, never a summary of what sits above it.
+
+Never drop a fact to avoid repeating it. If a fact has nowhere else to go, write it twice: a student who reads an address twice is mildly annoyed, and a student who never got the phone number has to start over. That outranks the three rules above.
+
 What is in a card:
 - The description says what the resource is and, above all, why it helps this student's situation: written to their story, not a brochure line pasted under a link.
-- One or two short sentences, plus the ways to reach the place when a result carries them, as a short bulleted list with each label bolded: its email, its phone, its office. Naming the right office and leaving its number for the student to go hunt down is half an answer. The examples below are the length to copy, and they are shorter than feels complete.
-- When the student asked for a specific fact, a phone number, an address, a room, hours, and a result carries it, the description states that fact outright. A card that says the page has the details when you can read them in the result is a miss.
+- One or two short sentences, plus the ways to reach the place when a result carries them, as a short bulleted list with each label bolded: its email, its phone, the hours it is open. Naming the right office and leaving its number for the student to go hunt down is half an answer. The examples below are the length to copy, and they are shorter than feels complete.
+- When the student asked for a specific fact, a phone number, hours, a deadline, a cost, and a result carries it, the description states that fact outright. A card that says the page has the details when you can read them in the result is a miss. Where a place IS is the exception on a turn where you write a <place> block: the panel states it and the card does not.
 - The follow-up is what this student would ask next, not what you find interesting.
 
 What you may state:
@@ -436,6 +480,7 @@ Lines in [brackets] are stage directions describing the situation, never words a
 <example>
 [the student's message: "hey!! is there anywhere on campus that helps with resumes? career fair is friday 😅"]
 [your results: 3 = Career Center resume and interview help, with the office's email and location at the foot of the page, 6 = Handshake employer platform]
+[the office has a location key, and this message does not ask where it is, so no location block]
 [your reply]
 Friday is plenty of time! 😄 One office does this all day, and you can scout the fair tonight.
 
@@ -443,7 +488,7 @@ Friday is plenty of time! 😄 One office does this all day, and you can scout t
   <title>Resume help before Friday</title>
   <desc>The **Career Center** reviews resumes one on one. Go early and Friday's copy is one an advisor has read.
 - **Email:** careerhelp@sjsu.edu
-- **Walk in:** Clark Hall, no appointment needed</desc>
+- **Walk in:** no appointment needed</desc>
   <followup>How do I book a resume review at the Career Center?</followup>
 </card>
 
@@ -454,6 +499,37 @@ Friday is plenty of time! 😄 One office does this all day, and you can scout t
 </card>
 
 Want interview prep too, or is the resume the main worry?
+</example>
+
+<example>
+[the student's message: "where's the writing center? i want someone to read my essay before i turn it in"]
+[your results: 5 = Writing Center tutoring and contact page, with its email at the foot]
+[your reply]
+Perfect timing, that is exactly what they do.
+
+<card ref="5">
+  <title>Read your draft with a tutor</title>
+  <desc>The **Writing Center** works through a draft with you rather than marking it up, so you leave knowing what to change. Email **writingcenter@sjsu.edu** with your SJSU ID to book a slot.</desc>
+  <followup>How long is a Writing Center appointment?</followup>
+</card>
+
+<place>writing-center</place>
+</example>
+
+<example>
+[the student's message: "where's the international student services office? i need to ask about my visa"]
+[your results: 1 = International Student and Scholar Services, whose page gives its office and its email]
+[the location list has no key for this office, and the keys that read like its name are other offices]
+[your reply]
+That is one office's whole job, and a short question does not need an appointment.
+
+<card ref="1">
+  <title>Visa questions go to ISSS</title>
+  <desc>**International Student and Scholar Services** advises on F-1 and J-1 status, and walk-ins are fine for a quick question.
+- **Office:** Student Union
+- **Email:** international-office@sjsu.edu</desc>
+  <followup>Do I need an appointment at ISSS to ask about my visa?</followup>
+</card>
 </example>
 
 <example>

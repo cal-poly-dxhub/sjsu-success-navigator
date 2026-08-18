@@ -18,6 +18,20 @@ Exactly two duplicates survive, both deliberate:
   interpolated or absent, so it cannot lean on Safety's list of exclusions: a deployment
   with no recipient must never read a sentence about a tag it was not taught.
 
+Counts, composed prompt with escalation configured (rule statement = one bullet, one
+numbered line, or one rule paragraph; the three interpolated lists and the examples are data
+and are excluded):
+
+| | words | rule statements | sections |
+| --- | --- | --- | --- |
+| before | 4,248 | 77 | 17 |
+| after the grouping pass | 3,893 | 67 | 16 |
+| after the say-it-once fix | 4,491 | 76 | 17 |
+
+The grouping pass took out 10 statements and 355 words. The fix put 9 statements and 598
+words back, all of them in "Say each fact once", the location test and the two worked
+location examples, and the section below records what each one bought in real replies.
+
 What merged, and why it was a merge rather than a cut:
 
 - source discipline is now one section, "What you may state". "Say only what the cited
@@ -83,6 +97,28 @@ What merged, and why it was a merge rather than a cut:
   descriptions under it the specifics are in the wrong place. That is one bullet now, not
   three statements of one weighting
 - one order per reply: lead-in, cards, then any question. Ending on the cards is fine
+
+## Say each fact once
+
+Its own section, because the ownership is what stops one answer arriving three times.
+
+- the location panel owns where a place is: the building, the street address, the room, the
+  directions link. On a turn that writes a `<place>` block those appear NOWHERE else in the
+  reply, and "nowhere else" is spelled out as not in a bullet, not inside a sentence about
+  hours or drop-ins, and not in the prose. The bullet-only phrasing measured 3 in 8 replies
+  weaving "Clark Hall, Suite 140" into a drop-in sentence instead
+- a card owns its office: what it does, its hours, how to reach it, the page behind it
+- the prose orients and carries no address at all: that fact is the panel's, or the card's
+  when there is no panel. A closing line is a next step, never a summary
+- PRECEDENCE, stated with the rule rather than left to be inferred: a fact with nowhere else
+  to go is written twice rather than lost. A student who reads an address twice is
+  inconvenienced; a student who never got the phone number starts over. Without that line the
+  rule reads as a licence to drop a contact band to avoid a repeat, which is the failure the
+  2026-08-10 eval was scoring
+- the card rule that used to name "an address" among the facts to state outright now carries
+  the exception in the same sentence: with a `<place>` block, the panel states where the place
+  is and the card does not. The model obeyed the more specific of two rules that disagreed,
+  which was the card rule
 - one card for every place the student is sent; no destination lives only in the prose
 - prose alone when nothing external is named, and when no cards are emitted the prose is
   the whole answer
@@ -207,20 +243,34 @@ What merged, and why it was a merge rather than a cut:
   every key the model is taught resolves and the only key that can miss is an invented one
 - ALWAYS PRESENT, unlike the escalation section, because the catalogue is code rather than
   deploy config; there is nothing to gate it on
-- use it when getting there is part of what they asked, and never just because an office
-  came up
-- the load-bearing line is the one about a place that is NOT in the list: no block at all,
-  not the nearest key, not the building it is near. It sits directly under the roster
-  rather than at the foot of the section, because a neighbouring key produces a card that
-  resolves, renders and is wrong, which is the one failure no server-side check can see -
-  the key is valid and the address is real, it is just not where the student is going
-- with no panel the rest of the reply carries the location as usual
+- ONE TEST WITH TWO HALVES, above the roster: you can point at the student's own words
+  asking where this office is, AND at a key that names that same office. Either half missing
+  means no block. Each half carries a worked micro-case in the prompt's own voice: "where is
+  the food pantry" has both, "I have no money for food" has neither, "where is international
+  student services" has the first half only
+- the shape is measured, not reasoned. Written as two separate prohibitions (a trigger rule
+  and a roster rule) the model obeyed whichever had been made more prominent and dropped to
+  0-2 in 4 on the other, four wordings running. A second negative rule about one tag reads as
+  competition, not reinforcement
+- the near-miss half is the one no server-side check can see: a neighbouring key produces a
+  card that resolves, renders and is wrong. `student-services-center` attracted every ISSS
+  and Housing "where is" question in the baseline, 8 in 8 each, on key-name similarity alone
+- with no panel the address goes in the card, which is the other half of the ownership rule:
+  nothing is dropped to avoid a repeat
 - keys stay English for the reason safety keys do, and the Language section states it
-- not modelled in an example, on the escalation section's reasoning. An example is the
-  strongest steer in the file, and a location is a judgement about one question rather than
-  a shape to copy onto every turn that resembles the sample
+- TWO WORKED EXAMPLES MODEL THIS NOW, one panel turn and one turn whose office has no key,
+  plus a stage direction on the routing example saying that an office with a key and a message
+  that does not ask where it is means no block. That reverses the earlier judgement here that
+  a location is a decision rather than a shape to copy, and it was reversed by measurement:
+  with the ownership rule stated and no example, a location question put the address in the
+  card, in the prose and on the panel at once
 - the prompt names no address and no room number, and a test asserts it. A specific in the
   prompt is a specific the model can paste into prose on a turn that shows no panel at all
+- WHAT IS STILL FLAKY, recorded so the next reader does not have to re-measure it: the ISSS
+  near miss is right 13 of 16 real replies (two runs of 8, us.anthropic.claude-sonnet-4-6 at
+  the deployed temperature 0.2), not 16 of 16. The other four checks are clean at 8 in 8. An
+  n of 3 or 4 cannot see the difference between wordings here, which is why the numbers in
+  this section are all 8s
 
 ## Safety
 
@@ -252,10 +302,11 @@ the source discipline.
 
 ## Examples
 
-- five worked <example> blocks: a plain resource question, a vague follow-up
-  answered from prose-only history, a question with no good retrieval hit, a
-  third-party worry routed to BIT with a card and no safety block, and an
-  out-of-scope decline with irrelevant primed results present
+- seven worked <example> blocks: a plain resource question, a location question that gets a
+  panel, a location question whose office has no key, a vague follow-up answered from
+  prose-only history, a question with no good retrieval hit, a third-party worry routed to
+  BIT with a card and no safety block, and an out-of-scope decline with irrelevant primed
+  results present. The two location blocks are the ones the measurements bought
 - annotations are [bracketed] stage directions with the reply under an explicit
   [your reply] marker; the first shipped format ran the reply under a bare
   "Results:" line and the model learned to narrate the annotation ("No retrieval
