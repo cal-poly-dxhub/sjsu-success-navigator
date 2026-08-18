@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { motion } from 'motion/react';
 import { UserPrompt } from './UserPrompt';
 import { CardDeckPlaceholder } from './CardDeck';
 import { ThinkingBubble } from './ThinkingBubble';
@@ -49,9 +48,6 @@ const STAGE_LABELS = (t: Strings): Record<string, string> => ({
 export function PendingExchange({ prompt, preview = '', stage = null }: PendingExchangeProps) {
 	const t = useStrings();
 	const reduceMotion = usePrefersReducedMotion();
-	const layoutTransition = reduceMotion
-		? { duration: 0 }
-		: { type: 'spring' as const, stiffness: 320, damping: 32 };
 
 	const label = stage ? STAGE_LABELS(t)[stage] : undefined;
 
@@ -100,11 +96,12 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 	}, [awaitingCards, reduceMotion]);
 
 	return (
-		<motion.article
+		// No layout animation, for the reason spelled out in ConversationTurnView: the only
+		// thing it measured on these articles was a turn leaving the head of the feed, which
+		// the browser's own scroll clamp has already absorbed.
+		<article
 			className="conversation-exchange conversation-exchange--active conversation-exchange--pending"
 			id="active-conversation-turn"
-			layout={!reduceMotion ? 'position' : false}
-			transition={layoutTransition}
 			aria-busy="true"
 			aria-label={t.waitingForSammy}
 		>
@@ -133,6 +130,6 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 					</div>
 				) : null}
 			</div>
-		</motion.article>
+		</article>
 	);
 }

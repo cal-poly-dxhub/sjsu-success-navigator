@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { motion } from 'motion/react';
 import { FormattedMessage } from './FormattedMessage';
 import type { ConversationTurn, RagPhase } from '../types/chat';
 import { ConversationalBubble } from './ConversationalBubble';
@@ -151,16 +150,32 @@ export function ConversationTurnView({
 		window.requestAnimationFrame(() => scrollElementToTop(group, reduceMotion));
 	}, [showCards, isActive, reduceMotion]);
 
-	const layoutTransition = reduceMotion
-		? { duration: 0 }
-		: { type: 'spring' as const, stiffness: 320, damping: 32 };
-
+	/*
+	 * NO LAYOUT ANIMATION ON THE EXCHANGE, and its absence is the fix for the previous
+	 * answer flying up the screen once the feed reached its cap.
+	 *
+	 * This was a `motion.article` with `layout="position"` on the avatar column's spring.
+	 * The only position change it ever saw was a turn LEAVING THE HEAD of the feed -
+	 * `appendConversationTurn` slices to MAX_FEED_TURNS - and that happens in the same
+	 * commit that applies the reply, so it landed on the frame the deal starts.
+	 *
+	 * That change is not one to animate. Dropping a turn shortens the document ABOVE the
+	 * viewport and the browser clamps scrollY by exactly the same amount, so nothing moves
+	 * on screen. Motion measures in PAGE coordinates, so it sees every surviving article
+	 * move up by the dropped article's outer height, and holds each one at its old page
+	 * position before springing it home. Measured in Chrome at 180, 1510 and 1199px over
+	 * ~35 frames, the translate matching the scroll clamp to the pixel every time: on
+	 * screen, the previous answer teleporting into the middle of the viewport underneath
+	 * the cards being dealt, then jetting out through the top.
+	 *
+	 * Nothing is lost with it gone. Across seven turns those head-drops were the ONLY
+	 * layout events these articles ever produced, and each one was a change the browser
+	 * had already cancelled.
+	 */
 	return (
-		<motion.article
+		<article
 			className={`conversation-exchange${isActive ? ' conversation-exchange--active' : ' conversation-exchange--archived'}`}
 			id={isActive ? 'active-conversation-turn' : undefined}
-			layout={!reduceMotion ? 'position' : false}
-			transition={layoutTransition}
 		>
 			{turn.query ? <UserPrompt text={turn.query} /> : null}
 
@@ -242,6 +257,6 @@ export function ConversationTurnView({
 					</div>
 				) : null}
 			</div>
-		</motion.article>
+		</article>
 	);
 }
