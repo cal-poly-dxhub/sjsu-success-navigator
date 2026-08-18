@@ -131,10 +131,10 @@ def test_scraper_resolves_to_one_daily_schedule(config):
 
 
 def test_seed_pages_match_the_authoritative_crawl_list(config):
-    """url-list.csv is authoritative over the brief: 232 pages, three hosts."""
+    """url-list.csv is authoritative over the brief: 238 pages, three hosts."""
     pages = resolve_seed_pages(config)
-    assert len(pages) == 232
-    assert len({p["url"] for p in pages}) == 232
+    assert len(pages) == 238
+    assert len({p["url"] for p in pages}) == 238
     assert all(p["url"].startswith("https://") for p in pages)
     # `section` is why this list is validated at all - it reaches the metadata sidecars.
     assert all(p["section"] for p in pages)
