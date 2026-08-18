@@ -11,8 +11,18 @@ const { title = 'Student Success Navigator' } = Astro.props;
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
+		<!--
+			Sammy's head, cut down from the SAME public/sammy-head.png the side nav shows.
+			TWO EXACT SIZES rather than one file the browser resamples: a tab strip asks for
+			16 CSS px, which is 16 device px at 1x and 32 at 2x, and both are the sizes the
+			art was fitted to offline - a mild sharpen at 16, where the eyes are two pixels
+			and a box reduction loses them, and none at 32, where it fringed the helmet.
+			Transparent, and no plate behind it, because the strip it sits on is light in one
+			theme and near-black in the other: the black linework carries the shape on light,
+			the gold crest and the face carry it on dark.
+		-->
+		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
 		<meta name="generator" content={Astro.generator} />
 		<meta name="color-scheme" content="light" />
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
