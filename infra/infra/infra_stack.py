@@ -292,14 +292,22 @@ def _astro_bundling() -> BundlingOptions:
     )
 
 
-def _requirements_hash(layer: str, requirements: Path) -> str:
-    """A stable asset hash for a deps layer, keyed on its OWN requirements file.
+def _requirements_hash(layer: str, *requirements: Path) -> str:
+    """A stable asset hash for a deps layer, keyed on EVERY requirements file it installs.
 
-    Exists to keep the two deps layers from colliding in CDK's asset cache - see the long
-    note on the chat layer. The layer name is folded in as well as the file contents, so
-    two layers would stay distinct even if their requirements were byte-identical.
+    Exists to keep the deps layers from colliding in CDK's asset cache - see the long note
+    on the chat layer. The layer name is folded in as well as the file contents, so two
+    layers would stay distinct even if their requirements were byte-identical.
+
+    VARIADIC because one of them installs two files: the streaming app's layer pulls in
+    app/requirements.txt through a `-r` line so the app's own runtime pin is not spelled a
+    second time, and a hash that only saw the outer file would leave a changed pydantic pin
+    staged as the previous build. Hashing the concatenation means a single-file layer's
+    digest is byte-identical to what this returned before, so no existing asset churns.
     """
-    digest = hashlib.sha256(requirements.read_bytes()).hexdigest()[:32]
+    digest = hashlib.sha256(
+        b"".join(path.read_bytes() for path in requirements)
+    ).hexdigest()[:32]
     return f"{layer}-{digest}"
 
 
@@ -2413,7 +2421,7 @@ class NavigatorStack(Stack):
                 ),
             )
 
-        # --- A response-streaming PROBE: FastAPI + Lambda Web Adapter + URL -----
+        # --- The streaming app: FastAPI + Lambda Web Adapter + Function URL -----
         #
         # UNNUMBERED AND DELIBERATELY ALONE, like the history table above: it is not a gav
         # pull, so numbering it would put it in a sequence that means "gav's section
@@ -2430,11 +2438,20 @@ class NavigatorStack(Stack):
         # body out as the app produces it. That is the supported way to stream in band from
         # Python (aws/aws-lambda-web-adapter, examples/fastapi-response-streaming-zip).
         #
-        # THIS IS STEP ONE OF REPLACING THE THREE FUNCTIONS ABOVE, and it moves nothing
-        # yet. Nothing above changes: the socket keeps its routes, its authorizer, its
-        # grants and its config.json key, and stays the live path. A probe that shared any
-        # of them would be a probe that could fail for a reason that has nothing to do with
-        # streaming.
+        # IT NOW SERVES THE REAL TURN. POST /chat on this app runs app/turn.py - the same
+        # rate limit, guardrail, write, read, loop, write and title the API Gateway handler
+        # runs, out of the same module - and streams the reply as it is written, with the
+        # last frame carrying the identical ChatResponse. The two probe routes stay beside
+        # it on purpose: when a stream arrives in one lump the question is always
+        # "transport, Bedrock, or the turn?", and /stream and /model answer the first two
+        # without a deploy-and-guess cycle.
+        #
+        # NOTHING ABOVE CHANGES, WHICH IS THE POINT OF THIS BEING A SEPARATE FUNCTION. The
+        # socket keeps its three functions, its authorizer, its connection table, its grants
+        # and its config.json key, and stays the live path the frontend opens. Removing any
+        # of it is a later step and not this one: until a front door is chosen, this
+        # endpoint answers 401 to everybody (see app/stream_probe.py, identity_from), so it
+        # cannot be what a student reaches.
         #
         # ZIP PLUS THE LAYER, NEVER A CONTAINER IMAGE, and that is where the two upstream
         # examples get spliced. fastapi-backend-only-response-streaming is the one that
@@ -2468,11 +2485,24 @@ class NavigatorStack(Stack):
             compatible_architectures=[_LAMBDA_ARCH],
             code=_lambda.Code.from_asset(
                 str(_APP_DIR),
+                # BOTH FILES, because the outer one pulls the inner one in with `-r`. A
+                # hash over only the outer file would leave a changed pydantic pin staged
+                # as the previous build.
                 asset_hash=_requirements_hash(
-                    "stream-probe", _APP_DIR / "requirements-stream-probe.txt"
+                    "stream-probe",
+                    _APP_DIR / "requirements-stream-probe.txt",
+                    _APP_DIR / "requirements.txt",
                 ),
                 asset_hash_type=AssetHashType.CUSTOM,
-                exclude=["*", ".*", "!requirements-stream-probe.txt"],
+                exclude=[
+                    "*",
+                    ".*",
+                    "!requirements-stream-probe.txt",
+                    # Named because the file above reads it, not because the exclude is
+                    # what feeds the build: bundling bind-mounts the whole directory, so
+                    # this list shapes the declared inputs rather than the container's view.
+                    "!requirements.txt",
+                ],
                 bundling=BundlingOptions(
                     image=_LAMBDA_PYTHON.bundling_image,
                     local=_PipManylinuxLayerBundler(
@@ -2527,14 +2557,42 @@ class NavigatorStack(Stack):
             # clean deploy and a Permission denied on every invocation, which is why
             # test_the_stream_probe_ships_an_executable_run_sh reads the staged mode.
             handler="run.sh",
-            # SPELLED FILE BY FILE like every other bundle here, with ".*" for the dotfile
-            # trap the scraper section documents. settings.py is in because the model route
-            # takes its model id from the SAME Settings the chat function reads rather than
-            # from an environment variable of its own - a probe that invoked a different
-            # model than the deployment configures would be proving the wrong thing.
+            # THE WHOLE TURN'S MODULES NOW, because POST /chat on this app runs the same
+            # app/turn.py the API Gateway handler runs. Spelled file by file like every
+            # other bundle here, with ".*" for the dotfile trap the scraper section
+            # documents - and pinned by
+            # test_the_stream_probe_ships_every_module_it_imports, which walks
+            # stream_probe.py's import graph rather than trusting this list to be re-read.
+            #
+            # It is the chat function's list plus three: run.sh (the adapter's entry point),
+            # stream_probe.py (the app) and preview.py (the sink's bookkeeping, which the
+            # buffered handler has no use for). handler.py is deliberately NOT here: it is
+            # the API Gateway transport, and this function is a different one.
             code=_lambda.Code.from_asset(
                 str(_APP_DIR),
-                exclude=["*", ".*", "!stream_probe.py", "!run.sh", "!settings.py"],
+                exclude=[
+                    "*",
+                    ".*",
+                    "!run.sh",
+                    "!stream_probe.py",
+                    "!preview.py",
+                    "!turn.py",
+                    "!settings.py",
+                    "!models.py",
+                    "!prompts.py",
+                    "!tools.py",
+                    "!retrieve.py",
+                    "!cards.py",
+                    "!safety.py",
+                    "!escalation.py",
+                    "!places.py",
+                    "!orchestrator.py",
+                    "!campus_time.py",
+                    "!history.py",
+                    "!titles.py",
+                    "!usage.py",
+                    "!ratelimit.py",
+                ],
             ),
             # Order does not matter: the adapter layer owns /opt/bootstrap and
             # /opt/extensions, the deps layer owns /opt/python, and nothing overlaps.
@@ -2547,10 +2605,12 @@ class NavigatorStack(Stack):
             # NO RESERVED CONCURRENCY either: that takes capacity out of the account pool,
             # and the chat function is the only thing here entitled to fence some off.
             timeout=Duration.seconds(60),
-            # 512 MB, matching the authorizer rather than the chat function. It imports
-            # FastAPI, starlette, pydantic and uvicorn at cold start and then sleeps; the
-            # memory is bought for the import, not for the work.
-            memory_size=512,
+            # 1024 MB, RAISED from 512 when this stopped being a probe and started serving
+            # the turn: it is the chat function's number, for the chat function's reason.
+            # Lambda scales CPU with memory, this now imports FastAPI, uvicorn, pydantic
+            # AND the whole agent loop at cold start, and every second of that comes out of
+            # the 22 seconds the loop has to work in.
+            memory_size=1024,
             log_group=stream_probe_log_group,
             environment={
                 # THE CHAT FUNCTION'S OWN ENVIRONMENT, whole, because app/settings.py's
@@ -2579,43 +2639,42 @@ class NavigatorStack(Stack):
                 "PORT": str(_LWA_PROBE_PORT),
             },
         )
-
-        # THE ONE GRANT, AND IT IS ONE ACTION ON ONE MODEL.
-        # `bedrock:InvokeModelWithResponseStream` is what ConverseStream checks, and the
-        # resources are the same three ARNs the chat turn's InvokeModel* statement names
-        # for a cross-region inference profile: the account+region profile, the underlying
-        # foundation model in this region, and the same single model id under a region
-        # wildcard for the destinations the profile may route to. Built from the same
-        # `generation_cfg` rather than copied, so a model change in config.yaml moves both.
-        #
-        # DELIBERATELY NARROWER THAN THE CHAT ROLE, in two ways. The chat role grants
-        # `bedrock:InvokeModel*`, which is every invoke verb; this grants the streaming one
-        # only, because that is the only call this function makes. And the chat role adds
-        # `bedrock:GetInferenceProfile` / `ListInferenceProfiles` on "*" to resolve the
-        # profile's routing - a resource wildcard, which is exactly what "scoped to the
-        # configured model only" rules out here. If a deploy ever answers this route with
-        # AccessDenied naming one of those two, that pair is the first thing to add and
-        # this note is why it is absent rather than forgotten.
-        if generation_cfg["is_inference_profile"]:
-            stream_probe_model_resources = [
-                f"arn:{self.partition}:bedrock:{self.region}:{self.account}"
-                f":inference-profile/{generation_model_id}",
-                f"arn:{self.partition}:bedrock:{self.region}"
-                f"::foundation-model/{generation_cfg['base_model_id']}",
-                f"arn:{self.partition}:bedrock:*"
-                f"::foundation-model/{generation_cfg['base_model_id']}",
-            ]
-        else:
-            stream_probe_model_resources = [
-                f"arn:{self.partition}:bedrock:{self.region}"
-                f"::foundation-model/{generation_model_id}"
-            ]
-        stream_probe_lambda.add_to_role_policy(
-            iam.PolicyStatement(
-                actions=["bedrock:InvokeModelWithResponseStream"],
-                resources=stream_probe_model_resources,
-            )
+        # THE SAME EXEMPTION LIST THE OTHER TWO TRANSPORTS CARRY, and by reference to the
+        # same client. This function applies the per-user daily cap now (app/turn.py step
+        # 1), so the eval harness has to be exempt here exactly as it is on POST /chat and
+        # on the socket - a harness that is exempt on one transport and capped on another
+        # is a run that fails halfway for a reason nobody would look for.
+        stream_probe_lambda.add_environment(
+            "RATE_LIMIT_EXEMPT_CLIENT_IDS", eval_client.user_pool_client_id
         )
+        # It retrieves from the KB and reads and writes the history table on every turn, so
+        # neither may be created after it. Both env values are already references, so
+        # CloudFormation would order these anyway; stated for the reason the chat function
+        # states them, rather than relying on a reference a later refactor could flatten.
+        stream_probe_lambda.node.add_dependency(knowledge_base)
+        stream_probe_lambda.node.add_dependency(chat_history_table)
+
+        # THE CHAT TURN'S GRANTS, THE SAME LIST AND FROM THE SAME PLACE the WebSocket
+        # worker takes them (`_chat_turn_statements`): retrieve from the knowledge base,
+        # invoke the generation and titling models, apply the input guardrail, and read and
+        # write the one conversation table. It runs the same turn, so it holds the same
+        # grants - a streamed turn that could reach less than a buffered one would fail
+        # somewhere subtle and only for some questions.
+        #
+        # THIS REPLACED A DELIBERATELY NARROWER STATEMENT, and the widening is the whole
+        # content of this stage. When this function only streamed a bare ConverseStream it
+        # held one action (`bedrock:InvokeModelWithResponseStream`) on the one configured
+        # model; that grant is SUBSUMED here, because the list below carries
+        # `bedrock:InvokeModel*` on the same model ARNs. Keeping both would read like two
+        # different permissions, which is the reason the titling grant is skipped when its
+        # model id matches the generation one.
+        #
+        # WHAT IT STILL DOES NOT HOLD, and must not: `lambda:InvokeFunction` (there is no
+        # generation worker to start - the turn runs in this process) and
+        # `execute-api:ManageConnections` (nothing here pushes down a socket). Those are the
+        # two grants the WebSocket path needs and this one exists to make unnecessary.
+        for statement in _chat_turn_statements:
+            stream_probe_lambda.add_to_role_policy(statement)
 
         # THE OTHER HALF OF THE STREAMING SWITCH. InvokeMode is a property of the URL, not
         # of the function, and Lambda buffers the whole body without it no matter what the
@@ -2644,9 +2703,12 @@ class NavigatorStack(Stack):
             "StreamProbeFunctionUrl",
             value=stream_probe_url.url,
             description=(
-                "IAM-signed Function URL for the response-streaming probe. GET /stream "
-                "returns ten timed chunks; the request must be SigV4-signed for service "
-                "'lambda'. Nothing else in this stack references it."
+                "IAM-signed Function URL for the streaming chat app. POST /chat streams a "
+                "full turn as NDJSON frames; GET /stream and GET /model are the transport "
+                "and Bedrock probes. Every request must be SigV4-signed for service "
+                "'lambda', and POST /chat additionally needs a validated JWT sub in the "
+                "request context - which an IAM Function URL does not carry, so it answers "
+                "401 until a front door is chosen. Nothing else in this stack references it."
             ),
         )
 

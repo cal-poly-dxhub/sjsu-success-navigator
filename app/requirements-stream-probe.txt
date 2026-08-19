@@ -17,3 +17,14 @@
 # pydantic-core lands as the cp313 manylinux2014_x86_64 build).
 fastapi>=0.115,<1
 uvicorn>=0.32,<1
+
+# THE APP'S OWN RUNTIME DEPS, by reference rather than by a second copy of the pin. This
+# function serves the real turn now (app/turn.py and everything under it), so it needs
+# whatever the chat function needs - which today is pydantic and nothing else. FastAPI
+# happens to pull pydantic in anyway; relying on that would make the app's dependency an
+# accident of a web framework's own requirements, and the day app/requirements.txt grows a
+# second line this file would silently not install it.
+#
+# The layer's asset hash covers BOTH files (see _requirements_hash), so editing the line
+# below rebuilds this layer rather than leaving the previous build staged.
+-r requirements.txt

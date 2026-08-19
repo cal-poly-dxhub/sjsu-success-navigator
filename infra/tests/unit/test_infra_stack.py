@@ -2820,11 +2820,9 @@ def test_the_stream_probe_ships_an_executable_run_sh():
     import stat
 
     staged = _staged_asset_dir("StreamProbeFunction")
-    assert sorted(os.listdir(staged)) == [
-        "run.sh",
-        "settings.py",
-        "stream_probe.py",
-    ], sorted(os.listdir(staged))
+    # WHAT is in the bundle is pinned by the import-graph test below; this one is about the
+    # one file in it whose MODE decides whether the function starts.
+    assert "run.sh" in os.listdir(staged), sorted(os.listdir(staged))
 
     run_sh = staged / "run.sh"
     mode = run_sh.stat().st_mode
@@ -2962,15 +2960,18 @@ def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody():
         )
 
 
-def test_the_stream_probe_can_reach_one_model_and_nothing_else():
-    """ONE ACTION ON ONE MODEL, plus its own logs. The probe streams from Bedrock and does
-    nothing else, so a grant on the history table, the knowledge base or the guardrail
-    would be a second unreviewed way into the paths that carry a student's turn - which is
-    the whole argument for landing this alongside them rather than inside them.
+def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
+    """IT RUNS THE SAME TURN, SO IT HOLDS THE SAME GRANTS - and neither of the two the
+    socket needs. A streamed turn that could reach less than a buffered one would fail
+    somewhere subtle and only for some questions; a streaming function that could start a
+    Lambda or push down a WebSocket connection would be one that had quietly grown a second
+    architecture.
 
-    NARROWED, NOT WEAKENED, when the model route landed: this used to assert no inline
-    policy at all. The exact statement is asserted instead, because "there is a policy" is
-    what an over-grant also looks like."""
+    WIDENED, DELIBERATELY, when this stopped being a probe. It used to hold one action on
+    one model, which was right when the only thing it did was stream a bare ConverseStream.
+    Serving the turn means the turn's grants, and the assertion moved with it: the list is
+    compared against the WORKER's, which is the other function running the same turn out of
+    the same `_chat_turn_statements`."""
     template = _template()
     role_id = next(
         lid
@@ -2979,43 +2980,121 @@ def test_the_stream_probe_can_reach_one_model_and_nothing_else():
     )
     role = template.find_resources("AWS::IAM::Role")[role_id]["Properties"]
     managed = role.get("ManagedPolicyArns", [])
-    # EXACTLY ONE managed policy, not merely "the basic one is present" - a second entry is
-    # how a grant gets added without an inline policy for the loop below to catch.
+    # EXACTLY ONE managed policy. A second entry is how a broad grant arrives without an
+    # inline policy for the comparison below to see.
     assert len(managed) == 1, managed
     assert "AWSLambdaBasicExecutionRole" in json.dumps(managed), managed
 
-    policies = [
-        policy
-        for policy in template.find_resources("AWS::IAM::Policy").values()
-        if role_id in json.dumps(policy["Properties"].get("Roles", []))
-    ]
-    assert len(policies) == 1, policies
-    statements = policies[0]["Properties"]["PolicyDocument"]["Statement"]
-    assert len(statements) == 1, statements
-    # The streaming invoke ALONE. The chat role grants `bedrock:InvokeModel*`, which is
-    # every invoke verb; this function makes one call and gets one action.
-    assert statements[0]["Action"] == "bedrock:InvokeModelWithResponseStream", statements
+    def _statements(role_prefix):
+        role_lid = next(
+            lid
+            for lid in _streaming_template().find_resources("AWS::IAM::Role")
+            if lid.startswith(role_prefix)
+        )
+        found = []
+        for policy in _streaming_template().find_resources("AWS::IAM::Policy").values():
+            if role_lid in json.dumps(policy["Properties"].get("Roles", [])):
+                found.extend(policy["Properties"]["PolicyDocument"]["Statement"])
+        return found
 
-    # Every resource names the configured generation model and nothing else, so the probe
-    # cannot be pointed at a model this deployment did not choose. Read off config.yaml
-    # rather than restated.
-    from infra.config import resolve_generation
+    probe = _statements("StreamProbeFunctionServiceRole")
+    worker = _statements("ChatStreamWorkerRole")
 
-    generation = resolve_generation(load_config())
-    named = generation["base_model_id"] or generation["model_id"]
-    resources = statements[0]["Resource"]
-    resources = resources if isinstance(resources, list) else [resources]
-    for resource in resources:
-        rendered = json.dumps(resource)
-        assert named in rendered or generation["model_id"] in rendered, rendered
-    # And nothing in the whole document reaches the store, the KB or the guardrail.
-    document = json.dumps(policies[0]["Properties"]["PolicyDocument"])
-    for forbidden in ("dynamodb:", "bedrock:Retrieve", "bedrock:ApplyGuardrail", "lambda:"):
-        assert forbidden not in document, (forbidden, document)
+    # The worker's grants MINUS the one thing it needs that this function does not: pushing
+    # frames back down a WebSocket connection. That subtraction is the assertion - it is the
+    # exact difference between running the turn out of band and running it in band, and it
+    # is one statement.
+    def _rendered(statements, drop_socket):
+        return sorted(
+            json.dumps(statement, sort_keys=True)
+            for statement in statements
+            if not (drop_socket and "execute-api:" in json.dumps(statement))
+        )
+
+    worker_without_socket = _rendered(worker, drop_socket=True)
+    assert len(worker_without_socket) == len(worker) - 1, (
+        "the worker should hold exactly one execute-api grant"
+    )
+    # Compared as rendered JSON so a changed resource ARN or a widened action shows up
+    # rather than being counted equal. Sorted because the two roles are built by different
+    # constructs and nothing promises the order.
+    assert _rendered(probe, drop_socket=False) == worker_without_socket, json.dumps(
+        {"probe": probe, "worker": worker}, indent=2, sort_keys=True
+    )
+
+    document = json.dumps(probe)
+    # It retrieves, it invokes, it screens and it stores. Named individually rather than
+    # left to the set comparison above, so this still says what the turn needs if the
+    # worker is ever deleted.
+    assert "bedrock:Retrieve" in document, document
+    assert "bedrock:InvokeModel*" in document, document
+    assert "bedrock:ApplyGuardrail" in document, document
+    assert "dynamodb:PutItem" in document, document
+    # And it starts nothing and pushes down nothing. These are the socket's two grants, and
+    # not needing them is the argument for this function existing.
+    assert "lambda:InvokeFunction" not in document, document
+    assert "execute-api:" not in document, document
+    # dynamodb:Scan is the one operation that takes no partition key, and the whole
+    # isolation story is that the partition comes from the JWT `sub`.
+    assert "dynamodb:Scan" not in document, document
 
     # And no reserved concurrency: capacity out of the account pool belongs to the chat
     # function alone (test_only_the_chat_function_reserves_concurrency states the rule).
     assert "ReservedConcurrentExecutions" not in _stream_probe(template)
+
+
+def test_the_stream_probe_ships_every_module_it_imports():
+    """THE LIST THAT CANNOT BE READ CAREFULLY ENOUGH. This function's bundle is fifteen
+    file-by-file includes, and every one of them is an ImportError at cold start if it is
+    missing - after a completely clean synth and a completely clean deploy, because nothing
+    in CloudFormation knows what a Python import is.
+
+    So the expectation is COMPUTED, never restated: it walks app/stream_probe.py's own
+    imports, follows every one that names another module in app/, and asserts the closure is
+    in the staged asset. Adding an import to any module on that path fails here until the
+    include list catches up, which is exactly the failure that reached production twice
+    before (see test_every_app_module_reaches_the_staged_lambda_asset)."""
+    import ast
+
+    app_dir = Path(__file__).resolve().parents[3] / "app"
+    on_disk = {path.stem for path in app_dir.glob("*.py")}
+
+    def imports_of(module):
+        tree = ast.parse((app_dir / f"{module}.py").read_text())
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    names.add(alias.name.split(".")[0])
+        return {name for name in names if name in on_disk}
+
+    needed, frontier = {"stream_probe"}, ["stream_probe"]
+    while frontier:
+        for name in imports_of(frontier.pop()):
+            if name not in needed:
+                needed.add(name)
+                frontier.append(name)
+
+    staged = {name for name in _staged_listing("StreamProbeFunction") if name.endswith(".py")}
+    missing = {f"{name}.py" for name in needed} - staged
+    assert missing == set(), (
+        f"app/stream_probe.py imports these, and the bundle does not ship them: "
+        f"{sorted(missing)}. The deployed function dies at cold start on the first one."
+    )
+
+    # The other direction, so the list does not quietly accumulate modules nothing imports:
+    # every .py in the bundle is on the import path of the app it serves.
+    extra = staged - {f"{name}.py" for name in needed}
+    assert extra == set(), (
+        f"staged in the streaming app's bundle but imported by nothing in it: "
+        f"{sorted(extra)}"
+    )
+
+    # The control: handler.py is the API Gateway transport and must NOT be here. If the two
+    # ever share a bundle, one of them has started importing the other.
+    assert "handler.py" not in staged, staged
 
 
 def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
@@ -3035,10 +3114,12 @@ def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
             "Environment"
         ]["Variables"]
     )
-    # The one variable the chat function has that the probe must not: the rate limit's
-    # exemption list. The probe applies no rate limit, so an exemption from it is a
-    # statement about a fence that is not there.
-    expected = (chat_env - {"RATE_LIMIT_EXEMPT_CLIENT_IDS"}) | {
+    # EXACTLY the chat function's variables - the exemption list included, now that this
+    # function applies the daily cap too - plus the three the adapter needs and nothing
+    # else. The socket's own variables (STREAM_CALLBACK_URL, STREAM_WORKER_FUNCTION_NAME,
+    # STREAM_DELTA_*) are the ones this must never grow: they would mean the streaming app
+    # had been wired into the plumbing it exists to replace.
+    expected = chat_env | {
         "AWS_LAMBDA_EXEC_WRAPPER",
         "AWS_LWA_INVOKE_MODE",
         "PORT",
