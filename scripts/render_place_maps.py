@@ -1,12 +1,13 @@
 """Render one static map image per campus building, from OpenStreetMap tiles.
 
-RUN BY HAND, NOT IN CI, and only when a coordinate in app/places.py changes:
+RUN BY HAND, NOT IN CI, and only when a coordinate in data/buildings.csv changes:
 
     python -m pip install -r scripts/requirements.txt
     python scripts/render_place_maps.py
 
-It reads CAMPUS_BUILDINGS out of app/places.py and writes frontend/public/places/<key>.webp,
-which is committed. The deployed site serves those images from its own origin, so a student
+It reads the buildings table out of data/buildings.csv - through app/places.py, so it sees the
+same rows the location card resolves against and not a second reading of the file - and writes
+frontend/public/places/<key>.webp, which is committed. The deployed site serves those images from its own origin, so a student
 reading an answer makes no request to any third party - not on render, not on a press.
 
 WHY NOT GOOGLE'S STATIC MAPS API, which returns exactly this picture in one request: it

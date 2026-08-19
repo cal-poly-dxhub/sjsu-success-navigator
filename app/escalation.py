@@ -11,8 +11,10 @@ THE MODEL CANNOT ADDRESS AN EMAIL, in exactly the way it cannot author a card's 
 tag it writes is `<escalate_to_human>` with PROSE INSIDE IT and nothing else: no id, no
 attributes, no recipient. So a model-chosen destination is not a thing that is validated
 and rejected here - it is unrepresentable, because there is nowhere in the shape to put
-one. The address and the subject come from deploy config (config.yaml `escalation`). The
-model contributes one thing: the body's prose.
+one. The subject comes from deploy config (config.yaml `escalation`) and the address comes
+from data/contacts.csv, via the row config.yaml's `escalation.contact` names - one mailbox,
+one row, because the SJSU Cares panel emails the same one. The model contributes one thing:
+the body's prose.
 
 THE DRAFT NAMES NO ADDRESSES AT ALL, and that is a decision rather than an omission. It
 used to end with "you can reach me at <the student's verified email>", read from the JWT
@@ -105,7 +107,9 @@ def build_email_draft(prose: str | None, *, settings: Settings) -> EmailDraft | 
         # the model reaching for a contract it was never given.
         logger.warning(
             "The model emitted an escalate_to_human block, but this deployment has no "
-            "escalation.recipient configured; dropping the offer."
+            "escalation destination configured (config.yaml escalation.contact, which the "
+            "stack resolves against data/contacts.csv and stamps into ESCALATION_RECIPIENT); "
+            "dropping the offer."
         )
         return None
 

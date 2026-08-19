@@ -1,7 +1,8 @@
 """The campus location card: what the model may say, and what it can never say.
 
 The property under test is one sentence. THE MODEL WRITES A CATALOGUE KEY AND NOTHING ELSE,
-so every address, name, map and link the student reads came out of app/places.py's tables.
+so every address, name, map and link the student reads came out of data/places.csv and
+data/buildings.csv, through app/places.py.
 That makes the interesting cases the negative ones - a key nobody put in the table, a place
 named on a turn that also needs the crisis panel - because each of them is a way a wrong
 address could otherwise reach a student who is about to walk somewhere.
@@ -266,3 +267,82 @@ def test_an_address_is_never_shortened_however_long_it_runs(monkeypatch):
     card = resolve_place("career-center")
     assert card.address == long_address
     assert "…" not in card.address
+
+
+# --- the tables are data/places.csv and data/buildings.csv -------------------------------------
+#
+# Everything above runs against the loaded tables and would pass just as well against two
+# hardcoded dicts. These are the tests that say the FILES are what got loaded, and that a bad
+# row stops the process rather than dropping an office out of the catalogue.
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    import campus_data
+
+    monkeypatch.setattr(campus_data, "_DATA_DIRS", (tmp_path,))
+    return tmp_path
+
+
+def test_the_catalogue_is_the_committed_csv_row_for_row():
+    """A card's name, address and destination come off data/places.csv, in its order. Anything
+    that made this pass while the file said something else would be the divergence this whole
+    directory exists to remove."""
+    from campus_data import load_keyed
+
+    rows = load_keyed(
+        "places.csv",
+        "key",
+        ("name", "building", "address", "directions_destination", "when"),
+        optional=("ground_truth_ids", "note"),
+    )
+    assert list(rows) == list(CAMPUS_PLACES)
+    for key, row in rows.items():
+        place = CAMPUS_PLACES[key]
+        assert (place.name, place.building, place.address, place.when) == (
+            row["name"],
+            row["building"],
+            row["address"],
+            row["when"],
+        )
+        assert place.directions_destination == row["directions_destination"]
+
+
+def test_the_buildings_are_the_committed_csv_coordinates():
+    from campus_data import load_keyed
+
+    rows = load_keyed("buildings.csv", "key", ("name", "lat", "lon"), optional=("note",))
+    assert list(rows) == list(CAMPUS_BUILDINGS)
+    for key, row in rows.items():
+        building = CAMPUS_BUILDINGS[key]
+        assert building.name == row["name"]
+        assert (building.lat, building.lon) == (float(row["lat"]), float(row["lon"]))
+
+
+def test_a_coordinate_that_is_not_a_number_stops_the_import(data_dir):
+    """The map is rendered from these two cells, so a degree sign pasted in from a web page
+    has to be a loud failure and not a building silently missing its point."""
+    import places
+    from campus_data import CampusDataError
+
+    (data_dir / "buildings.csv").write_text(
+        "key,name,lat,lon,note\nclark-hall,Clark Hall,37.336178°,-121.882546,\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CampusDataError, match="clark-hall"):
+        places._load_buildings()
+
+
+def test_a_place_row_missing_its_building_stops_the_import(data_dir):
+    """`building` is the one foreign key between the two files. Empty is not a place with no
+    map - it is a row somebody half filled in."""
+    import places
+    from campus_data import CampusDataError
+
+    (data_dir / "places.csv").write_text(
+        "key,name,building,address,directions_destination,when,ground_truth_ids,note\n"
+        "career-center,Career Center,,Clark Hall,Clark Hall,resumes,,\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CampusDataError, match="`building` is empty"):
+        places._load_places()

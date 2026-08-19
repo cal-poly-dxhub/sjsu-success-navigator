@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/generate-campus-data.mjs",
     "dev": "astro dev",
+    "prebuild": "node scripts/generate-campus-data.mjs",
     "build": "astro build",
     "preview": "astro preview"
   },

@@ -814,8 +814,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_scraper_config(args.config)
+    # Resolved inside the repo-root data/ directory, where every SJSU fact this repo states
+    # lives - the same directory Lambda extracts to /opt at runtime (see seed_list_path in
+    # lambda_function.py), so a local run and a deployed run read the same file.
     list_path = args.url_list or (
-        Path(__file__).resolve().parents[1] / cfg.get("url_list_file", "url-list.csv")
+        Path(__file__).resolve().parents[1] / "data" / cfg.get("url_list_file", "urls.csv")
     )
     timeout = float(cfg.get("timeout_seconds", DEFAULT_TIMEOUT))
     user_agent = cfg.get("user_agent", DEFAULT_USER_AGENT)

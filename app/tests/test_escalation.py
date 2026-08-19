@@ -98,7 +98,7 @@ def test_a_deployment_with_no_recipient_makes_no_offer(caplog):
     assert not escalation_available(settings)
     with caplog.at_level(logging.WARNING):
         assert build_email_draft(_PROSE, settings=settings) is None
-    assert "no escalation.recipient" in caplog.text
+    assert "no escalation destination configured" in caplog.text
 
 
 def test_over_the_cap_the_offer_is_dropped_and_never_truncated(caplog):

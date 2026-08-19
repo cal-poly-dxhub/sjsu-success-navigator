@@ -30,6 +30,9 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config.yaml"
+# Every SJSU fact the app states, as CSV. Read at SYNTH as well as at runtime, for the reason
+# resolve_seed_pages gives: a broken file should fail `cdk synth` rather than deploy.
+_DATA_DIR = _REPO_ROOT / "data"
 
 # Bedrock's name pattern for AWS::Bedrock::KnowledgeBase.Name and
 # AWS::Bedrock::DataSource.Name, verbatim from the CloudFormation resource reference
@@ -71,7 +74,7 @@ _DIMENSION_MAX = 4096
 # CfnDataSource that will reject it at deploy.
 _CHUNKING_STRATEGIES = ("FIXED_SIZE", "NONE", "HIERARCHICAL", "SEMANTIC")
 
-# Columns url-list.csv must carry. `section` is load-bearing beyond provenance: it reaches
+# Columns data/urls.csv must carry. `section` is load-bearing beyond provenance: it reaches
 # the metadata sidecars, and the card builder keys its deprioritization and its follow-up
 # buttons off it. A blank section degrades SILENTLY (a card just stops being deprioritized
 # and loses its tailored follow-up), which is why it is required here rather than defaulted.
@@ -429,13 +432,20 @@ def resolve_scraper(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def seed_list_path(config: Dict[str, Any]) -> Path:
-    """Absolute path to the curated crawl list named by `scraper.url_list_file`.
+def data_file_path(name: str) -> Path:
+    """Absolute path to one file in the repo-root `data/` directory.
 
-    Resolved against the REPO ROOT, not the current working directory: synth runs from
-    infra/ and the list lives at the root (a decision - it is content, not infra).
+    Resolved against the REPO ROOT, not the current working directory: synth runs from infra/
+    and the facts live at the root (a decision - they are content, they are not infra, and
+    BOTH app/ and frontend/ read them). Everything infra reads out of data/ goes through here,
+    so the directory is named once.
     """
-    return _REPO_ROOT / resolve_scraper(config)["url_list_file"]
+    return _DATA_DIR / name
+
+
+def seed_list_path(config: Dict[str, Any]) -> Path:
+    """Absolute path to the curated crawl list named by `scraper.url_list_file`."""
+    return data_file_path(resolve_scraper(config)["url_list_file"])
 
 
 def resolve_seed_pages(config: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -1132,11 +1142,69 @@ def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+# The `kind` an escalation destination carries in data/contacts.csv. Fixed here rather than
+# configurable: the point of the column is that a row's kind says what the app may do with it,
+# and a deployment that could rename the kind could address a student's message to a crisis
+# hotline's row.
+_ESCALATION_CONTACT_KIND = "escalation"
+
+
+def _escalation_recipient(contact_id: str) -> str:
+    """The mailbox on one `escalation` row of data/contacts.csv, or a ValueError naming it.
+
+    Read at SYNTH, so a config key pointing at a row that was renamed or deleted fails the
+    build. The runtime never reads this file for the address - the stack stamps what this
+    returns into ESCALATION_RECIPIENT - so this is the only reader, and a wrong id here is a
+    deploy that does not happen rather than an escalation offer that goes nowhere.
+    """
+    path = data_file_path("contacts.csv")
+    if not path.exists():
+        raise ValueError(
+            f"escalation.contact names a row in {path}, which does not exist. Every SJSU "
+            "fact this app states lives in the repo-root data/ directory; see its README."
+        )
+
+    # Imported here rather than at module scope, exactly as resolve_seed_pages does it: csv
+    # is needed by these two functions and nothing else in this file.
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = [row for row in csv.DictReader(fh) if row.get("id", "").strip() == contact_id]
+    if not rows:
+        raise ValueError(
+            f"escalation.contact is {contact_id!r}, and no row in {path.name} has that id. "
+            "Point it at a row that exists, or leave it empty to turn the escalate-to-human "
+            "path off."
+        )
+    if len(rows) > 1:
+        raise ValueError(
+            f"{path.name} has {len(rows)} rows with id {contact_id!r}. One id, one row - a "
+            "second one would quietly win, and a student's message would go to whichever "
+            "came last."
+        )
+    row = rows[0]
+    kind = (row.get("kind") or "").strip()
+    if kind != _ESCALATION_CONTACT_KIND:
+        raise ValueError(
+            f"escalation.contact is {contact_id!r}, whose kind is {kind!r} rather than "
+            f"{_ESCALATION_CONTACT_KIND!r}. Only an escalation row is a place to send a "
+            "student's own words; a safety row is a crisis line, and a cares row may be a "
+            "link rather than a mailbox."
+        )
+    recipient = (row.get("detail") or "").strip()
+    if not recipient:
+        raise ValueError(
+            f"{path.name} row {contact_id!r} has an empty `detail`, and that column is the "
+            "mailbox an escalation draft is addressed to."
+        )
+    return recipient
+
+
 def resolve_escalation(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The `escalation` block: the email draft a turn can offer to send to a human.
 
-    Returns None when the block is absent or `recipient` is blank, and the stack then sets
-    no ESCALATION_* variables on the chat function and stamps no `escalationRecipient` into
+    Returns None when the block is absent or `contact` is blank, and the stack then sets no
+    ESCALATION_* variables on the chat function and stamps no `escalationRecipient` into
     config.json. THE ABSENCE IS THE GATE, the shape resolve_cost_model and resolve_okta
     already use, and here it reaches further than either: with no address the system prompt
     never mentions the tag (app/prompts.py), so the model is not taught a contract whose
@@ -1146,8 +1214,15 @@ def resolve_escalation(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     OFF IS NOT AN ERROR. A deployment with nowhere to route a student is the honest state of
     an install that has not agreed a mailbox with the campus yet.
 
+    `contact` NAMES A ROW, IT IS NOT AN ADDRESS. It used to be the address itself, written
+    out here - and the same mailbox was written out again in frontend/src/lib/sjsuCares.ts as
+    the SJSU Cares email, with nothing comparing the two. So config now points at an
+    `escalation` row in data/contacts.csv and the address is read from it: one mailbox, one
+    row, and repointing the drafts is still one line of config. The returned key stays
+    `recipient`, because what the stack stamps is still an address.
+
     THE ADDRESS IS VALIDATED SHALLOWLY - one `@`, no whitespace - and deliberately not with
-    a full RFC 5322 pattern. What is being caught is a config mistake that would otherwise
+    a full RFC 5322 pattern. What is being caught is a data mistake that would otherwise
     surface as a mail client refusing to open in front of a student: an empty local part, a
     display name pasted in with the address, a stray comma making it two recipients. One
     recipient, because the draft is addressed to one office.
@@ -1162,27 +1237,29 @@ def resolve_escalation(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(escalation_cfg, dict):
         raise ValueError("escalation must be a mapping.")
 
-    recipient = escalation_cfg.get("recipient")
-    if recipient is None or (isinstance(recipient, str) and not recipient.strip()):
+    contact_id = escalation_cfg.get("contact")
+    if contact_id is None or (isinstance(contact_id, str) and not contact_id.strip()):
         return None
-    if not isinstance(recipient, str):
+    if not isinstance(contact_id, str):
         raise ValueError(
-            f"escalation.recipient must be an email address (got {recipient!r}). Leave it "
-            "out or empty to turn the escalate-to-human path off."
+            f"escalation.contact must name a row in data/contacts.csv (got {contact_id!r}). "
+            "Leave it out or empty to turn the escalate-to-human path off."
         )
-    recipient = recipient.strip()
+    contact_id = contact_id.strip()
+    recipient = _escalation_recipient(contact_id)
     local, separator, domain = recipient.partition("@")
     if not separator or not local or not domain or any(c.isspace() for c in recipient):
         raise ValueError(
-            f"escalation.recipient must be one plain email address (got {recipient!r}): a "
-            "local part, an @, and a domain, with no display name and no second address. "
-            "It is put straight into a mailto the student's mail client has to open."
+            f"data/contacts.csv row {contact_id!r} has `detail` = {recipient!r}, which is "
+            "not one plain email address: a local part, an @, and a domain, with no display "
+            "name and no second address. It is put straight into a mailto the student's "
+            "mail client has to open."
         )
     if "," in recipient or ";" in recipient:
         raise ValueError(
-            f"escalation.recipient must name ONE mailbox (got {recipient!r}). A draft is "
-            "addressed to one office; a list here would send every student's message to "
-            "everybody on it."
+            f"data/contacts.csv row {contact_id!r} must name ONE mailbox (got "
+            f"{recipient!r}). A draft is addressed to one office; a list here would send "
+            "every student's message to everybody on it."
         )
 
     subject = escalation_cfg.get("subject")

@@ -562,3 +562,28 @@ def test_the_prompt_never_writes_an_address_the_model_could_copy():
         assert place.address not in prompt
         assert place.directions_destination not in prompt
         assert "google.com/maps" not in prompt
+
+
+def test_the_campus_shorthand_glossary_is_read_from_the_data_file():
+    """The glossary is interpolated from data/abbreviations.csv, not typed into the template.
+
+    It is the same move the two rosters already make, for the same reason: this is a flat list
+    of what SJSU calls things, and the person who knows a new building code is in use should
+    be able to add it in a spreadsheet. A literal here would be a second list to keep in step
+    with nothing checking it."""
+    from campus_data import load_rows
+    from prompts import abbreviation_glossary
+
+    rows = load_rows("abbreviations.csv", ("abbreviation", "expansion"))
+    assert rows, "the committed glossary must not be empty"
+
+    glossary = abbreviation_glossary()
+    assert glossary.split("\n") == [f"- {r['abbreviation']}: {r['expansion']}" for r in rows]
+
+    prompt = build_system_prompt(_SETTINGS)
+    assert glossary in prompt
+    # Every row reaches the model, in the file's order, under the heading that explains it.
+    shorthand = prompt.split("Campus shorthand:")[1]
+    assert shorthand.index(f"- {rows[0]['abbreviation']}:") < shorthand.index(
+        f"- {rows[-1]['abbreviation']}:"
+    )

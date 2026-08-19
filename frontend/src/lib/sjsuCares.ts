@@ -1,39 +1,48 @@
+import { CAMPUS_CONTACTS, SJSU_CARES_ADDRESS } from './generated/campusData';
+
 /** The four kinds of help SJSU Cares publishes, and the only thing routed on. */
 export type SjsuCaresTheme = 'food' | 'housing' | 'financial' | 'parenting';
 
-// Every contact detail below is transcribed from the SJSU Cares contact page, verified 2026-08-06.
-// Deliberately short: each hardcoded fact is one that can go stale, so anything SJSU already
-// publishes as a list (staff directory, full service catalogue) is linked, not reproduced here.
+// NOT ONE FACT IS TYPED IN THIS FILE. Every constant below is read out of the repo-root data/
+// directory at build time (frontend/scripts/generate-campus-data.mjs writes ./generated/
+// campusData.ts from data/places.csv and data/contacts.csv, before astro starts). The values
+// used to be transcribed here from the SJSU Cares contact page - and the same two facts were
+// transcribed AGAIN into app/places.py and config.yaml, with nothing comparing the copies. The
+// office could move and this panel and the map card would disagree inside one app, with every
+// test still green. Now there is one row per fact and both languages read it.
 //
-// WHAT IS A FACT AND WHAT IS COPY. This file holds the facts - the number to ring, the address
-// to walk to, the URL to open - and they read the same in every language. The sentences ABOUT
-// them (the overview, the note, the hours, and each service's name and description) are copy,
-// so they live in lib/i18n.ts and switch with the rest of the interface. The building name is
-// a fact and stays here: nobody is looking for a translated sign.
+// WHAT IS A FACT AND WHAT IS COPY, unchanged: the facts are the number to ring, the address to
+// walk to, the URL to open, and they read the same in every language. The sentences ABOUT them
+// (the overview, the note, the hours, and each service's name and description) are copy, so
+// they live in lib/i18n.ts and switch with the rest of the interface.
+//
+// Anything SJSU already publishes as a list (staff directory, full service catalogue) is still
+// linked rather than reproduced - a row we do not keep is a row that cannot go stale.
 
-export const SJSU_CARES_LOCATION =
-	'Diaz Compean Student Union West, entrance across from the Engineering Building.';
+// The trailing full stop is PRESENTATION, and it is the one thing added here: the modal prints
+// this line as a sentence in a definition list, and data/places.csv holds the address the
+// location card prints under a heading, where a full stop would be wrong.
+export const SJSU_CARES_LOCATION = `${SJSU_CARES_ADDRESS}.`;
 
-export const SJSU_CARES_PHONE = '408.924.1234';
+export const SJSU_CARES_PHONE = CAMPUS_CONTACTS['sjsu-cares-phone'].detail;
 
-export const SJSU_CARES_EMAIL = 'sjsucares@sjsu.edu';
+// The `escalation` row, not a second cares row: this is the mailbox an escalation draft is
+// addressed to as well, and one mailbox is one row (data/README.md, contacts.csv).
+export const SJSU_CARES_EMAIL = CAMPUS_CONTACTS['sjsu-cares'].detail;
 
-export const SJSU_CARES_REQUEST_FORM =
-	'https://cm.maxient.com/reportingform.php?SanJoseStateUniv&layout_id=12';
+export const SJSU_CARES_REQUEST_FORM = CAMPUS_CONTACTS['sjsu-cares-request-form'].href;
 
-export const SJSU_CARES_CONTACT_PAGE =
-	'https://www.sjsu.edu/sjsucares/about/contact-us.php';
+export const SJSU_CARES_CONTACT_PAGE = CAMPUS_CONTACTS['sjsu-cares-contact-page'].href;
 
 // SJSU's own index of every assistance category, kept current by SJSU rather than by us.
-export const SJSU_CARES_SERVICES_INDEX =
-	'https://www.sjsu.edu/sjsucares/get-assistance/index.php';
+export const SJSU_CARES_SERVICES_INDEX = CAMPUS_CONTACTS['sjsu-cares-services-index'].href;
 
 /** SJSU's page for each theme. English pages, because that is what SJSU publishes. */
 export const SJSU_CARES_SERVICE_HREFS: Record<SjsuCaresTheme, string> = {
-	food: 'https://www.sjsu.edu/sjsucares/get-assistance/food-assistance/index.php',
-	housing: 'https://www.sjsu.edu/sjsucares/get-assistance/housing-assistance/index.php',
-	financial: 'https://www.sjsu.edu/sjsucares/get-assistance/financial-assistance/index.php',
-	parenting: 'https://www.sjsu.edu/sjsucares/resources/parenting-students/index.php',
+	food: CAMPUS_CONTACTS['sjsu-cares-food'].href,
+	housing: CAMPUS_CONTACTS['sjsu-cares-housing'].href,
+	financial: CAMPUS_CONTACTS['sjsu-cares-financial'].href,
+	parenting: CAMPUS_CONTACTS['sjsu-cares-parenting'].href,
 };
 
 /**

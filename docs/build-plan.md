@@ -464,6 +464,35 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       would be a panel fired by imitation. No backfill: a row carrying `cards` is served the
       way it always was, and all 19 of them on the live table were replayed through the new
       read path to prove it.
+- [x] every SJSU fact lives in one repo-root `data/` directory, loaded by both languages
+      (2026-08-19, data/README.md). THE DUPLICATION WAS ALREADY LOAD-BEARING: the SJSU Cares
+      address was written out in app/places.py and again in frontend/src/lib/sjsuCares.ts, and
+      its mailbox in config.yaml and again in that same file - so the office moving would have
+      put the map card and the "Talk to a person" panel in disagreement inside one app, with
+      every test green, because a fact spelled twice in two languages has no test that can see
+      both copies. Six CSVs now: urls.csv (moved from url-list.csv, shape unchanged),
+      places.csv, buildings.csv, contacts.csv (safety, cares and escalation rows, told apart by
+      a `kind` column) and abbreviations.csv, plus the README, which is the deliverable - it is
+      written for somebody with a spreadsheet and no Python. Python reads them AT IMPORT
+      (app/campus_data.py); the browser never reads them at all - frontend/scripts/
+      generate-campus-data.mjs compiles the rows the site shows into a TypeScript module before
+      every `npm run build` and `npm run dev`, and that module is gitignored, so a stale or
+      hand-edited copy is not a state the repo can be in. The prompt's place roster, its safety
+      roster AND its campus-shorthand glossary are now all generated from the tables that
+      resolve them. `escalation.recipient` became `escalation.contact`, an id naming a row,
+      because an address in config.yaml IS the second copy - the gate is unchanged (blank is
+      still off) and the stamped ESCALATION_RECIPIENT is byte-identical.
+      EVERY LOADER RAISES, and two of the checks came from damaging the real files rather than
+      from reasoning about them: a row with MORE cells than the header (a decimal comma in
+      buildings.csv shifted every later cell and loaded a building off the coast of Africa) and
+      one with FEWER (contacts.csv cut off mid-row loaded with three crisis contacts missing).
+      Every cell either reader looked at was well formed in both cases; the shape was the only
+      tell, and both readers now check it. data/ is outside app/ and outside frontend/, so it
+      reaches the deployment twice: the ScraperSeedListLayer becomes CampusDataLayer carrying
+      the whole directory to the scraper AND the two functions that run the agent loop, and the
+      Astro build container gets it as a read-only second mount. Verified byte-identical: the
+      built system prompt (both the configured and the no-escalation form) and every safety
+      panel the resolver can produce, before and after.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

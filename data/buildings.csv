@@ -1,0 +1,6 @@
+key,name,lat,lon,note
+clark-hall,Clark Hall,37.336178,-121.882546,
+diaz-compean-student-union,Diaz Compean Student Union,37.336502,-121.880637,
+student-services-center,Student Services Center,37.339344,-121.881196,"Not at the corner it is advertised at. SJSU says ""the ground level of the North Parking Garage at the corner of 9th and San Fernando""; that corner is Boyce Gate and has no building on it. The centre is mid-block on South 9th, which is where OSM names it, where 60 S 9th St geocodes, and where SJSU's own campus map puts SSC beside the North Garage."
+king-library,"Dr. Martin Luther King, Jr. Library",37.335507,-121.885077,
+student-wellness-center,Student Wellness Center,37.334765,-121.881332,

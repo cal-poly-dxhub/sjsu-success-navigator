@@ -19,6 +19,13 @@ Clark Hall and five inside the Student Services Center, so the coordinate and th
 to the BUILDING and the room number belongs to the place. That is what stops five near
 identical images and five chances to mis-key one of them.
 
+BOTH TABLES ARE data/places.csv AND data/buildings.csv, read at import through
+app/campus_data.py. They are not written out here any more, because the SJSU Cares address
+was ALSO written out in frontend/src/lib/sjsuCares.ts and nothing compared the two: the map
+card and the "Talk to a person" panel could disagree inside one app with every test passing.
+The frontend now reads the same rows through a module regenerated on every build. See
+data/README.md, which is the file somebody moving an office is meant to open.
+
 NO GOOGLE MAPS API IS INVOLVED, AND NOT ONE REQUEST LEAVES FOR A THIRD PARTY. There is no
 key in this repo, no Cloud project and no billing account:
 
@@ -37,11 +44,11 @@ key in this repo, no Cloud project and no billing account:
 
 WHERE THE FACTS COME FROM. Addresses are eval/ground-truth.yaml, the repo's verified record
 of what SJSU publishes - read off the live pages on 2026-08-10, never LLM-generated. Each
-place names its pair id. Coordinates were resolved separately (2026-08-17) and every one was
-checked against OpenStreetMap's own data: the named building is within 45 m of the point,
-and the rendered tile prints that name under the pin. Two of them needed a human, and both
-are recorded on the building below, because "the search engine said so" is how a student
-ends up at the wrong door.
+place names its pair id in `ground_truth_ids`. Coordinates were resolved separately
+(2026-08-17) and every one was checked against OpenStreetMap's own data: the named building
+is within 45 m of the point, and the rendered tile prints that name under the pin. Two of
+them needed a human, and both are written into their row's `note` column, because "the search
+engine said so" is how a student ends up at the wrong door.
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ import logging
 from dataclasses import dataclass
 from urllib.parse import quote_plus
 
+from campus_data import load_keyed, parse_coordinate
 from models import PlaceCard
 
 logger = logging.getLogger(__name__)
@@ -79,29 +87,26 @@ class CampusBuilding:
     lon: float
 
 
-# The five buildings the catalogue actually points at. `scripts/render_place_maps.py` reads
-# this table and writes one image per key into frontend/public/places/.
-CAMPUS_BUILDINGS: dict[str, CampusBuilding] = {
-    "clark-hall": CampusBuilding("Clark Hall", 37.336178, -121.882546),
-    "diaz-compean-student-union": CampusBuilding(
-        "Diaz Compean Student Union", 37.336502, -121.880637
-    ),
-    # NOT AT THE CORNER IT IS ADVERTISED AT, and this is the one worth reading twice. SJSU
-    # says "the ground level of the North Parking Garage at the corner of 9th and San
-    # Fernando"; that corner is Boyce Gate and has no building on it. The centre is mid-block
-    # on South 9th, which is where OSM names it, where 60 S 9th St geocodes, and where SJSU's
-    # own campus map puts SSC beside the North Garage. An earlier pass flagged this
-    # coordinate as wrong on the assumption that campus stops at San Fernando. It does not.
-    "student-services-center": CampusBuilding(
-        "Student Services Center", 37.339344, -121.881196
-    ),
-    "king-library": CampusBuilding(
-        "Dr. Martin Luther King, Jr. Library", 37.335507, -121.885077
-    ),
-    "student-wellness-center": CampusBuilding(
-        "Student Wellness Center", 37.334765, -121.881332
-    ),
-}
+# The five buildings the catalogue points at, from data/buildings.csv. Read at import, so a
+# malformed row is a cold start that fails with the line number rather than a card that
+# renders without its map. `scripts/render_place_maps.py` reads this same table and writes one
+# image per key into frontend/public/places/.
+_BUILDINGS_FILE = "buildings.csv"
+
+
+def _load_buildings() -> dict[str, CampusBuilding]:
+    rows = load_keyed(_BUILDINGS_FILE, "key", ("name", "lat", "lon"), optional=("note",))
+    return {
+        key: CampusBuilding(
+            name=row["name"],
+            lat=parse_coordinate(row["lat"], name=_BUILDINGS_FILE, key=key, column="lat"),
+            lon=parse_coordinate(row["lon"], name=_BUILDINGS_FILE, key=key, column="lon"),
+        )
+        for key, row in rows.items()
+    }
+
+
+CAMPUS_BUILDINGS: dict[str, CampusBuilding] = _load_buildings()
 
 
 @dataclass(frozen=True)
@@ -121,128 +126,36 @@ class CampusPlace:
     when: str
 
 
-# Every place a student asks "where is it?" about that the repo can answer. Sourced from
-# eval/ground-truth.yaml (verified live-2026-08-10); the pair id is named on each entry so an
-# address can be traced back to the line it came from.
-CAMPUS_PLACES: dict[str, CampusPlace] = {
-    "student-wellness-center": CampusPlace(  # caps-where, route-doctor
-        name="Student Wellness Center",
-        address="Across from the Event Center, near the 7th Street garage",
-        building="student-wellness-center",
-        directions_destination="Student Wellness Center, San Jose State University, San Jose, CA",
-        when="counseling (CAPS), health services or the pharmacy, in person",
-    ),
-    "sjsu-cares": CampusPlace(  # cares-contact
-        name="SJSU Cares",
-        address="Diaz Compean Student Union West, entrance across from the Engineering Building",
-        building="diaz-compean-student-union",
-        directions_destination="Diaz Compean Student Union, San Jose State University, San Jose, CA",
-        when="SJSU Cares case management: emergency housing, crisis grants, basic needs",
-    ),
-    "spartan-food-pantry": CampusPlace(  # pantry-where, language-es-food
-        name="Spartan Food Pantry",
-        address="Diaz Compean Student Union, exterior entrance across from the Engineering Building",
-        building="diaz-compean-student-union",
-        directions_destination="Diaz Compean Student Union, San Jose State University, San Jose, CA",
-        when="the food pantry itself",
-    ),
-    "career-center": CampusPlace(  # career-where
-        name="Career Center",
-        address="Clark Hall, 1st floor, room 140, near San Fernando between 6th and 7th",
-        building="clark-hall",
-        directions_destination="Clark Hall, San Jose State University, San Jose, CA",
-        when="the Career Center: resumes, interviews, the career fair",
-    ),
-    "student-services-center": CampusPlace(  # route-front-door
-        name="Student Services Center",
-        address="9th and San Fernando",
-        building="student-services-center",
-        directions_destination="Student Services Center, San Jose State University, San Jose, CA",
-        when="the Student Services Center's own front counter, which is not the Student Union and stands in for no other office",
-    ),
-    "financial-aid-office": CampusPlace(  # faso-contact
-        name="Financial Aid and Scholarship Office",
-        address="Student Services Center, 9th and San Fernando",
-        building="student-services-center",
-        directions_destination="Student Services Center, San Jose State University, San Jose, CA",
-        when="financial aid or scholarships in person",
-    ),
-    "bursar-office": CampusPlace(  # bursar-phone
-        name="Bursar's Office",
-        address="Student Services Center, corner of 9th and San Fernando",
-        building="student-services-center",
-        directions_destination="Student Services Center, San Jose State University, San Jose, CA",
-        when="a bill, a payment or a financial hold, in person",
-    ),
-    "registrar": CampusPlace(  # registrar-window
-        name="Office of the Registrar",
-        address="Window R, Student Services Center",
-        building="student-services-center",
-        directions_destination="Student Services Center, San Jose State University, San Jose, CA",
-        when="the Registrar in person: transcripts, enrollment verification, adds and drops",
-    ),
-    "peer-connections": CampusPlace(  # peerconn-contact
-        name="Peer Connections",
-        address="Student Services Center, room 600",
-        building="student-services-center",
-        directions_destination="Student Services Center, San Jose State University, San Jose, CA",
-        when="tutoring or academic coaching in person",
-    ),
-    "writing-center": CampusPlace(  # writing-center-where, route-essay-help
-        name="Writing Center",
-        address="2nd floor, Dr. Martin Luther King, Jr. Library",
-        building="king-library",
-        directions_destination="Dr. Martin Luther King, Jr. Library, San Jose, CA",
-        when="the Writing Center",
-    ),
-    "student-computing-services": CampusPlace(  # route-laptop-loan
-        name="Student Computing Services",
-        address="1st floor circulation desk, Dr. Martin Luther King, Jr. Library",
-        building="king-library",
-        directions_destination="Dr. Martin Luther King, Jr. Library, San Jose, CA",
-        when="borrowing a laptop, an iPad or a hotspot",
-    ),
-    "veterans-resource-center": CampusPlace(  # veterans-where, route-veteran
-        name="Veterans Resource Center",
-        address="Diaz Compean Student Union, room 1500, first floor",
-        building="diaz-compean-student-union",
-        directions_destination="Diaz Compean Student Union, San Jose State University, San Jose, CA",
-        when="the Veterans Resource Center",
-    ),
-    # THE CPGE BUILDING IS NOT A BUILDING, which is why this entry took a person to settle.
-    # Every SJSU page gives the AEC's address as "College Professional and Global Education
-    # (CPGE) Building, 2nd Floor" with no cross street, and no such building appears on
-    # SJSU's 2017 or 2020 campus map index, in OpenStreetMap, or in any gazetteer. It is the
-    # CPGE Suite on the Student Union's second floor (confirmed 2026-08-17).
-    "accessible-education-center": CampusPlace(  # aec-phone
-        name="Accessible Education Center",
-        address="CPGE building, 2nd floor",
-        building="diaz-compean-student-union",
-        directions_destination="Diaz Compean Student Union, San Jose State University, San Jose, CA",
-        when="the Accessible Education Center: accommodations and testing",
-    ),
-    "title-ix-office": CampusPlace(  # titleix-contact, route-report-harassment
-        name="Office for Civil Rights and Title IX",
-        address="Clark Hall, room 126",
-        building="clark-hall",
-        directions_destination="Clark Hall, San Jose State University, San Jose, CA",
-        when="the Title IX and civil rights office, for a formal report",
-    ),
-    "eop": CampusPlace(  # route-first-gen, route-eop-advisor
-        name="Educational Opportunity Program",
-        address="Clark Hall, first floor",
-        building="clark-hall",
-        directions_destination="Clark Hall, San Jose State University, San Jose, CA",
-        when="the Educational Opportunity Program",
-    ),
-    "guardian-scholars": CampusPlace(  # route-foster-youth
-        name="Guardian Scholars Program",
-        address="Clark Hall, first floor",
-        building="clark-hall",
-        directions_destination="Clark Hall, San Jose State University, San Jose, CA",
-        when="the Guardian Scholars Program, for former foster youth",
-    ),
-}
+# Every place a student asks "where is it?" about that the repo can answer, from
+# data/places.csv. `building` is a foreign key into data/buildings.csv and
+# test_every_place_names_a_building_that_exists is what keeps it one; `ground_truth_ids` names
+# the eval/ground-truth.yaml pair each address was verified against, and `note` carries the
+# entries that took a person to settle. Neither reaches the student, so neither is loaded
+# here - they are provenance for whoever edits the row next, and the file is where an editor
+# will actually see them.
+_PLACES_FILE = "places.csv"
+
+
+def _load_places() -> dict[str, CampusPlace]:
+    rows = load_keyed(
+        _PLACES_FILE,
+        "key",
+        ("name", "building", "address", "directions_destination", "when"),
+        optional=("ground_truth_ids", "note"),
+    )
+    return {
+        key: CampusPlace(
+            name=row["name"],
+            address=row["address"],
+            building=row["building"],
+            directions_destination=row["directions_destination"],
+            when=row["when"],
+        )
+        for key, row in rows.items()
+    }
+
+
+CAMPUS_PLACES: dict[str, CampusPlace] = _load_places()
 
 
 def place_roster_for_prompt() -> list[tuple[str, str]]:
