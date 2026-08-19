@@ -2516,13 +2516,14 @@ class NavigatorStack(Stack):
             # clean deploy and a Permission denied on every invocation, which is why
             # test_the_stream_probe_ships_an_executable_run_sh reads the staged mode.
             handler="run.sh",
-            # TWO FILES. The probe imports nothing else in app/ on purpose - see
-            # app/stream_probe.py - so this list is the whole of it, spelled file by file
-            # like every other bundle here, with ".*" for the dotfile trap the scraper
-            # section documents.
+            # SPELLED FILE BY FILE like every other bundle here, with ".*" for the dotfile
+            # trap the scraper section documents. settings.py is in because the model route
+            # takes its model id from the SAME Settings the chat function reads rather than
+            # from an environment variable of its own - a probe that invoked a different
+            # model than the deployment configures would be proving the wrong thing.
             code=_lambda.Code.from_asset(
                 str(_APP_DIR),
-                exclude=["*", ".*", "!stream_probe.py", "!run.sh"],
+                exclude=["*", ".*", "!stream_probe.py", "!run.sh", "!settings.py"],
             ),
             # Order does not matter: the adapter layer owns /opt/bootstrap and
             # /opt/extensions, the deps layer owns /opt/python, and nothing overlaps.
@@ -2541,6 +2542,17 @@ class NavigatorStack(Stack):
             memory_size=512,
             log_group=stream_probe_log_group,
             environment={
+                # THE CHAT FUNCTION'S OWN ENVIRONMENT, whole, because app/settings.py's
+                # identity variables have no defaults: load_settings() raises unless all
+                # seven are present, and the probe reads its model id and region out of
+                # exactly that object. Taking a subset would mean a second, smaller idea of
+                # what Settings needs, which is the thing that goes stale.
+                #
+                # AN ENVIRONMENT VARIABLE IS NOT A GRANT. This block names the history
+                # table and the knowledge base; the role below can reach neither, and the
+                # probe imports nothing that would try. What it buys is that the model id
+                # the probe streams from is the model id this deployment configures.
+                **chat_environment,
                 # The wrapper the layer ships. Without it the runtime looks for a Python
                 # handler called "run.sh" and the function never starts.
                 "AWS_LAMBDA_EXEC_WRAPPER": "/opt/bootstrap",
@@ -2555,6 +2567,43 @@ class NavigatorStack(Stack):
                 # it forwards to and readiness-checks.
                 "PORT": str(_LWA_PROBE_PORT),
             },
+        )
+
+        # THE ONE GRANT, AND IT IS ONE ACTION ON ONE MODEL.
+        # `bedrock:InvokeModelWithResponseStream` is what ConverseStream checks, and the
+        # resources are the same three ARNs the chat turn's InvokeModel* statement names
+        # for a cross-region inference profile: the account+region profile, the underlying
+        # foundation model in this region, and the same single model id under a region
+        # wildcard for the destinations the profile may route to. Built from the same
+        # `generation_cfg` rather than copied, so a model change in config.yaml moves both.
+        #
+        # DELIBERATELY NARROWER THAN THE CHAT ROLE, in two ways. The chat role grants
+        # `bedrock:InvokeModel*`, which is every invoke verb; this grants the streaming one
+        # only, because that is the only call this function makes. And the chat role adds
+        # `bedrock:GetInferenceProfile` / `ListInferenceProfiles` on "*" to resolve the
+        # profile's routing - a resource wildcard, which is exactly what "scoped to the
+        # configured model only" rules out here. If a deploy ever answers this route with
+        # AccessDenied naming one of those two, that pair is the first thing to add and
+        # this note is why it is absent rather than forgotten.
+        if generation_cfg["is_inference_profile"]:
+            stream_probe_model_resources = [
+                f"arn:{self.partition}:bedrock:{self.region}:{self.account}"
+                f":inference-profile/{generation_model_id}",
+                f"arn:{self.partition}:bedrock:{self.region}"
+                f"::foundation-model/{generation_cfg['base_model_id']}",
+                f"arn:{self.partition}:bedrock:*"
+                f"::foundation-model/{generation_cfg['base_model_id']}",
+            ]
+        else:
+            stream_probe_model_resources = [
+                f"arn:{self.partition}:bedrock:{self.region}"
+                f"::foundation-model/{generation_model_id}"
+            ]
+        stream_probe_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock:InvokeModelWithResponseStream"],
+                resources=stream_probe_model_resources,
+            )
         )
 
         # THE OTHER HALF OF THE STREAMING SWITCH. InvokeMode is a property of the URL, not

@@ -2817,9 +2817,11 @@ def test_the_stream_probe_ships_an_executable_run_sh():
     import stat
 
     staged = _staged_asset_dir("StreamProbeFunction")
-    assert sorted(os.listdir(staged)) == ["run.sh", "stream_probe.py"], sorted(
-        os.listdir(staged)
-    )
+    assert sorted(os.listdir(staged)) == [
+        "run.sh",
+        "settings.py",
+        "stream_probe.py",
+    ], sorted(os.listdir(staged))
 
     run_sh = staged / "run.sh"
     mode = run_sh.stat().st_mode
@@ -2957,10 +2959,15 @@ def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody():
         )
 
 
-def test_the_stream_probe_can_reach_nothing_but_its_own_logs():
-    """It sleeps and counts. A probe that could retrieve from the KB or read the history
-    table would be a second, unreviewed way into both - and the whole argument for landing
-    it now is that it shares nothing with the paths that carry a student's turn."""
+def test_the_stream_probe_can_reach_one_model_and_nothing_else():
+    """ONE ACTION ON ONE MODEL, plus its own logs. The probe streams from Bedrock and does
+    nothing else, so a grant on the history table, the knowledge base or the guardrail
+    would be a second unreviewed way into the paths that carry a student's turn - which is
+    the whole argument for landing this alongside them rather than inside them.
+
+    NARROWED, NOT WEAKENED, when the model route landed: this used to assert no inline
+    policy at all. The exact statement is asserted instead, because "there is a policy" is
+    what an over-grant also looks like."""
     template = _template()
     role_id = next(
         lid
@@ -2974,11 +2981,34 @@ def test_the_stream_probe_can_reach_nothing_but_its_own_logs():
     assert len(managed) == 1, managed
     assert "AWSLambdaBasicExecutionRole" in json.dumps(managed), managed
 
-    # No inline policy at all, the same assertion the $connect authorizer's role carries.
-    for policy in template.find_resources("AWS::IAM::Policy").values():
-        assert role_id not in json.dumps(policy["Properties"].get("Roles", [])), (
-            f"the probe's role carries an inline policy: {policy}"
-        )
+    policies = [
+        policy
+        for policy in template.find_resources("AWS::IAM::Policy").values()
+        if role_id in json.dumps(policy["Properties"].get("Roles", []))
+    ]
+    assert len(policies) == 1, policies
+    statements = policies[0]["Properties"]["PolicyDocument"]["Statement"]
+    assert len(statements) == 1, statements
+    # The streaming invoke ALONE. The chat role grants `bedrock:InvokeModel*`, which is
+    # every invoke verb; this function makes one call and gets one action.
+    assert statements[0]["Action"] == "bedrock:InvokeModelWithResponseStream", statements
+
+    # Every resource names the configured generation model and nothing else, so the probe
+    # cannot be pointed at a model this deployment did not choose. Read off config.yaml
+    # rather than restated.
+    from infra.config import resolve_generation
+
+    generation = resolve_generation(load_config())
+    named = generation["base_model_id"] or generation["model_id"]
+    resources = statements[0]["Resource"]
+    resources = resources if isinstance(resources, list) else [resources]
+    for resource in resources:
+        rendered = json.dumps(resource)
+        assert named in rendered or generation["model_id"] in rendered, rendered
+    # And nothing in the whole document reaches the store, the KB or the guardrail.
+    document = json.dumps(policies[0]["Properties"]["PolicyDocument"])
+    for forbidden in ("dynamodb:", "bedrock:Retrieve", "bedrock:ApplyGuardrail", "lambda:"):
+        assert forbidden not in document, (forbidden, document)
 
     # And no reserved concurrency: capacity out of the account pool belongs to the chat
     # function alone (test_only_the_chat_function_reserves_concurrency states the rule).
@@ -2990,16 +3020,27 @@ def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
     the probe is reachable through the HTTP API or the socket, or if the browser can find
     it, then it is not a probe - it is a third transport nobody reviewed.
 
-    Its environment is the assertion with teeth: three adapter variables and nothing else.
-    A KNOWLEDGE_BASE_ID or a STREAM_CALLBACK_URL in here would mean somebody started moving
-    the turn onto it, which is the next commit's job and not this one's."""
+    Its environment is the assertion with teeth, and it is derived rather than listed: the
+    probe carries the CHAT function's variables (app/settings.py has no defaults for the
+    identity set, so anything less would not load) plus exactly the three the adapter
+    needs. A STREAM_CALLBACK_URL or a STREAM_WORKER_FUNCTION_NAME appearing in here would
+    mean the probe had been wired into the socket's plumbing, which is not this feature."""
     template = _template()
 
-    assert set(_stream_probe(template)["Environment"]["Variables"]) == {
+    chat_env = set(
+        _resource_named(template, "AWS::Lambda::Function", "ChatFunction")["Properties"][
+            "Environment"
+        ]["Variables"]
+    )
+    # The one variable the chat function has that the probe must not: the rate limit's
+    # exemption list. The probe applies no rate limit, so an exemption from it is a
+    # statement about a fence that is not there.
+    expected = (chat_env - {"RATE_LIMIT_EXEMPT_CLIENT_IDS"}) | {
         "AWS_LAMBDA_EXEC_WRAPPER",
         "AWS_LWA_INVOKE_MODE",
         "PORT",
     }
+    assert set(_stream_probe(template)["Environment"]["Variables"]) == expected
 
     # No API Gateway integration on either API points at it.
     for logical_id, integration in template.find_resources(
