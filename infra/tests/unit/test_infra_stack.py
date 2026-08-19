@@ -1113,6 +1113,9 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
         "settings.py",
         "titles.py",
         "tools.py",
+        # The turn sequence, lifted out of handler.py: rate limit, guardrail, write, read,
+        # model, write, title. handler.py imports it at module scope.
+        "turn.py",
         "usage.py",
     ]
     assert "requirements.txt" not in listing

@@ -13,12 +13,15 @@ import time
 import boto3
 from botocore.config import Config
 
-from cards import join_prose, normalise_dashes
+from cards import normalise_dashes
+# `new_conversation_id` is not called in this file any more - the turn that mints one moved
+# to app/turn.py. It stays imported because it is part of this module's surface: the id
+# format is the handler's contract with the client (models.CONVERSATION_ID_PATTERN validates
+# what comes back in), and the suite mints ids through it.
 from history import ConversationStore, new_conversation_id
 from models import (
     CONVERSATION_ID_PATTERN,
     ChatRequest,
-    ChatResponse,
     ConversationDeleteResponse,
     ConversationListResponse,
     ConversationMessage,
@@ -31,10 +34,13 @@ from models import (
     StatementCard,
 )
 from orchestrator import replay_stored_reply, run_chat
-from ratelimit import claim_turn
 from settings import load_settings
 from titles import generate_title
-from usage import TurnUsage
+# The turn, lifted out of this file: everything between an identified caller and a
+# ChatResponse. `run_chat` and `generate_title` above are imported for the same reason
+# they always were - they are handed to it, so this module stays the place they are
+# named and therefore the place the test suite patches them.
+from turn import TurnRefused, run_turn
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -152,31 +158,6 @@ def _claim(event, name):
     return None
 
 
-def apply_input_guardrail(query, usage=None):
-    """Screen the BARE student query with ApplyGuardrail(source=INPUT)."""
-    try:
-        result = _bedrock_client().apply_guardrail(
-            guardrailIdentifier=SETTINGS.input_guardrail_id,
-            guardrailVersion=SETTINGS.input_guardrail_version,
-            source="INPUT",
-            content=[{"text": {"text": query}}],
-        )
-    except Exception:
-        logger.exception("ApplyGuardrail failed; continuing without the input screen")
-        return None
-
-    if usage is not None:
-        usage.record_guardrail(result.get("usage"))
-
-    if result.get("action") != "GUARDRAIL_INTERVENED":
-        return None
-
-    outputs = result.get("outputs") or []
-    text = (outputs[0].get("text") if outputs else "") or ""
-    logger.info("Input guardrail intervened on a query")
-    return text
-
-
 def _chat_response(response):
     """Serialise a ChatResponse through its aliases: the camelCase wire contract."""
     return _response(200, response.model_dump(by_alias=True))
@@ -185,112 +166,6 @@ def _chat_response(response):
 def _display_cards_from(response):
     """A rendered turn's cards as one flat list. A turn makes exactly one card group."""
     return [card for batch in (response.statement_batches or []) for card in batch.cards]
-
-
-def name_new_conversation(
-    *, user_id, conversation_id, question, answer, deadline, usage=None
-):
-    """Name a conversation the model just created. Returns the title, or None."""
-    try:
-        title = generate_title(
-            question=question,
-            answer=answer,
-            settings=SETTINGS,
-            deadline=deadline,
-            usage=usage,
-        )
-        if title is None:
-            return None
-        if not STORE.set_generated_title(
-            user_id=user_id, conversation_id=conversation_id, title=title
-        ):
-            return None
-    except Exception:
-        logger.warning(
-            "Could not name a new conversation; it keeps its first-message title.",
-            exc_info=True,
-        )
-        return None
-    return title
-
-
-def _stored_escalation(response):
-    """This turn's email draft as it will be stored, or None. Recorded, never re-derived."""
-    if response.escalation is None:
-        return None
-    return response.escalation.model_dump(by_alias=True)
-
-
-def _stored_place(response):
-    """This turn's location card as it will be stored, or None. Recorded, never re-derived."""
-    if response.place is None:
-        return None
-    return response.place.model_dump(by_alias=True)
-
-
-def run_turn(request, user_id, deadline, context=None, usage=None):
-    """One turn against the store: write, read, model, write, then title a new conversation."""
-    # A conversation the CLIENT could not name is one that did not exist a moment ago.
-    is_new_conversation = request.conversation_id is None
-    conversation_id = request.conversation_id or new_conversation_id()
-
-    user_sort_key = None
-    try:
-        user_sort_key = STORE.append_message(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            role="user",
-            text=request.query.strip(),
-        )
-    except Exception:
-        # No sort key to exclude below. A write that landed without a response is picked up
-        # by the read and folded in by the consecutive-role merge, so it is said twice, not lost.
-        logger.exception("Could not record the student's message; answering anyway")
-
-    try:
-        history = STORE.recent_messages(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            limit=SETTINGS.max_history_messages,
-            exclude_sort_key=user_sort_key,
-        )
-    except Exception:
-        logger.exception("Could not read conversation history; answering without it")
-        history = []
-
-    response = run_chat(
-        request, SETTINGS, history=history, deadline=deadline, usage=usage
-    )
-
-    try:
-        STORE.append_message(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            role="assistant",
-            # The reply as the model wrote it, tags and all, plus the pairs its cards cited.
-            text=response.raw_text,
-            sources=response.sources,
-            # Recorded rather than re-resolved: the catalogue is a directory that gets edited.
-            place=_stored_place(response),
-            escalation=_stored_escalation(response),
-        )
-    except Exception:
-        logger.exception("Could not record the assistant's reply; returning it anyway")
-
-    response.conversation_id = conversation_id
-    # Derived HERE, not alongside the loop's: a monotonic deadline computed before a
-    # twenty-second model call would already be in the past.
-    if is_new_conversation:
-        response.title = name_new_conversation(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            question=request.query,
-            answer=join_prose(response.conversational_text, response.trailing_text),
-            deadline=title_deadline(context),
-            usage=usage,
-        )
-    response.usage = usage
-    return response
 
 
 def post_chat(event, context):
@@ -316,15 +191,45 @@ def post_chat(event, context):
         logger.error("A /chat request carried no JWT sub claim; refusing it")
         return _response(401, {"error": "Unauthenticated."})
 
-    # Before the guardrail, so a refused turn bills nothing at all. Nothing is written and
-    # no usage is returned: a refused turn is not a turn.
-    refusal = claim_turn(
-        store=STORE,
-        user_id=user_id,
-        client_id=client_id_from(event),
-        settings=SETTINGS,
-    )
-    if refusal is not None:
+    # STEPS 3 TO 5 - THE TURN ITSELF, and it is no longer in this file. Rate limit,
+    # guardrail, write the student's message, read the previous ones back, call the model,
+    # write the reply, name a new conversation: all of it moved to app/turn.py, in the same
+    # order, doing the same things and logging the same line. What stays here is the part
+    # that is about HTTP - the shapes the two non-answer exits take on the wire.
+    #
+    # IT MOVED BECAUSE IT IS ABOUT TO HAVE A SECOND CALLER, and this repo already knows
+    # what a second copy costs: app/streaming.py and app/stream_worker.py hold one between
+    # them, and every ordering argument had to be made twice.
+    #
+    # EVERY DEPENDENCY IS PASSED BY NAME OUT OF THIS MODULE'S GLOBALS, which is deliberate
+    # rather than ceremonial. SETTINGS, STORE, _bedrock_client, run_chat and generate_title
+    # are the seams this function's own test suite patches; resolving them HERE, at call
+    # time, is what keeps a monkeypatch on this module reaching the step it always reached.
+    try:
+        response = run_turn(
+            request,
+            user_id=user_id,
+            # The app client the token was issued to, from the same validated claims as
+            # `sub`. The eval harness's machine client is exempt from the daily cap; a
+            # browser cannot claim that.
+            client_id=client_id_from(event),
+            settings=SETTINGS,
+            store=STORE,
+            # The FACTORY, not a client: a turn refused by the daily cap must not build one.
+            bedrock_client=_bedrock_client,
+            deadline=loop_deadline(context),
+            # A CALLABLE, evaluated after the model returns. Both are time.monotonic()
+            # stamps, so a title deadline computed here would already be in the past by the
+            # time the title needed it, and every new conversation would keep its fallback.
+            title_deadline_at=lambda: title_deadline(context),
+            converse=run_chat,
+            make_title=generate_title,
+        )
+    except TurnRefused as refused:
+        # THE DAILY CAP, spelled as HTTP. Nothing was written, nothing was billed and no
+        # usage is returned - a refused turn is not a turn. The conversation id is not
+        # echoed either: no turn was recorded under it.
+        refusal = refused.refusal
         return _response(
             429,
             {
@@ -336,45 +241,15 @@ def post_chat(event, context):
             },
             headers={"Retry-After": str(refusal.retry_after_seconds)},
         )
-
-    usage = TurnUsage()
-
-    # Nothing is written on a block: storing it would smuggle the attack text into the next
-    # turn's context. The usage IS returned, because a blocked screen was billed.
-    blocked_text = apply_input_guardrail(query, usage=usage)
-    if blocked_text is not None:
-        return _chat_response(
-            ChatResponse(
-                conversationId=request.conversation_id,
-                conversationalText=blocked_text,
-                usage=usage,
-            )
-        )
-
-    try:
-        response = run_turn(
-            request,
-            user_id,
-            deadline=loop_deadline(context),
-            context=context,
-            usage=usage,
-        )
     except Exception:
         # Logged, not returned: a botocore message can quote the request, and the request
         # here is the student's own words.
         logger.exception("Chat orchestration failed")
         return _response(502, {"error": "The assistant is unavailable right now."})
 
-    logger.info(
-        "chat cards=%s safety=%s place=%s escalation=%s calls=%s in=%s out=%s",
-        sum(len(batch.cards) for batch in (response.statement_batches or [])),
-        response.safety_handoff is not None,
-        response.place.key if response.place is not None else None,
-        response.escalation is not None,
-        usage.model_calls,
-        usage.input_tokens,
-        usage.output_tokens,
-    )
+    # A GUARDRAIL BLOCK ARRIVES HERE TOO, as an ordinary ChatResponse carrying the
+    # guardrail's replacement text and the usage that screen billed. It is a 200: the
+    # server answered, and what it answered with is the refusal.
     return _chat_response(response)
 
 

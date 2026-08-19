@@ -1334,6 +1334,10 @@ class NavigatorStack(Stack):
                     "*",
                     ".*",
                     "!handler.py",
+                    # The turn itself, lifted out of handler.py: rate limit, guardrail,
+                    # write, read, model, write, title. handler.py imports it at module
+                    # scope, so an omission here is an ImportError at cold start.
+                    "!turn.py",
                     "!settings.py",
                     "!models.py",
                     "!prompts.py",
