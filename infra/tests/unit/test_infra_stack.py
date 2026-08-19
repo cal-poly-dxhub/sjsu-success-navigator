@@ -2904,6 +2904,33 @@ def test_the_adapter_layer_is_published_for_the_functions_architecture():
     assert '"Ref": "AWS::Partition"' in arn, arn
 
 
+def test_the_stream_probe_carries_the_data_layer_as_well_as_its_own_two():
+    """THE HALF OF THE data/ MOVE THAT NO IMPORT GRAPH CAN SEE.
+    test_the_stream_probe_ships_every_module_it_imports pins campus_data.py INTO the
+    bundle; nothing there knows the module then goes looking for CSVs at /opt, and only
+    this layer puts them there. Without it the include list is complete, synth is clean,
+    the deploy is green and the first cold start raises CampusDataError out of
+    places.py's module scope - the same shape of failure as a missing include, with none
+    of the same tests watching for it.
+
+    Asserted as the WHOLE list rather than a membership check, because the adapter needs
+    to still be here too: this function is the one place three layers meet, and dropping
+    either of the other two is the same clean-deploy-dead-function outcome."""
+    template = _template()
+    deps_id = next(iter(_layer_ids(template, "StreamProbeDepsLayer")))
+    data_id = next(iter(_layer_ids(template, "CampusDataLayer")))
+    layers = _stream_probe(template)["Layers"]
+
+    # The adapter is the ARN one (see the test above); the other two are Refs to layers
+    # this template builds.
+    assert [layer for layer in layers if "Ref" in layer] == [
+        {"Ref": deps_id},
+        {"Ref": data_id},
+    ], layers
+    assert len([layer for layer in layers if "Fn::Join" in layer]) == 1, layers
+    assert len(layers) == 3, layers
+
+
 def test_the_stream_probe_streams_on_both_the_url_and_the_adapter():
     """TWO SWITCHES, AND ONE OF THEM ALONE IS A BUFFERED FUNCTION THAT LOOKS FINE.
 
@@ -3044,10 +3071,12 @@ def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
 
 
 def test_the_stream_probe_ships_every_module_it_imports():
-    """THE LIST THAT CANNOT BE READ CAREFULLY ENOUGH. This function's bundle is fifteen
-    file-by-file includes, and every one of them is an ImportError at cold start if it is
-    missing - after a completely clean synth and a completely clean deploy, because nothing
-    in CloudFormation knows what a Python import is.
+    """THE LIST THAT CANNOT BE READ CAREFULLY ENOUGH. This function's bundle is a
+    file-by-file include list, and every entry on it is an ImportError at cold start if it
+    is missing - after a completely clean synth and a completely clean deploy, because
+    nothing in CloudFormation knows what a Python import is. How many entries there are is
+    deliberately not written down here; it was, it said fifteen, and the list had grown to
+    twenty by the time anybody read it again.
 
     So the expectation is COMPUTED, never restated: it walks app/stream_probe.py's own
     imports, follows every one that names another module in app/, and asserts the closure is

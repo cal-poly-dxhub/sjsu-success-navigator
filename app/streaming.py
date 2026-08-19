@@ -179,21 +179,8 @@ class ConnectionSink(PreviewSink):
     THE PREVIEW LOGIC IS NOT HERE ANY MORE. The offset, the accumulated raw text, the
     batching thresholds, the safe prefix and the card announcement all live in
     app/preview.py, unchanged, because the FastAPI app under the Lambda Web Adapter needs
-    exactly the same answers to exactly the same questions and this file's own docstring
-    records what having two copies of that bookkeeping cost. What is left here is the wire:
+    exactly the same answers to exactly the same questions. What is left here is the wire:
     one method, `_post`.
-
-    BATCHED, NOT PER TOKEN, and that is a cost control rather than a nicety. Every push is a
-    billable API Gateway message, so a frame per token would multiply the message count by
-    the token count to no visible end - the browser reveals text at ~108 characters a second
-    and the model outruns that, so the deltas queue on the client either way. The thresholds
-    arrive as arguments from config.yaml (see DELTA_MIN_CHARS above).
-
-    A 410 IS THE STUDENT CLOSING THE TAB, and it stops the pushing and nothing else. The
-    turn finishes and is persisted (see stream_worker), because the model call is already
-    paid for and because a user message with no assistant reply is the dangling turn
-    docs/accounts-and-storage.md calls a reef - the next turn would have to merge it. Coming
-    back to a coherent conversation is worth the writes.
     """
 
     def __init__(self, *, endpoint, connection_id, turn_id, min_chars, max_delay_ms):

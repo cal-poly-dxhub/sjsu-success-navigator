@@ -2586,6 +2586,11 @@ class NavigatorStack(Stack):
                     "!safety.py",
                     "!escalation.py",
                     "!places.py",
+                    # The reader of the repo-root data/ directory, for the same reason it is
+                    # in the chat function's list: places.py, safety.py and prompts.py all
+                    # import it at module scope, so a bundle without it is a cold start that
+                    # dies on the import line.
+                    "!campus_data.py",
                     "!orchestrator.py",
                     "!campus_time.py",
                     "!history.py",
@@ -2596,7 +2601,16 @@ class NavigatorStack(Stack):
             ),
             # Order does not matter: the adapter layer owns /opt/bootstrap and
             # /opt/extensions, the deps layer owns /opt/python, and nothing overlaps.
-            layers=[stream_probe_deps_layer, lambda_web_adapter_layer],
+            #
+            # THE DATA LAYER RIDES ALONG for the reason the chat function carries it: this
+            # app runs the same turn, so places.py, safety.py and prompts.py read the
+            # repo-root data/ CSVs at import, and Lambda extracts that layer to /opt where
+            # campus_data.py looks first.
+            layers=[
+                stream_probe_deps_layer,
+                lambda_web_adapter_layer,
+                campus_data_layer,
+            ],
             # NO ROLE ARGUMENT, so CDK builds one with AWSLambdaBasicExecutionRole and
             # nothing else - the same shape the $connect authorizer has, and for the same
             # reason. The probe reaches no model, no store and no guardrail, so it must not
