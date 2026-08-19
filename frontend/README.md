@@ -10,3 +10,7 @@ memory, expiry checked before fetch) and the mock sidebar fixtures deleted.
 - The app reads its API endpoint from `config.json`, stamped with the deployed
   API URL at deploy time. Nothing in the committed source names an account,
   region, or API id.
+- One turn streams over `POST /api/chat` on this same origin - a `fetch` plus a stream
+  reader, NDJSON frames in, one authoritative `ChatResponse` on the last one
+  (`src/lib/chatStream.ts`). `POST /chat` on the HTTP API stays the fallback for any
+  failure the server had not yet taken the turn on.

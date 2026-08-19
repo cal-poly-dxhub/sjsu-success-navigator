@@ -769,10 +769,38 @@ therefore means rewriting the loop in another language. A WebSocket API keeps th
 is and moves the streaming out of band: the model's tokens go out through `ConverseStream` and
 `post_to_connection` while the HTTP request that started the turn has already returned.
 
-**This path is additive and it is not the default.** `POST /chat` is untouched and stays the
-fallback for any student whose socket does not open or does not survive; the frontend falls
-back on any failure. The whole surface is gated on one config key, and with it absent none of
-the resources exist.
+**The browser reads the HTTP stream, and nothing chooses between transports any more.**
+`frontend/src/lib/chatStream.ts` POSTs the turn to `/api/chat` and reads the NDJSON body
+off a `fetch` stream reader. `EventSource` was never available: a turn carries a body and
+SSE can only issue a GET. The path is RELATIVE, because `/api/*` is a behaviour on the
+same distribution that served the bundle - one origin for the site and the stream means no
+second hostname, no CORS allowlist to keep in step, and no preflight in front of a request
+whose entire value is time to first byte. There is no config key to read and no gate: a
+deployment with nothing behind `/api` answers the POST, and the turn falls back to
+`POST /chat` on the same line it always did.
+
+**Two headers, and neither of them is `Authorization`.** The access token rides
+`AUTH_HEADER_NAME` for the reason [below](#verifying-the-token-in-the-streaming-app), and
+the client sends `x-amz-content-sha256`: the hex SHA-256 of the body it is about to send.
+Origin access control signs each origin request with SigV4, and Lambda refuses an origin
+request whose payload is unsigned, so a client sending a body has to hand the edge the
+hash to sign over. It is a HASH and not a signature - it commits the request to its own
+bytes, it authenticates nobody on its own, and computing it needs no AWS credentials,
+which is why a browser can produce one while holding none. Both are pinned across the
+language boundary by infra tests that read the TypeScript constant and the Python one off
+disk and compare them, because a disagreement in either is a 404 or a 401 that
+synthesizes, deploys and builds clean.
+
+**The `accepted` frame is where the browser learns the conversation id,** and it records
+it there rather than off the final payload. `applyChatResponse` still carries the id for
+the buffered path, so the two are written with `??` rather than a single condition - a
+conversation that learned its id from the first frame must still take its NAME from the
+reply that named it.
+
+**The socket is still synthesized and nothing opens it.** `POST /chat` is untouched and
+stays the fallback whenever the stream cannot carry a turn. The WebSocket surface is still
+gated on one config key and still deployed with it on, but no client reaches it any more -
+removing it is the next commit, not this one.
 
 **What streams is a preview.** The deltas are prose only and are never parsed, capped or
 trusted. Cards, caps, dash normalisation, the trailing-text split and the safety decision all

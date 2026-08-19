@@ -50,17 +50,6 @@ export type RuntimeConfig = {
 	 */
 	costModel?: CostModel;
 	/**
-	 * The WebSocket endpoint that streams a reply as it is written, or absent when the
-	 * stack synthesized no streaming API.
-	 *
-	 * ABSENCE IS THE GATE, and here it decides the TRANSPORT rather than hiding a control:
-	 * with no URL there is nothing for the browser to open, so it uses POST /chat and no
-	 * code path exists that could reach a socket. POST /chat also remains the fallback
-	 * whenever this one is present but does not work - a blocked port on campus wifi is a
-	 * slow answer, never no answer (lib/chatStream.ts).
-	 */
-	streamingApiUrl?: string;
-	/**
 	 * Where an escalation draft is addressed, or absent when this deployment has no mailbox
 	 * to route students to.
 	 *

@@ -3714,6 +3714,87 @@ def test_the_auth_header_is_spelled_in_exactly_one_place():
     )
 
 
+def _chat_stream_client_source() -> str:
+    return (
+        Path(__file__).resolve().parents[3]
+        / "frontend"
+        / "src"
+        / "lib"
+        / "chatStream.ts"
+    ).read_text()
+
+
+def _ts_const(source: str, name: str) -> str:
+    """The value of `export const NAME = '...'` (or a plain const) out of a TS file.
+
+    Read with a regex rather than a parser because there is no TypeScript in this suite and
+    there is not going to be: the assertion is about one string literal in one line, and a
+    node toolchain to check it would be a second build system in the Python tests."""
+    match = re.search(
+        rf"^(?:export )?const {re.escape(name)} = '([^']*)';$", source, re.MULTILINE
+    )
+    assert match is not None, f"{name} is not a single-quoted const in chatStream.ts"
+    return match.group(1)
+
+
+def test_the_browser_calls_the_same_prefix_the_edge_routes_and_the_app_serves():
+    """THE THIRD SPELLING OF ONE STRING, and the one no Python test could see.
+
+    test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string ties the CloudFront
+    behaviour to the FastAPI router. This ties the BROWSER to both: the site and the stream
+    share one origin, so the client sends a relative path, and a client whose prefix
+    disagrees with the behaviour's is a request that never leaves the default behaviour -
+    it fetches the streaming route out of the S3 bucket and gets the 404 page. That
+    synthesizes clean, deploys clean, builds clean, and is only visible in a browser."""
+    prefix = _ts_const(_chat_stream_client_source(), "STREAM_PATH_PREFIX")
+    assert prefix == _STREAM_EDGE_PATH_PREFIX, (
+        f"the browser calls {prefix!r} and the edge routes {_STREAM_EDGE_PATH_PREFIX!r}"
+    )
+
+
+def test_the_browser_sends_the_token_on_the_header_the_app_reads():
+    """ONE HEADER NAME ACROSS TWO LANGUAGES, which is the half
+    test_the_auth_header_is_spelled_in_exactly_one_place cannot reach: that one scans app/
+    and infra/, and the browser is neither.
+
+    The token cannot ride `Authorization` because origin access control's SigV4 signature
+    owns it on the origin request, so the app reads a header of its own and the browser has
+    to write the same one. Disagree and every student is a 401 from a function that is
+    working exactly as written.
+
+    NEITHER LITERAL IS TYPED HERE. Both sides are read off disk and compared, because this
+    file is inside the scan above - a literal in this test would BE the second spelling it
+    exists to forbid.
+
+    The body hash is asserted alongside it because it is the other header this transport
+    cannot work without: Lambda refuses an OAC-signed origin request whose payload is
+    unsigned, so a client sending a body has to hand the edge the SHA-256 to sign over. It
+    is a hash and not a credential, which is why a browser can compute it and holds no AWS
+    key to sign anything with."""
+    import ast
+
+    tree = ast.parse(_token_auth_source())
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    client = _chat_stream_client_source()
+    assert _ts_const(client, "AUTH_HEADER_NAME") == constants["AUTH_HEADER_NAME"], (
+        "the browser sends the token on a header app/token_auth.py does not read"
+    )
+
+    # The header is AWS's own name for the body hash, so it is a literal on both sides
+    # rather than a constant of ours. What is asserted is that the client still sends one:
+    # dropping it is a 403 from Lambda that reads exactly like a broken signing rule.
+    assert _ts_const(client, "BODY_HASH_HEADER_NAME") == "x-amz-content-sha256"
+    assert "crypto.subtle.digest('SHA-256'" in client, (
+        "the body hash must be computed from the body, not asserted"
+    )
+
+
 def test_the_streaming_app_takes_its_caller_from_the_verified_token_and_never_from_the_body():
     """THE CLAIM THAT MAKES THE PARTITION KEY A SECURITY BOUNDARY. Every DynamoDB key in
     this app is built from the Cognito `sub` (docs/accounts-and-storage.md), and that only
