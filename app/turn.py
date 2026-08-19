@@ -208,6 +208,7 @@ def run_turn(
     title_deadline_at: Callable[[], float],
     converse: Callable[..., ChatResponse] = run_chat,
     make_title: Callable[..., Any] = generate_title,
+    stream: Any = None,
 ) -> ChatResponse:
     """The whole turn, in the order this module's docstring fixes. Raises TurnRefused.
 
@@ -231,6 +232,18 @@ def run_turn(
     caller can hand in its own - which is what app/handler.py does with its own module
     globals, keeping that suite's monkeypatches pointed at the steps they have always been
     pointed at.
+
+    `stream` IS THE ONLY DIFFERENCE BETWEEN A STREAMED TURN AND A BUFFERED ONE, and it is
+    passed straight through to the loop, which is where orchestrator.run_chat's own docstring
+    explains what it costs: None runs `Converse`, a sink runs `ConverseStream` and pushes the
+    reply out as it is written, and everything after the model call - the tool loop, the
+    deadline, the iteration cap, and therefore every card, cap, dash and safety decision - is
+    the same code reading the same complete text.
+
+    IT IS ONLY PASSED ON WHEN IT IS SET, and that is not a micro-optimisation. `converse` is
+    an injected callable, and the handler's suite injects stand-ins with the signature
+    run_chat had before streaming existed; handing them a keyword they never accepted would
+    fail every one of those tests for a feature POST /chat does not use.
     """
     # STEP 1 - the per-user daily cap, before the guardrail screen and before the loop.
     #
@@ -298,8 +311,16 @@ def run_turn(
         logger.exception("Could not read conversation history; answering without it")
         history = []
 
-    # STEP 5 - the model.
-    response = converse(request, settings, history=history, deadline=deadline, usage=usage)
+    # STEP 5 - the model. See the docstring on why `stream` is spread rather than named.
+    streaming_kwargs = {} if stream is None else {"stream": stream}
+    response = converse(
+        request,
+        settings,
+        history=history,
+        deadline=deadline,
+        usage=usage,
+        **streaming_kwargs,
+    )
 
     # STEP 6 - the reply.
     try:

@@ -2180,6 +2180,10 @@ class NavigatorStack(Stack):
                         ".*",
                         "!stream_worker.py",
                         "!streaming.py",
+                        # The preview's own bookkeeping - the offset, the batching and the
+                        # safe prefix - lifted out of streaming.py so the FastAPI app can
+                        # use the same one. streaming.py imports it at module scope.
+                        "!preview.py",
                         "!settings.py",
                         "!models.py",
                         "!prompts.py",
@@ -2234,6 +2238,9 @@ class NavigatorStack(Stack):
                         "*",
                         ".*",
                         "!streaming.py",
+                        # Same reason as the worker's: streaming.py's ConnectionSink is a
+                        # PreviewSink now, and it imports it at module scope.
+                        "!preview.py",
                         "!settings.py",
                         "!history.py",
                         "!models.py",

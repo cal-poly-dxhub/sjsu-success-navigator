@@ -14,9 +14,9 @@ import time
 import boto3
 from botocore.config import Config
 
-from cards import card_block_started, preview_safe_prefix
 from history import ConversationStore, new_conversation_id, new_ulid
 from models import ChatRequest, ChatResponse
+from preview import CARDS_STAGE as PREVIEW_CARDS_STAGE, PreviewSink
 from ratelimit import claim_turn
 from settings import load_settings
 from usage import TurnUsage
@@ -36,8 +36,10 @@ WORKER_FUNCTION_NAME = os.environ.get("STREAM_WORKER_FUNCTION_NAME", "")
 DELTA_MIN_CHARS = int(os.environ.get("STREAM_DELTA_MIN_CHARS") or 160)
 DELTA_MAX_DELAY_MS = int(os.environ.get("STREAM_DELTA_MAX_DELAY_MS") or 250)
 
-# A WIRE VALUE, never a sentence: the student reads a string from the frontend catalogue.
-CARDS_STAGE = "composing_cards"
+# The stage a `status` frame carries once the model has started writing card blocks. It is
+# DEFINED in app/preview.py, beside the code that decides when to send it, and re-exported
+# here because this module is where the socket's wire values are read from.
+CARDS_STAGE = PREVIEW_CARDS_STAGE
 
 # A separate instance rather than an import from handler.py, which would pull the whole
 # HTTP request path into a function that serves neither.
@@ -171,24 +173,34 @@ def is_gone(exc) -> bool:
     return type(exc).__name__ == "GoneException"
 
 
-class ConnectionSink:
-    """Where one turn's preview goes: batched frames down one WebSocket connection."""
+class ConnectionSink(PreviewSink):
+    """Where one turn's preview goes: batched frames down one WebSocket connection.
+
+    THE PREVIEW LOGIC IS NOT HERE ANY MORE. The offset, the accumulated raw text, the
+    batching thresholds, the safe prefix and the card announcement all live in
+    app/preview.py, unchanged, because the FastAPI app under the Lambda Web Adapter needs
+    exactly the same answers to exactly the same questions and this file's own docstring
+    records what having two copies of that bookkeeping cost. What is left here is the wire:
+    one method, `_post`.
+
+    BATCHED, NOT PER TOKEN, and that is a cost control rather than a nicety. Every push is a
+    billable API Gateway message, so a frame per token would multiply the message count by
+    the token count to no visible end - the browser reveals text at ~108 characters a second
+    and the model outruns that, so the deltas queue on the client either way. The thresholds
+    arrive as arguments from config.yaml (see DELTA_MIN_CHARS above).
+
+    A 410 IS THE STUDENT CLOSING THE TAB, and it stops the pushing and nothing else. The
+    turn finishes and is persisted (see stream_worker), because the model call is already
+    paid for and because a user message with no assistant reply is the dangling turn
+    docs/accounts-and-storage.md calls a reef - the next turn would have to merge it. Coming
+    back to a coherent conversation is worth the writes.
+    """
 
     def __init__(self, *, endpoint, connection_id, turn_id, min_chars, max_delay_ms):
+        super().__init__(min_chars=min_chars, max_delay_ms=max_delay_ms)
         self._client = management_client(endpoint)
         self._connection_id = connection_id
         self._turn_id = turn_id
-        self._min_chars = min_chars
-        self._max_delay = max_delay_ms / 1000.0
-        # One 410 stops the rest of the turn's frames rather than raising once per delta.
-        self.gone = False
-        # `_sent` is an offset into `_accumulated`'s safe prefix and is meaningless against
-        # any other string.
-        self._sent = 0
-        self._accumulated = ""
-        self._last_push = time.monotonic()
-        self._cards_announced = False
-        self.frames = 0
 
     def _post(self, payload) -> bool:
         if self.gone:
@@ -209,50 +221,6 @@ class ConnectionSink:
             return False
         self.frames += 1
         return True
-
-    def status(self, stage):
-        """Something is happening that produces no text. The UI can say a true thing."""
-        self._post({"type": "status", "stage": stage})
-
-    def text(self, accumulated):
-        """The reply so far. Pushes whatever is newly safe to show, if enough has built up."""
-        self._accumulated = accumulated
-        safe = preview_safe_prefix(accumulated)
-        pending = len(safe) - self._sent
-        if pending > 0:
-            now = time.monotonic()
-            if pending >= self._min_chars or (now - self._last_push) >= self._max_delay:
-                self._flush_to(safe, now)
-        self._announce_cards(accumulated)
-
-    def _announce_cards(self, accumulated):
-        """Say ONCE that the model has begun writing cards, and finish the prose first."""
-        if self._cards_announced or not card_block_started(accumulated):
-            return
-        self._cards_announced = True
-        self.flush()
-        self.status(CARDS_STAGE)
-
-    def flush(self):
-        """Push the tail of the preview. Takes no argument: it works from the RAW text
-        the sink accumulated, so its offset indexes the string it was measured against."""
-        safe = preview_safe_prefix(self._accumulated)
-        if len(safe) > self._sent:
-            self._flush_to(safe, time.monotonic())
-
-    def _flush_to(self, safe, now):
-        if self._post({"type": "delta", "text": safe[self._sent :]}):
-            self._sent = len(safe)
-            self._last_push = now
-
-    def final(self, payload):
-        """THE AUTHORITATIVE MESSAGE: exactly what POST /chat returns for this turn."""
-        self._post({"type": "final", "payload": payload})
-
-    def error(self, message, **extra):
-        """A turn that will not produce an answer, described well enough to render. Distinct
-        from a socket failure, so the client shows it rather than falling back."""
-        self._post({"type": "error", "message": message, **extra})
 
 
 def _ack(status_code=200, message=None):
