@@ -128,6 +128,42 @@ _LAMBDA_ARCH = _lambda.Architecture.X86_64
 _MANYLINUX_TAG = "manylinux2014_x86_64"
 _LAMBDA_PY_TAG = "3.13"
 
+
+# THE LAMBDA WEB ADAPTER LAYER, published by AWS, and the whole reason a python3.13
+# function can stream a response body at all (app/stream_probe.py, and the probe section
+# near the end of this file). The layer holds two things: the adapter binary, registered as
+# a Lambda extension, and /opt/bootstrap, the wrapper script that starts the app.
+#
+# THE PUBLISHER ACCOUNT IS AWS'S AND IS THE SAME IN EVERY COMMERCIAL REGION - it is a
+# published constant from the project's README, not a name this deployment owns, so it does
+# not belong in config.yaml with the names that are ours.
+_LWA_LAYER_ACCOUNT = "753240598075"
+
+# THE LAYER NAME CARRIES THE ARCHITECTURE, so it is DERIVED from _LAMBDA_ARCH rather than
+# typed beside it. AWS publishes one layer per architecture under two different names, and
+# attaching the x86_64 adapter to an arm64 function is a deploy that succeeds and an
+# invocation that fails on an Exec format error. Flipping _LAMBDA_ARCH above now flips this
+# with it, and an architecture nobody has published a layer for raises KeyError at synth
+# instead of shipping a mismatch.
+_LWA_LAYER_NAME = {
+    _lambda.Architecture.X86_64.name: "LambdaAdapterLayerX86",
+    _lambda.Architecture.ARM_64.name: "LambdaAdapterLayerArm64",
+}[_LAMBDA_ARCH.name]
+
+# PINNED TO 28, which is adapter 1.0.1 - the version the project's README and its
+# fastapi-response-streaming-zip example both name, and the newest one with a GitHub
+# release and a CHANGELOG entry behind it. Layer 29 exists and calls itself 1.1.0, but
+# there is no 1.1.0 release, no changelog entry and no doc pointing at it (probed
+# 2026-08-19 with lambda:GetLayerVersion, which is the only call the layer's public policy
+# allows; version 30 does not exist). An undocumented build is a bad thing to be running
+# when a probe fails and the question is whether the mechanism or the wiring is at fault.
+_LWA_LAYER_VERSION = 28
+
+# The port the probe's uvicorn binds and the adapter forwards to. Spelled once and handed
+# to both through a single PORT environment variable - two numbers is how a function ends
+# up timing out against a readiness check on a port nothing is listening to.
+_LWA_PROBE_PORT = 8000
+
 # The eval harness's MACHINE account username, spelled into the setup commands the stack
 # prints so they are copy-paste runnable. It is a NAME, not a credential - the password is
 # chosen by the deployer and never appears here or anywhere in the repo.
@@ -2365,6 +2401,194 @@ class NavigatorStack(Stack):
                     "key is absent it uses POST /chat."
                 ),
             )
+
+        # --- A response-streaming PROBE: FastAPI + Lambda Web Adapter + URL -----
+        #
+        # UNNUMBERED AND DELIBERATELY ALONE, like the history table above: it is not a gav
+        # pull, so numbering it would put it in a sequence that means "gav's section
+        # order". It sits HERE, straight after the WebSocket section, because it is the
+        # mechanism that section exists to work around.
+        #
+        # WHAT IT IS FOR. The banner above says "Lambda response streaming is
+        # Node.js/custom-runtime only and the agent loop is Python". That is true of the
+        # python3.13 MANAGED RUNTIME and false of Lambda. The Lambda Web Adapter is an
+        # execution wrapper: AWS_LAMBDA_EXEC_WRAPPER points the runtime at /opt/bootstrap
+        # from the layer, that script execs run.sh out of the bundle, run.sh starts
+        # uvicorn, and the adapter - registered as an extension by the same layer - proxies
+        # each invocation to it over HTTP. In response_stream mode it writes the response
+        # body out as the app produces it. That is the supported way to stream in band from
+        # Python (aws/aws-lambda-web-adapter, examples/fastapi-response-streaming-zip).
+        #
+        # THIS IS STEP ONE OF REPLACING THE THREE FUNCTIONS ABOVE, and it moves nothing
+        # yet. Nothing above changes: the socket keeps its routes, its authorizer, its
+        # grants and its config.json key, and stays the live path. A probe that shared any
+        # of them would be a probe that could fail for a reason that has nothing to do with
+        # streaming.
+        #
+        # ZIP PLUS THE LAYER, NEVER A CONTAINER IMAGE, and that is where the two upstream
+        # examples get spliced. fastapi-backend-only-response-streaming is the one that
+        # streams from a backend behind a signed URL, and it is PackageType: Image;
+        # fastapi-response-streaming-zip is the one packaged as a zip with the adapter as a
+        # layer. This takes the packaging from the second and the posture from the first,
+        # because every bundle in this stack builds from source at synth and an image would
+        # add an ECR repository to the account and an image build to CI for a binary AWS
+        # already publishes as a layer.
+        #
+        # UNGATED, unlike the socket, which is a judgement rather than an oversight. A gate
+        # would be a config.yaml key, a resolver, a validator, a second synth direction and
+        # a case in test_config.py - all guarding a function that costs nothing until it is
+        # invoked and that nobody can invoke without credentials. It is removed by deleting
+        # this block, which is the same edit turning its key off would have been.
+
+        # ITS OWN DEPS LAYER, for the reason the authorizer's has one: the chat function
+        # and the stream worker are under a hard "keeps working unchanged" constraint, and
+        # FastAPI in their layer would change their deployed artifact for a function they
+        # do not run. `_requirements_hash` folds the layer NAME into the asset hash, which
+        # is what keeps this fourth pip-built layer out of the CDK asset-cache collision
+        # the chat layer's long note describes.
+        stream_probe_deps_layer = _lambda.LayerVersion(
+            self,
+            "StreamProbeDepsLayer",
+            description=(
+                "FastAPI + uvicorn (manylinux x86_64) for the Lambda Web Adapter "
+                "response-streaming probe."
+            ),
+            compatible_runtimes=[_LAMBDA_PYTHON],
+            compatible_architectures=[_LAMBDA_ARCH],
+            code=_lambda.Code.from_asset(
+                str(_APP_DIR),
+                asset_hash=_requirements_hash(
+                    "stream-probe", _APP_DIR / "requirements-stream-probe.txt"
+                ),
+                asset_hash_type=AssetHashType.CUSTOM,
+                exclude=["*", ".*", "!requirements-stream-probe.txt"],
+                bundling=BundlingOptions(
+                    image=_LAMBDA_PYTHON.bundling_image,
+                    local=_PipManylinuxLayerBundler(
+                        _APP_DIR / "requirements-stream-probe.txt"
+                    ),
+                    command=[
+                        "bash",
+                        "-c",
+                        "pip install -r requirements-stream-probe.txt "
+                        "--target /asset-output/python",
+                    ],
+                    platform="linux/amd64",
+                ),
+            ),
+        )
+
+        # THE ADAPTER ITSELF, referenced by ARN rather than built: it is a Rust binary AWS
+        # publishes per region and per architecture, and its layer policy grants
+        # lambda:GetLayerVersion to everyone. The account, the name and the version are
+        # module constants (see _LWA_LAYER_NAME, which is derived from _LAMBDA_ARCH so the
+        # two cannot drift); the region and partition come from the stack, so a fresh
+        # install in another region attaches its own region's copy.
+        lambda_web_adapter_layer = _lambda.LayerVersion.from_layer_version_arn(
+            self,
+            "LambdaWebAdapterLayer",
+            f"arn:{self.partition}:lambda:{self.region}:{_LWA_LAYER_ACCOUNT}"
+            f":layer:{_LWA_LAYER_NAME}:{_LWA_LAYER_VERSION}",
+        )
+
+        stream_probe_log_group = logs.LogGroup(
+            self,
+            "StreamProbeLogGroup",
+            retention=logs.RetentionDays.THREE_MONTHS,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        stream_probe_lambda = _lambda.Function(
+            self,
+            "StreamProbeFunction",
+            runtime=_LAMBDA_PYTHON,
+            architecture=_LAMBDA_ARCH,
+            # NOT a dotted module.function, and this is the one property of this resource
+            # that looks like a mistake and is not. /opt/bootstrap is two lines:
+            #
+            #     exec -- "${LAMBDA_TASK_ROOT}/${_HANDLER}"
+            #
+            # so the handler is a PATH under the bundle root, and the file it names has to
+            # be there and has to be executable. app/run.sh carries mode 100755 in git;
+            # CDK's asset staging copies it with fs.copyFileSync (which preserves the mode)
+            # and the CDK CLI zips it with the file's st_mode in the entry's external
+            # attributes, so the bit survives to /var/task. A dropped execute bit is a
+            # clean deploy and a Permission denied on every invocation, which is why
+            # test_the_stream_probe_ships_an_executable_run_sh reads the staged mode.
+            handler="run.sh",
+            # TWO FILES. The probe imports nothing else in app/ on purpose - see
+            # app/stream_probe.py - so this list is the whole of it, spelled file by file
+            # like every other bundle here, with ".*" for the dotfile trap the scraper
+            # section documents.
+            code=_lambda.Code.from_asset(
+                str(_APP_DIR),
+                exclude=["*", ".*", "!stream_probe.py", "!run.sh"],
+            ),
+            # Order does not matter: the adapter layer owns /opt/bootstrap and
+            # /opt/extensions, the deps layer owns /opt/python, and nothing overlaps.
+            layers=[stream_probe_deps_layer, lambda_web_adapter_layer],
+            # NO ROLE ARGUMENT, so CDK builds one with AWSLambdaBasicExecutionRole and
+            # nothing else - the same shape the $connect authorizer has, and for the same
+            # reason. The probe reaches no model, no store and no guardrail, so it must not
+            # be able to.
+            #
+            # NO RESERVED CONCURRENCY either: that takes capacity out of the account pool,
+            # and the chat function is the only thing here entitled to fence some off.
+            timeout=Duration.seconds(60),
+            # 512 MB, matching the authorizer rather than the chat function. It imports
+            # FastAPI, starlette, pydantic and uvicorn at cold start and then sleeps; the
+            # memory is bought for the import, not for the work.
+            memory_size=512,
+            log_group=stream_probe_log_group,
+            environment={
+                # The wrapper the layer ships. Without it the runtime looks for a Python
+                # handler called "run.sh" and the function never starts.
+                "AWS_LAMBDA_EXEC_WRAPPER": "/opt/bootstrap",
+                # HALF OF THE STREAMING SWITCH, and the half that lives in the adapter.
+                # Lower case: this is the adapter's own enum ("buffered" or
+                # "response_stream"), not the Function URL's InvokeMode below, which is
+                # SCREAMING_SNAKE. Set only one of the two and the function still works -
+                # it just buffers - which is exactly the failure a probe has to be able to
+                # tell apart from a broken app, so both are asserted.
+                "AWS_LWA_INVOKE_MODE": "response_stream",
+                # Read twice: by uvicorn in run.sh, and by the adapter as the traffic port
+                # it forwards to and readiness-checks.
+                "PORT": str(_LWA_PROBE_PORT),
+            },
+        )
+
+        # THE OTHER HALF OF THE STREAMING SWITCH. InvokeMode is a property of the URL, not
+        # of the function, and Lambda buffers the whole body without it no matter what the
+        # adapter is configured to do.
+        #
+        # AWS_IAM, AND AuthType: NONE IS FORBIDDEN HERE. The upstream examples use NONE
+        # because they are demos; on this account an unauthenticated Function URL is an
+        # endpoint any stranger can bill us through, with none of the four fences POST
+        # /chat sits behind. IAM means a caller needs SigV4 over credentials that carry
+        # lambda:InvokeFunctionUrl for this ARN. It also decides what is NOT in the
+        # template: CDK attaches the anonymous lambda:InvokeFunctionUrl permission only
+        # when AuthType is NONE, so no AWS::Lambda::Permission is emitted for this URL at
+        # all, and test_the_stream_probe_url_is_iam_signed_and_open_to_nobody pins that.
+        #
+        # WHAT THE BROWSER EVENTUALLY TALKS TO IS UNDECIDED and out of scope. A student's
+        # browser holds a Cognito token, not SigV4 credentials, so this URL is not yet a
+        # front door - it is a thing the deployer and the eval harness can sign a request
+        # to, which is all a probe needs.
+        stream_probe_url = stream_probe_lambda.add_function_url(
+            auth_type=_lambda.FunctionUrlAuthType.AWS_IAM,
+            invoke_mode=_lambda.InvokeMode.RESPONSE_STREAM,
+        )
+
+        CfnOutput(
+            self,
+            "StreamProbeFunctionUrl",
+            value=stream_probe_url.url,
+            description=(
+                "IAM-signed Function URL for the response-streaming probe. GET /stream "
+                "returns ten timed chunks; the request must be SigV4-signed for service "
+                "'lambda'. Nothing else in this stack references it."
+            ),
+        )
 
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------
         #

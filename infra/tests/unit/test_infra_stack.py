@@ -25,7 +25,13 @@ import pytest
 from aws_cdk.assertions import Match, Template
 
 from infra.config import load_config
-from infra.infra_stack import NavigatorStack
+from infra.infra_stack import (
+    _LAMBDA_ARCH,
+    _LAMBDA_PYTHON,
+    _LWA_LAYER_ACCOUNT,
+    _LWA_LAYER_VERSION,
+    NavigatorStack,
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -1997,12 +2003,17 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
     The expectation is read off the FILESYSTEM, never restated here. A test that repeats
     the include list is just a second copy of the thing that keeps going stale.
 
-    NARROWED, NOT WEAKENED, when the streaming path landed: app/ now feeds THREE functions
-    rather than one, so "every module reaches the chat function" stopped being true (the
-    connect authorizer's module deliberately reaches nothing else, and must not). What has
-    to hold is the property that actually catches the failure - every module on disk is
-    deployed SOMEWHERE, and nothing is staged that has no module behind it - so it is
-    asserted against the union, and against the template where all three functions exist.
+    NARROWED, NOT WEAKENED, when the streaming path landed: app/ stopped feeding one
+    function, so "every module reaches the chat function" stopped being true (the connect
+    authorizer's module deliberately reaches nothing else, and must not). What has to hold
+    is the property that actually catches the failure - every module on disk is deployed
+    SOMEWHERE, and nothing is staged that has no module behind it - so it is asserted
+    against the union of every function built out of app/.
+
+    THE LIST BELOW IS THE ONLY PLACE THAT KNOWS HOW MANY THERE ARE. A function added to the
+    stack and not added here does not fail: its modules are simply counted as reaching
+    nothing, which passes as long as some other bundle carries them. Adding it is what makes
+    the `extra` half of this test cover its bundle too.
     """
     app_dir = Path(__file__).resolve().parents[3] / "app"
     on_disk = {
@@ -2017,6 +2028,11 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
         "ConnectAuthorizerFunction",
         "ChatStreamRouteFunction",
         "ChatStreamWorkerFunction",
+        # The Lambda Web Adapter probe. Its bundle also carries run.sh, which is not a
+        # module and is filtered out below with every other non-.py entry - the executable
+        # bit that makes it work is pinned by
+        # test_the_stream_probe_ships_an_executable_run_sh instead.
+        "StreamProbeFunction",
     )
     per_function = {
         name: {
@@ -2692,18 +2708,28 @@ def test_the_authorizer_layer_is_its_own_asset_and_carries_the_crypto_wheel():
     It is separate rather than a line in the chat layer's requirements because POST /chat is
     under a hard 'keeps working unchanged' constraint, and cryptography is a large wheel it
     has no use for."""
-    # Our three pip-built deps layers, by construct id - the template also holds the
-    # scraper's crawl-list layer and the CDK BucketDeployment CLI layers.
+    # Our pip-built deps layers, by construct id - the template also holds the scraper's
+    # crawl-list layer, the CDK BucketDeployment CLI layers and the Lambda Web Adapter,
+    # which is referenced by ARN and staged by nobody. The probe's layer is on the list
+    # because it is a FOURTH build with the same image, command and platform as the other
+    # three, which is precisely the shape that collided.
     layers = {
         lid: r
         for lid, r in _streaming_template()
         .find_resources("AWS::Lambda::LayerVersion")
         .items()
-        if lid.startswith(("ChatDepsLayer", "ScraperDepsLayer", "ConnectAuthorizerDepsLayer"))
+        if lid.startswith(
+            (
+                "ChatDepsLayer",
+                "ScraperDepsLayer",
+                "ConnectAuthorizerDepsLayer",
+                "StreamProbeDepsLayer",
+            )
+        )
     }
-    assert len(layers) == 3, sorted(layers)
+    assert len(layers) == 4, sorted(layers)
     keys = {json.dumps(r["Properties"]["Content"]["S3Key"]) for r in layers.values()}
-    assert len(keys) == 3, f"two deps layers share a staged asset: {sorted(layers)}"
+    assert len(keys) == 4, f"two deps layers share a staged asset: {sorted(layers)}"
 
     staged = _streaming_staged_listing("ConnectAuthorizerDepsLayer")
     assert staged == ["python"], staged
@@ -2717,6 +2743,289 @@ def test_the_authorizer_layer_is_its_own_asset_and_carries_the_crypto_wheel():
     # The `crypto` extra. Without it PyJWT cannot verify RS256 at all, which is the only
     # algorithm Cognito signs with - and the failure would be at runtime, on a connect.
     assert any(p.startswith("cryptography") for p in packages), packages
+
+
+# --- The response-streaming probe: FastAPI + Lambda Web Adapter + Function URL ----------
+#
+# UNGATED, so it is in every synth in this file and the cached template addresses it
+# directly. That is the opposite choice from the WebSocket surface above and the reason
+# these assertions need no second synth.
+#
+# WHAT MAKES THEM WORTH WRITING. Almost nothing about this function looks wrong when it is
+# wrong. A handler of "run.sh" is either the adapter's wrapper contract or a typo; a
+# response that arrives in one piece is either a buffered InvokeMode or a buffered adapter;
+# an AuthType of NONE is a working demo and an open door on the bill. None of it fails at
+# synth, and the deploy that would catch it is the one this probe exists to de-risk.
+
+
+def _stream_probe(template: Template) -> dict:
+    """The probe function's Properties."""
+    return _resource_named(template, "AWS::Lambda::Function", "StreamProbeFunction")[
+        "Properties"
+    ]
+
+
+def _stream_probe_url(template: Template) -> dict:
+    """The probe's Function URL Properties.
+
+    Addressed as THE one AWS::Lambda::Url in the stack rather than by name, so a second
+    Function URL appearing anywhere fails here rather than being quietly ignored."""
+    return _resource(template, "AWS::Lambda::Url")["Properties"]
+
+
+def test_the_stream_probe_boots_through_the_adapter_wrapper_not_a_python_handler():
+    """THE HANDLER IS A FILE PATH, NOT A DOTTED CALLABLE, and that is the whole shape of
+    the adapter. /opt/bootstrap out of the LWA layer is `exec -- "$LAMBDA_TASK_ROOT/$_HANDLER"`,
+    so the runtime never imports anything: it execs a file out of the bundle, that file
+    starts uvicorn, and the adapter proxies the invocation to it.
+
+    Both halves are pinned here because either one alone is a broken function that
+    synthesizes clean. Without the wrapper the python3.13 runtime tries to import a module
+    called "run" and dies at init; without the "run.sh" handler the wrapper execs whatever
+    dotted name it was given and dies on No such file."""
+    props = _stream_probe(_template())
+
+    assert props["Handler"] == "run.sh"
+    assert props["Environment"]["Variables"]["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/bootstrap"
+
+    # And the handler names a file that is actually IN the bundle. A handler pointing at a
+    # path the include list does not ship is the same failure with a different message.
+    assert props["Handler"] in _staged_listing("StreamProbeFunction")
+
+    # A ZIP, not an image. PackageType absent means Zip; the upstream example this is
+    # morphed from is PackageType: Image, which would bring ECR and an image build to CI.
+    assert "PackageType" not in props, props.get("PackageType")
+    assert props["Runtime"] == _LAMBDA_PYTHON.name
+    assert props["Architectures"] == [_LAMBDA_ARCH.name]
+
+
+def test_the_stream_probe_ships_an_executable_run_sh():
+    """THE FILE MODE IS THE FRAGILE PART, and it is invisible in the template - which
+    records an asset hash and nothing about what is inside it.
+
+    /opt/bootstrap EXECS this file. exec on a file without the execute bit is
+    Permission denied, and on a file without a shebang is Exec format error - both at
+    invocation, both after a completely clean deploy. The bit has to survive three hops:
+    git (mode 100755), CDK's asset staging into cdk.out, and the CDK CLI's zip. This
+    covers the first two, by reading the file after staging has happened. THE THIRD IS
+    NOT COVERED BY ANY TEST - the zip is written at `cdk deploy`, not at synth - and what
+    stands behind it is the CLI's own writeZipFile, which passes the file's st_mode into
+    the zip entry's external attributes.
+
+    The OTHER-execute bit specifically, not just the owner's: nothing guarantees the
+    Lambda sandbox runs as the uid that owns /var/task."""
+    import stat
+
+    staged = _staged_asset_dir("StreamProbeFunction")
+    assert sorted(os.listdir(staged)) == ["run.sh", "stream_probe.py"], sorted(
+        os.listdir(staged)
+    )
+
+    run_sh = staged / "run.sh"
+    mode = run_sh.stat().st_mode
+    assert mode & stat.S_IXUSR, oct(mode)
+    assert mode & stat.S_IXGRP, oct(mode)
+    assert mode & stat.S_IXOTH, oct(mode)
+    assert run_sh.read_text().startswith("#!/bin/bash"), (
+        "exec on a file with no shebang is an Exec format error, not a shell script"
+    )
+
+
+def test_the_run_script_starts_the_module_that_is_in_the_bundle():
+    """A rename with nothing to catch it. run.sh names its ASGI app as a string
+    ("stream_probe:app"), so renaming the module or the FastAPI instance leaves a green
+    synth, a green test suite and a function that cannot start - the failure is uvicorn's,
+    at cold start, in CloudWatch.
+
+    Both sides are read off disk rather than restated: the string out of run.sh, and the
+    module-level binding out of the app's AST."""
+    import ast
+
+    app_dir = Path(__file__).resolve().parents[3] / "app"
+    run_sh = (app_dir / "run.sh").read_text()
+
+    match = re.search(r"(\w+):(\w+)\s*$", run_sh.strip())
+    assert match, f"run.sh does not end in a module:attribute target:\n{run_sh}"
+    module, attribute = match.group(1), match.group(2)
+
+    module_path = app_dir / f"{module}.py"
+    assert module_path.is_file(), f"run.sh starts {module}, which is not a module in app/"
+
+    tree = ast.parse(module_path.read_text())
+    bound = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert attribute in bound, (
+        f"run.sh starts {module}:{attribute}, but {module}.py binds no {attribute}"
+    )
+
+
+def test_the_adapter_layer_is_published_for_the_functions_architecture():
+    """THE CONSTRAINT THAT DEPLOYS CLEAN AND FAILS AT RUNTIME. AWS publishes the adapter as
+    one layer per architecture under two DIFFERENT NAMES, and Lambda does not refuse an
+    x86_64 layer on an arm64 function - it accepts it and the extension dies on an Exec
+    format error at init.
+
+    The name-to-architecture table is written out again here on purpose. It is a published
+    AWS fact rather than one of our config values, so a second copy is a check, not the
+    duplication the rest of this file avoids: infra_stack.py derives the name from
+    _LAMBDA_ARCH, and this asserts that what came out matches the architecture the TEMPLATE
+    actually gives the function."""
+    template = _template()
+    props = _stream_probe(template)
+    architecture = props["Architectures"][0]
+
+    published_by_aws = {
+        "x86_64": "LambdaAdapterLayerX86",
+        "arm64": "LambdaAdapterLayerArm64",
+    }
+    # The deps layer arrives as a {"Ref": ...} to a resource in this template; the adapter
+    # is the one that arrives as an assembled ARN.
+    arn = json.dumps([layer for layer in props["Layers"] if "Fn::Join" in layer])
+
+    # The ARN ENDS in the layer name and a version number - the trailing quote is the
+    # anchor, so an ARN with anything after the version, or with no version at all, fails
+    # here. A layer ARN without a version does not identify a layer version and the deploy
+    # is the thing that finds out.
+    assert re.search(rf':layer:{published_by_aws[architecture]}:\d+"', arn), arn
+    assert f':layer:{published_by_aws[architecture]}:{_LWA_LAYER_VERSION}"' in arn, arn
+
+    # Published by AWS's account, in THIS stack's region and partition rather than a
+    # literal - a fresh install in another region attaches its own region's copy.
+    assert _LWA_LAYER_ACCOUNT in arn, arn
+    assert '"Ref": "AWS::Region"' in arn, arn
+    assert '"Ref": "AWS::Partition"' in arn, arn
+
+
+def test_the_stream_probe_streams_on_both_the_url_and_the_adapter():
+    """TWO SWITCHES, AND ONE OF THEM ALONE IS A BUFFERED FUNCTION THAT LOOKS FINE.
+
+    InvokeMode is a property of the Function URL: without RESPONSE_STREAM, Lambda collects
+    the whole body and sends it in one piece no matter what the app did. AWS_LWA_INVOKE_MODE
+    is the adapter's own setting: without it the adapter buffers before Lambda ever sees the
+    body. Either omission produces a working endpoint that answers all at once, which is
+    exactly the outcome this probe exists to distinguish from a working one.
+
+    THE TWO SPELLINGS DIFFER and that is not a typo here: RESPONSE_STREAM is
+    CloudFormation's enum for AWS::Lambda::Url, response_stream is the adapter's own."""
+    template = _template()
+
+    assert _stream_probe_url(template)["InvokeMode"] == "RESPONSE_STREAM"
+    assert (
+        _stream_probe(template)["Environment"]["Variables"]["AWS_LWA_INVOKE_MODE"]
+        == "response_stream"
+    )
+
+    # The URL points at the probe and not at some other function in the stack.
+    target = json.dumps(_stream_probe_url(template)["TargetFunctionArn"])
+    assert "StreamProbeFunction" in target, target
+
+
+def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody():
+    """THE BILLING HOLE THIS STACK MUST NOT HAVE. The upstream examples set AuthType: NONE,
+    which is an endpoint any stranger on the internet can invoke - behind none of the four
+    fences POST /chat sits behind, and on a Function URL there is no Cognito gate and no
+    route throttle to add.
+
+    AuthType also decides what is NOT in the template, which is the second half here: CDK
+    attaches an anonymous lambda:InvokeFunctionUrl permission to AnyPrincipal ONLY when the
+    auth type is NONE. So the assertion that no such permission exists anywhere is a real
+    check on the auth type rather than a restatement of it - flip AuthType to NONE and this
+    test fails twice."""
+    template = _template()
+
+    assert _stream_probe_url(template)["AuthType"] == "AWS_IAM"
+
+    for logical_id, permission in template.find_resources(
+        "AWS::Lambda::Permission"
+    ).items():
+        props = permission["Properties"]
+        assert props.get("Principal") != "*", (
+            f"{logical_id} lets anyone invoke a function in this stack: {props}"
+        )
+        assert "FunctionUrlAuthType" not in props, (
+            f"{logical_id} is a Function URL permission, which only exists for "
+            f"AuthType NONE: {props}"
+        )
+        assert "StreamProbeFunction" not in json.dumps(props.get("FunctionName", "")), (
+            f"{logical_id} grants an invoke on the probe, which is reachable by SigV4 "
+            f"alone: {props}"
+        )
+
+
+def test_the_stream_probe_can_reach_nothing_but_its_own_logs():
+    """It sleeps and counts. A probe that could retrieve from the KB or read the history
+    table would be a second, unreviewed way into both - and the whole argument for landing
+    it now is that it shares nothing with the paths that carry a student's turn."""
+    template = _template()
+    role_id = next(
+        lid
+        for lid in template.find_resources("AWS::IAM::Role")
+        if lid.startswith("StreamProbeFunctionServiceRole")
+    )
+    role = template.find_resources("AWS::IAM::Role")[role_id]["Properties"]
+    managed = role.get("ManagedPolicyArns", [])
+    # EXACTLY ONE managed policy, not merely "the basic one is present" - a second entry is
+    # how a grant gets added without an inline policy for the loop below to catch.
+    assert len(managed) == 1, managed
+    assert "AWSLambdaBasicExecutionRole" in json.dumps(managed), managed
+
+    # No inline policy at all, the same assertion the $connect authorizer's role carries.
+    for policy in template.find_resources("AWS::IAM::Policy").values():
+        assert role_id not in json.dumps(policy["Properties"].get("Roles", [])), (
+            f"the probe's role carries an inline policy: {policy}"
+        )
+
+    # And no reserved concurrency: capacity out of the account pool belongs to the chat
+    # function alone (test_only_the_chat_function_reserves_concurrency states the rule).
+    assert "ReservedConcurrentExecutions" not in _stream_probe(template)
+
+
+def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
+    """THE POINT OF LANDING IT ALONE. This commit proves a mechanism; it moves no logic. If
+    the probe is reachable through the HTTP API or the socket, or if the browser can find
+    it, then it is not a probe - it is a third transport nobody reviewed.
+
+    Its environment is the assertion with teeth: three adapter variables and nothing else.
+    A KNOWLEDGE_BASE_ID or a STREAM_CALLBACK_URL in here would mean somebody started moving
+    the turn onto it, which is the next commit's job and not this one's."""
+    template = _template()
+
+    assert set(_stream_probe(template)["Environment"]["Variables"]) == {
+        "AWS_LAMBDA_EXEC_WRAPPER",
+        "AWS_LWA_INVOKE_MODE",
+        "PORT",
+    }
+
+    # No API Gateway integration on either API points at it.
+    for logical_id, integration in template.find_resources(
+        "AWS::ApiGatewayV2::Integration"
+    ).items():
+        assert "StreamProbeFunction" not in json.dumps(integration["Properties"]), (
+            f"{logical_id} routes API Gateway traffic at the probe"
+        )
+
+    # And the browser is never told it exists. Read off the STAGED config.json for the
+    # reason the streaming gate's test gives: a deploy-time token leaves a `<<marker>>`
+    # behind in the asset, so the KEY is what is visible there - and the key is what the
+    # frontend reads. Scanned as TEXT rather than parsed, because those markers are not
+    # JSON and json.loads on this file raises.
+    stamped = (_staged_asset_dir("SiteConfigDeployment") / "config.json").read_text()
+    keys = re.findall(r'"(\w+)"\s*:', stamped)
+    assert not [key for key in keys if "probe" in key.lower()], sorted(keys)
+
+    # The deployer IS told, through a stack output - which is where a thing only a signed
+    # caller can use belongs.
+    outputs = json.loads(
+        (_synth_outdir() / "SjsuNavigatorStack.template.json").read_text()
+    )["Outputs"]
+    assert any(name.startswith("StreamProbeFunctionUrl") for name in outputs), sorted(
+        outputs
+    )
 
 
 # --- Gav-specific surface: absent, and staying absent ------------------------------------

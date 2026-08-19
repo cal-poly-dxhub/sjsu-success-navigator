@@ -1,0 +1,19 @@
+# Deps for the Lambda Web Adapter response-streaming probe (app/stream_probe.py) ONLY.
+#
+# ITS OWN FILE, not a line in requirements.txt, for the reason requirements-authorizer.txt
+# gives: POST /chat and the WebSocket worker are under a "keeps working unchanged"
+# constraint, and adding FastAPI to their layer would change their deployed artifact for a
+# function they do not run. `_requirements_hash` folds the layer NAME into the asset hash,
+# so this file also keeps the probe's layer out of the CDK asset-cache collision that once
+# had two layers silently sharing one bundle.
+#
+# THE FRAMEWORK IS THE POINT, not a convenience. The adapter speaks HTTP to an ordinary
+# web server; FastAPI's StreamingResponse over uvicorn is what turns an async generator
+# into chunked transfer encoding, and that is the mechanism under test.
+#
+# uvicorn, NOT uvicorn[standard]: the extra pulls httptools and uvloop, two compiled
+# wheels, to make a server faster than a Lambda behind a Function URL can be. Plain
+# uvicorn is pure Python, and every wheel below except pydantic-core is too (verified:
+# pydantic-core lands as the cp313 manylinux2014_x86_64 build).
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
