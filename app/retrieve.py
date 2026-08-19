@@ -1,17 +1,6 @@
-"""Bedrock Knowledge Base retrieval - camp's backend/services/retrieve.py.
+"""Bedrock Knowledge Base retrieval: top-k, drop below the score floor, carry metadata out.
 
-Behaviour is camp's, unchanged: top-k Retrieve, drop anything below the score floor,
-carry title/source_url/section out of each chunk's metadata. Two porting changes, both
-about running on Lambda rather than under uvicorn:
-
-  - the boto3 client is built ONCE at module scope, not per call. Camp built a client
-    inside every request, which on Lambda throws away the warm container's connection
-    pool on each invocation.
-  - it carries an explicit retry config, so a Bedrock throttle is retried rather than
-    surfacing to the student as a 502.
-
-`section` is load-bearing downstream: cards.py keys its deprioritization and follow-up
-presets off it, so it is read here even though nothing in this module uses it.
+The module-scope client and its retries are in docs/chat-service.md, The Converse loop.
 """
 
 from __future__ import annotations
@@ -24,8 +13,6 @@ from botocore.config import Config
 
 from settings import Settings
 
-# Module scope: built once per container, reused by every invocation. adaptive retries
-# back off on throttling rather than failing the request.
 _AGENT_RUNTIME_CLIENT = None
 
 

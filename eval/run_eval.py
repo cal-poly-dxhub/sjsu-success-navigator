@@ -1,36 +1,8 @@
 #!/usr/bin/env python3
 """Collect the deployed system's answers to the ground-truth questions. NO SCORING.
 
-This runner is deliberately judgment-free: it sends each ground-truth question to the real
-deployed endpoint - genuine HTTP through API Gateway with a real Cognito access token, over
-the same gated route the browser uses - and records what came back. Accuracy is decided
-by humans (and by Claude reading the transcript), never by this script. The only derived
-field is `behavior_fired`, a mechanical classification of the response shape (safety card
-present / cards present / prose only / error), so the rendered page can badge each answer.
-
-Artifacts, per run, under --out-dir:
-    eval-<UTC stamp>.json   the transcript: run metadata + every wire response verbatim
-    eval-<UTC stamp>.html   the side-by-side page (golden vs actual), via render_results.py
-
-Auth NO LONGER mirrors the frontend, and cannot: the browser signs in by redirecting to
-Cognito managed login (authorization code + PKCE), which needs a browser and a human. This
-runner is headless, so it uses the pool's SECOND app client - the machine one - with a
-single unsigned USER_PASSWORD_AUTH InitiateAuth call, and the ACCESS token (not the id
-token) as the Bearer. Both clients are in the API's JWT audience, so the token this gets is
-accepted on exactly the same route the browser's is.
-
-The eval account's password comes from the EVAL_PASSWORD env var or --password-file - never
-argv, never this repo. It is a machine account (see ChatCreateEvalUserCommand in the stack
-outputs), not the retired shared login: humans each have their own account now and reach it
-through the redirect, which this client cannot serve at all.
-
-Endpoint discovery reads the CloudFormation stack outputs (ChatApiUrl, ChatEvalClientId) so
-nothing is hardcoded; --api-url and --client-id override for testing against a different
-deployment. ChatEvalClientId, NOT ChatWebClientId: the web client has no password flow
-enabled, so its id here fails with NotAuthorizedException.
-
-Dependencies (this repo pins nothing for eval/): boto3, httpx, PyYAML.
-    python3 -m pip install boto3 httpx PyYAML
+Headless, so it signs in as the pool's machine client; endpoints come from the stack
+outputs. See docs/eval-harness.md. Needs boto3, httpx and PyYAML.
 """
 
 from __future__ import annotations
@@ -55,17 +27,13 @@ DEFAULT_STACK = "SjsuNavigatorStack"
 DEFAULT_PROFILE = "gavilan"
 DEFAULT_REGION = "us-west-2"
 DEFAULT_USERNAME = "eval-runner"
-# Per-request ceiling: the HTTP API integration cap is 30s, so anything past ~32s is the
-# gateway timing out, not the answer still coming.
+# The HTTP API integration cap is 30s, so past ~32s it is the gateway, not the answer.
 REQUEST_TIMEOUT_S = 35.0
 
 
 def discover_endpoint(profile: str, region: str, stack_name: str) -> dict:
-    """ChatApiUrl and ChatEvalClientId from the stack outputs.
-
-    ChatEvalClientId is the MACHINE client. ChatWebClientId next to it in the outputs is
-    the browser's, and it has no password flow - reaching for it here fails at sign-in.
-    """
+    """ChatApiUrl and ChatEvalClientId from the stack outputs. The EVAL client, not the web
+    one, which has no password flow."""
     session = boto3.Session(profile_name=profile, region_name=region)
     stacks = session.client("cloudformation").describe_stacks(StackName=stack_name)
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stacks["Stacks"][0]["Outputs"]}
@@ -97,7 +65,7 @@ def sign_in(client_id: str, region: str, username: str, password: str) -> str:
         )
     token = (body.get("AuthenticationResult") or {}).get("AccessToken")
     if not token:
-        # A challenge here means the pool user is not in a permanent-password state.
+            # A challenge here means the pool user has no permanent password.
         raise SystemExit(f"sign-in returned no access token: {json.dumps(body)[:300]}")
     return token
 
@@ -115,7 +83,7 @@ def classify(status: int | None, response: dict | None) -> str:
 
 
 def ask_one(client: httpx.Client, api_url: str, token: str, pair: dict) -> dict:
-    """POST one question as a fresh single-turn conversation. One retry on throttle."""
+    """POST one question as a fresh single-turn conversation. One retry on a throttle."""
     payload = {"query": pair["question"], "followup": False}
     headers = {"Authorization": f"Bearer {token}"}
     attempts = 0

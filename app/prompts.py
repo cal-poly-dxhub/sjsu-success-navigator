@@ -1,202 +1,7 @@
 """Sammy's system prompt, built from the card caps rather than restating them.
 
-The caps are interpolated from Settings (config.yaml `cards`), which is the point: cards.py
-enforces those numbers and this file tells the model about them, and both read the same
-value. A literal here would be a second copy, and the drift would be invisible from either
-side - the model would be briefed on one budget while the server applied another, and the
-only symptom would be descriptions quietly losing their tails.
-
-ONE RULE, ONE PLACE. Every behavioural rule in the template is stated once, under the
-heading it belongs to, and the sections are the grouping: how a turn runs, what the server
-enforces, what language the reply is in, what goes where, what may be stated at all, scope,
-formatting, shorthand, safety, location, escalation, and the Never list. Adherence falls off
-as rules stack and the misses are silent, so a rule restated in a second section is not
-emphasis, it is one more rule competing with the first. Exactly two duplicates survive, both
-deliberate and both noted where they sit: the safety keys' English carve-out (the Language
-section states it for every tag the server reads, and Safety says it again, because the
-failure there is a crisis panel lost to a translation), and the ban on an escalation offer
-during a safety turn (the escalation section is gated, so it cannot lean on Safety's list of
-exclusions).
-
-The worked <example> blocks are part of the contract, not decoration. They are the primary
-steer on tone and on length: a model matches the shape it is shown far more reliably than it
-counts characters or weighs adjectives, so every example sits inside the caps rather than
-testing them, and every example is written in the register the rules describe. To move the
-editorial balance - more of the answer in the prose, more in the cards - rewrite the
-examples. That is the knob, and it is why the parser knows nothing about how much text
-belongs where.
-
-That is also why shortening the reply is an edit to the examples and not only to the stated
-target. The descriptions used to sit at the length the target named, so a target lowered on
-its own would have left the model copying the old one; the two move together or neither
-moves. The caps did not move with them and should not: they are runaway guards, they sit
-several times above the target, and every truncation is still a WARNING-logged bug
-(docs/cards-v2.md, Length caps).
-
-They carry the reply's ORDER for the same reason. cards.py splits the reply at its last
-card block, so where a sentence sits relative to the blocks is now where it sits on screen,
-and a closing question written above the cards renders above the answer it is asking about.
-The rules state the order; the first example models it by ending with a question under its
-cards, and the second models the other half by ending on its cards, because a question in
-every example teaches a habit rather than an option.
-
-The template bans em and en dashes and the examples model their absence. The display path
-(cards.normalise_dashes) rewrites any that slip through into commas as a backstop, but a
-dash inside this file would TEACH the habit the server then edits, examples steering harder
-than prohibitions. Keep this file dash-free, docstrings included, so the ban is never one
-edit away from being contradicted by its own delivery vehicle.
-
-THE LANGUAGE SECTION IS THERE FOR THE CARDS, which is why the cards are stated separately and
-in capitals rather than left to follow from "the whole reply". A model told to answer in the
-student's language does so readily in prose and much less readily inside a <card> block, where
-the fields read as metadata rather than as speech, and the miss is not a cosmetic one: the
-cards carry the answer, so a Spanish lead-in over English cards has greeted the student in
-Spanish and answered them in English. The <followup> is the sharpest case of all, because it
-is a sentence the student reads on a button and sends back as their next turn, so an English
-follow-up under a Spanish reply asks them to switch languages to continue.
-
-WHAT DOES NOT FOLLOW THE LANGUAGE is the other half of that section, and it is stated there
-for every tag at once rather than section by section. Phone numbers, emails and URLs are
-copied character for character because a translated one is simply wrong. Office and building
-names are copied because the name is what the person at the front desk answers to, and a
-student sent to a translated door does not arrive. The tag names, the ref ids and the keys
-inside a <safety> or a <place> block are copied because the SERVER reads them and nobody
-else does: a translated key resolves to nothing, which app/safety.py and app/places.py log
-at WARNING and drop. What the safety panel then SAYS was never at risk in either direction,
-and that is by construction rather than by instruction, since the model writes keys and the
-table writes contacts.
-
-The escalation draft is the one piece of model prose that stays English while the reply around
-it does not, and the rule lives in the escalation section rather than in the language one so
-that a deployment with no recipient is never told about a tag it cannot use. It is the only
-thing in a reply whose reader is not the student.
-
-THE FRONTEND'S LANGUAGE PICKER REACHES NONE OF THIS. It is a display preference held in the
-browser and never sent with a request (frontend/src/lib/i18n.ts), so the reply's language is
-decided here, from the message, and the picker and the reply can honestly disagree: sidebar in
-Thai, question typed in English, answer in English. Wiring the picker into the request would
-let a setting somebody changed once overrule what they actually just wrote.
-
-Nothing here suppresses cards on a follow-up, deliberately. Two instructions used to, and
-both are gone. "Do not repeat cards the student already has" was unenforceable: history
-carries prose only, so the model cannot see which cards were shown, and an instruction it
-cannot evaluate collapses into avoiding cards altogether. "If the user message says they
-clicked a follow-up, emit no cards" keyed the answer's shape on which widget sent the turn,
-when a follow-up is precisely when a student wants the specific destination. Retrieval now
-runs server-side on every turn before the model speaks (orchestrator primes the first
-search); what the prompt decides is whether to search AGAIN, and that turns on whether the
-answer needs a source, never on where the turn sits in the conversation. See
-orchestrator._build_user_message, which no longer reads the flag.
-
-The formatting section names FOUR marks and bans the rest, and the ban is the load-bearing
-half. The student's screen renders bold, italics, bulleted lists and numbered lists and
-nothing else, so a heading, a table, or a bracket-and-parenthesis link would reach a student
-as the literal characters the model typed. A link is the sharper case: it is not merely
-unrendered, it is the one thing the card contract exists to prevent, since a destination the
-model typed is a destination nobody resolved. The section carries the SYNTAX only; where a
-mark earns its place is a card rule (contacts as bullets) or a formatting rule of one line
-(steps in order), never both.
-
-The four are stated in the display parser's own syntax rather than in markdown's
-(frontend/src/lib/messageFormat.ts): asterisks only, because `_underscores_` are deliberately
-not italics there - the prose carries email local parts and snake_case ids, where the
-underscores are the text - and a numbered line counts only with the `.` or `)` and the space
-the parser requires, so "1." alone on a line is the characters the model typed. A permission
-looser than the parser is how a model gets told a mark works and the student gets asterisks.
-
-Two of the four are modelled in the examples and two are only permitted, which is a real
-difference in how often a model reaches for them: a construct in no example is used at
-whatever rate training suggests. Bullets and bold are shown where they earn their place; a
-numbered list earns its place on a process answer, none of the seven worked examples is one,
-and inventing one to carry it would grow the file for a construct the rules already permit.
-If an example is ever added for another reason and it is a sequence, it should number it.
-
-Nothing about the display is ever described TO the student (see Never). The renderer's reach
-is an internal fact, and a student who asks for italics wants italics, not an explanation of
-what renders: the model used to answer that request by declining it in the prompt's own
-voice, which was the prompt being read out loud with its old two-mark ban intact.
-
-WHAT MAY BE STATED AT ALL IS ONE SECTION, not a card rule plus two entries in the Never
-list. Saying only what a source supports, inventing no specific, refusing to read a result's
-silence as a fact and the honest-miss answer are the same rule seen from four sides, and they
-were three sections apart: a model that has already read "say only what the source supports"
-gains nothing from meeting "never invent a phone number" forty lines later, and the pair cost
-what a rule costs. The honest-gap behaviour joins them because it is what the rule leaves the
-model to do.
-
-The escalation section is INTERPOLATED OR ABSENT, never present-but-off. A deployment with
-no `escalation.contact` has nowhere to send a draft, so the model is not told the tag
-exists: the alternative is paying for those tokens on every turn to produce a block the
-server then drops, and teaching a contract whose output nobody can act on. One value gates
-the section and the assembler (app/escalation.py), so the two cannot disagree about whether
-the feature is on. The section is not modelled in an example, deliberately: an example is
-the strongest steer in this file, and an offer to write to a human is a judgement call the
-rules describe rather than a shape to copy on turns that look like the sample.
-
-THE CAMPUS SHORTHAND LIST IS VOCABULARY, NOT TRIVIA, and that is why it is here rather than
-in config.yaml with the tunables. The model writes its own retrieve_campus_resources queries,
-so an abbreviation it cannot expand costs the turn twice over: it searches the campus site for
-the letters and then answers from whatever that returned. A sponsor testing the live app hit
-exactly this split, where "SU" resolved to the Student Union and "BBC" did not resolve at all.
-Every entry states a mapping some sjsu.edu page states, because the failure this fixes has a
-worse twin: an invented expansion routes a student confidently to the wrong office, and a
-confident wrong destination costs more than a missing one. The list is deliberately short of
-the full building directory - the codes students type, the offices they ask for by initials -
-and the rule under it sends everything else to a question rather than to a guess.
-
-THE PLACE SECTION IS A KEY VOCABULARY and is always present, which is what makes it unlike
-the escalation section beside it: there is no deploy config to gate it on, because the
-catalogue is a table in app/places.py rather than an address somebody has to configure. It
-is the safety roster's shape applied to a second problem: the model picks a key, the table
-owns the name, the address and the links.
-
-IT IS ONE TEST WITH TWO HALVES rather than a trigger rule plus a roster rule, and the shape
-is measured rather than reasoned. The two halves fail in different directions - a panel on a
-turn nobody asked a location question on, and a panel keyed to a near miss of the office
-they did ask about - and written as two separate prohibitions the model reliably obeyed
-whichever one had been made more prominent, at 0 to 2 in 4 on the other. Sonnet-class
-attention treats a second negative rule about the same tag as competition, not as
-reinforcement. One test, with a worked micro-case per half in the prompt's own voice, holds
-both: "where is the food pantry" has both halves, "I have no money for food" has neither,
-and "where is international student services" has the first half only. The near-miss half is
-the one no server-side check can see, because the key resolves, the address is real, and it
-is the wrong building.
-
-The two location examples exist for the same empirical reason and were added against this
-file's own earlier judgement that a location is a decision rather than a shape to copy. The
-rules alone did not hold: with the ownership rule stated and no example, a location question
-put the address in the card, in the prose and on the panel at once. The examples are what
-moved it, and the residual is recorded with them (see the eval note in
-docs/system-prompt.md, Showing where a place is).
-
-SAY EACH FACT ONCE IS ITS OWN SECTION because the ownership it states is what stops one
-answer arriving three times. The panel owns where a place is, a card owns its office and the
-prose orients, and the section ends with the precedence rather than leaving it to be
-inferred: a fact with nowhere else to go is written twice rather than lost, because a
-student who reads an address twice is inconvenienced and a student who never got the phone
-number starts over. Without that last line the rule reads as a licence to drop a contact
-band to avoid a repeat, which is the failure the 2026-08-10 eval was scoring.
-
-The card rule that used to name "an address" among the facts to state outright now carries
-the exception, in the same sentence: on a turn with a <place> block, the panel states where
-the place is and the card does not. Two rules that quietly disagreed about one fact are
-worth more than the words the exception costs, and the model obeyed the more specific of the
-two, which was the card rule.
-
-A SAFETY TURN'S EXCLUSIONS ARE STATED IN THE SAFETY SECTION, once: no cards and no location
-panel. They used to be one line in Safety and a second at the foot of the place section, and
-the server enforces both anyway (apply_safety_handoff_to_response drops the cards and the
-place card together), so the second statement bought nothing a rule does not cost. The
-escalation section keeps its own ban because that section is gated: a deployment with no
-recipient must not read a sentence about a tag it was never told about.
-
-The examples mark their annotations as [bracketed] stage directions with the reply under an
-explicit [your reply] marker. The first shipped format ran the reply directly under a bare
-"Results:" line, and the model learned that annotating the situation is part of the output:
-five answers in the 2026-08-10 eval opened by narrating the retrieval decision ("No
-retrieval needed here, this is a tell me more moment"). Examples steer harder than rules,
-so the boundary between stage direction and speech has to be drawn in the examples
-themselves, not just banned in the Never list.
+One rule in one place, the worked examples are the contract, and several shapes here are
+measured rather than reasoned; see docs/chat-service.md, The system prompt.
 """
 
 from __future__ import annotations
@@ -209,17 +14,7 @@ from settings import Settings
 
 
 def build_system_prompt(settings: Settings) -> str:
-    """The system prompt, with this deployment's caps and safety roster written into it.
-
-    The roster is interpolated from app/safety.py's table, the same table the server
-    resolves keys against: a key the model is taught always resolves, and a new resource
-    is one table entry away from being both teachable and resolvable.
-
-    THE ESCALATION SECTION IS ABSENT, NOT DISABLED, when no recipient is configured. A tag
-    the server would drop is a tag the model should never have been taught: teaching it and
-    then discarding its output spends tokens on every turn to produce an offer no student
-    can see. The same value gates both halves (escalation.escalation_available), so the
-    prompt cannot come to promise something the deployment cannot deliver."""
+    """The system prompt, with this deployment's caps and rosters written into it."""
     roster = "\n".join(f"- {key}: when {when}" for key, when in safety_roster_for_prompt())
     places = "\n".join(f"- {key}: {when}" for key, when in place_roster_for_prompt())
     return _TEMPLATE.format(
@@ -238,51 +33,25 @@ def build_system_prompt(settings: Settings) -> str:
     )
 
 
-# The campus shorthand glossary, from data/abbreviations.csv. It is a FLAT LIST OF FACTS about
-# what SJSU calls things - which is what makes it data rather than prose, and what makes it
-# editable by somebody at Student Affairs who knows that a new building code is in use before
-# any of us do. Read at import through app/campus_data.py, so a malformed row is a cold start
-# that fails rather than a prompt quietly missing a line.
+# The campus shorthand glossary, from data/abbreviations.csv: a flat list of facts about what
+# SJSU calls things, so somebody at Student Affairs can add a building code without a deploy.
 _ABBREVIATIONS_FILE = "abbreviations.csv"
 
 
 def abbreviation_glossary() -> str:
-    """The shorthand list as the prompt's own lines, in file order.
-
-    Interpolated rather than written into the template for the same reason the two rosters
-    are: one table, read once, in the one place that shows it to the model.
-    """
+    """Return the shorthand list as the prompt's own lines, in file order."""
     return "\n".join(
         f"- {row['abbreviation']}: {row['expansion']}"
         for row in load_rows(_ABBREVIATIONS_FILE, ("abbreviation", "expansion"))
     )
 
 
-# Built AT IMPORT, like places.py's and safety.py's tables, so a damaged glossary is a cold
-# start that fails rather than a first request that does.
+# Built at import, like places.py's and safety.py's tables, so a damaged glossary fails cold.
 _ABBREVIATIONS = abbreviation_glossary()
 
 
-# Interpolated into the template above, always. Its own block rather than a paragraph in the
-# card rules, and for a different reason from the escalation section's: this one is a KEY
-# VOCABULARY, and a vocabulary belongs where the roster it draws from can be read beside it.
-# The roster comes from app/places.py's table, exactly as the safety roster comes from
-# app/safety.py's, so a key the model is taught always resolves and the only key that can
-# miss is one it invented.
-#
-# The rule that carries the feature is the two-half test above the roster: the message has to
-# be asking where something is, AND the office asked about has to be one of the keys. Both
-# halves are stated with a worked micro-case, because two separate prohibitions about this
-# tag traded off against each other under measurement rather than adding up.
-#
-# Two worked examples DO model this now, one panel turn and one turn whose office has no key.
-# That reverses this file's earlier judgement (a location is a decision rather than a shape to
-# copy) and it was reversed by measurement, not by taste: the rules alone left a location
-# question stating the address in the card, in the prose and on the panel at once.
-#
-# What is NOT here any more: the keys' English carve-out (the Language section states it for
-# every tag the server reads) and the ban on a location block on a safety turn (the Safety
-# section states every safety-turn exclusion together).
+# Always interpolated. A key vocabulary, drawn from app/places.py's table, so a key the
+# model is taught always resolves. See docs/chat-service.md, The system prompt.
 _PLACE_SECTION = """
 Showing a student where a place is:
 When a student is asking where a place is, and that place is in the list below, end your reply with one location block naming it:
@@ -305,19 +74,8 @@ At most one block in a turn.
 """
 
 
-# Interpolated into the template above, or replaced by nothing at all. Its own block rather
-# than a paragraph inside the card rules, because it is the one thing the model writes that
-# leaves the app: prose here becomes a message a member of staff opens in their inbox.
-#
-# The cap is stated because the server enforces it, and what it does when it bites is
-# stated with it: the offer is DROPPED, never trimmed. That is the opposite of every other
-# cap the model is told about, so leaving it implicit would teach the card contract's habit
-# - write to the ceiling, the server will tidy it - on the one path where the tidying is a
-# half-written message to a stranger.
-#
-# The safety-turn ban stays HERE rather than joining the others in the Safety section: this
-# section is gated on a configured recipient, and a deployment without one must never read a
-# sentence about a tag it was not taught.
+# Interpolated or replaced by nothing at all: a deployment with no recipient must never
+# read a sentence about a tag it was not taught.
 _ESCALATION_SECTION = """
 Offering to write to a person:
 Some turns should reach a human being rather than a page. Offer to write one when any of

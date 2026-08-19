@@ -1,20 +1,7 @@
 """The generation worker: the half of a streamed turn that takes twenty seconds.
 
-WHY IT IS A SEPARATE FUNCTION. A WebSocket route integration has the same 29-second ceiling
-every API Gateway integration has, and the agent loop can use most of it. So the route
-function (app/streaming.py) does the fast, ordered part - validate, rate limit, guardrail,
-write the student's message - and hands off here ASYNCHRONOUSLY, returning immediately. This
-function is not behind the gateway at all: it talks back down the connection with
-post_to_connection, which is why the timeout stops applying.
-
-IT IS INVOKED WITH RETRIES SET TO ZERO (infra_stack.py). Lambda retries a failed async
-invocation twice by default, and a retried worker answers the same question again - down the
-same socket, billing the model each time. Nothing here is idempotent enough to survive that,
-so the retry is off rather than defended against.
-
-WHAT IT DOES NOT DO is decide anything about the reply. It reads history, calls the same
-run_chat POST /chat calls, writes the same two records and sends the same ChatResponse. The
-streaming is a sink handed to the loop; remove it and this is the buffered turn.
+It decides nothing about the reply, and its async invoke has retries off; see
+docs/chat-service.md, Streaming.
 """
 
 from __future__ import annotations
@@ -40,26 +27,15 @@ STORE = ConversationStore(
     SETTINGS.chat_history_table_name, title_max_chars=SETTINGS.title_max_chars
 )
 
-# Seconds held back from Lambda's remaining time for the work AFTER the loop: the reply is
-# written, the conversation may be titled, and the final payload still has to be pushed.
-# Larger than the HTTP handler's reserve because that last push is a network call, and it is
-# the one thing in the turn the student actually sees.
+# Held back from Lambda's remaining time for the write, the title and the final push.
 _POST_LOOP_RESERVE_SECONDS = 6
 
-# Attach this stack's guardrail to ConverseStream, or not. OFF by default and measured
-# (config.yaml `streaming.output_guardrail`): the only safe stream mode holds the reply back
-# to scan it in chunks, which spends most of this feature's benefit on a screen that today's
-# guardrail cannot fire.
+# Off by default and measured; see docs/chat-service.md, Streaming.
 _OUTPUT_GUARDRAIL = (os.environ.get("STREAM_OUTPUT_GUARDRAIL") or "").lower() == "true"
 
 
 def _guardrail_config():
-    """The guardrail block for ConverseStream, or None.
-
-    `sync` IS THE ONLY MODE THIS CAN EMIT, and that is structural rather than a default:
-    `async` releases text to the student before it has been scanned, which is not a screen
-    at all, and it does not support PII masking. There is no configuration that produces it.
-    """
+    """The guardrail block for ConverseStream, or None. `sync` is the only mode it emits."""
     if not _OUTPUT_GUARDRAIL:
         return None
     return {
@@ -70,14 +46,7 @@ def _guardrail_config():
 
 
 def _deadline(context):
-    """The loop's wall-clock budget, the same minimum-of-two shape app/handler.py uses.
-
-    DELIBERATELY THE SAME NUMBER as the buffered path (chat.converse_deadline_seconds), even
-    though this function is not behind the 29-second gateway ceiling and could be given
-    more. A longer budget here would make a streamed turn answer questions a buffered turn
-    gives up on, and "the finished turn renders identically to the buffered one for the same
-    question" is the property this whole feature is held to.
-    """
+    """The loop's wall-clock budget, deliberately the same number as the buffered path."""
     budget = float(SETTINGS.converse_deadline_seconds)
     remaining_ms = getattr(context, "get_remaining_time_in_millis", None)
     if callable(remaining_ms):
@@ -100,12 +69,7 @@ def _title_deadline(context):
 
 
 def lambda_handler(event, context):
-    """One streamed turn, from the message already on record to the final payload.
-
-    THE STUDENT'S MESSAGE IS ALREADY WRITTEN when this starts - the route function did it
-    before invoking, so a turn that dies in here still leaves the disclosure on record. That
-    is the same ordering guarantee POST /chat makes, split across two functions.
-    """
+    """One streamed turn, from the message already on record to the final payload."""
     connection_id = event["connectionId"]
     turn_id = event["turnId"]
     user_id = event["userId"]
@@ -119,9 +83,6 @@ def lambda_handler(event, context):
         max_delay_ms=DELTA_MAX_DELAY_MS,
     )
 
-    # The tally the route function opened. It already holds the guardrail units that screen
-    # billed, so the cost panel sees one turn's whole spend rather than the part this
-    # function paid for.
     usage = TurnUsage.model_validate(event.get("usage") or {})
 
     request = ChatRequest.model_validate(
@@ -137,8 +98,7 @@ def lambda_handler(event, context):
             user_id=user_id,
             conversation_id=conversation_id,
             limit=SETTINGS.max_history_messages,
-            # The message the route function just wrote. Excluded because run_chat appends
-            # this turn in memory, so reading it back would say it twice.
+            # run_chat appends this turn in memory, so reading it back would say it twice.
             exclude_sort_key=event.get("userSortKey"),
         )
     except Exception:
@@ -157,18 +117,11 @@ def lambda_handler(event, context):
             guardrail_config=_guardrail_config(),
         )
     except Exception:
-        # The student gets a plain failure rather than a partial answer, and the exception
-        # is logged rather than sent: a botocore message can quote the request, and the
-        # request is the student's own words.
         logger.exception("Streamed chat orchestration failed")
         sink.error("The assistant is unavailable right now.")
         return {"ok": False}
 
-    # The tail of the preview, so the prose on screen ends where the model's lead-in does
-    # rather than a batch short of it. It flushes the sink's own accumulated RAW text - not
-    # `response.conversational_text`, which is the parsed and normalised prose and a
-    # different string, so slicing it with the sink's offset would send a fragment starting
-    # mid-word. Harmless when the connection is already gone.
+    # The sink's own raw text: its offset indexes the string it was measured against.
     sink.flush()
 
     try:
@@ -176,23 +129,13 @@ def lambda_handler(event, context):
             user_id=user_id,
             conversation_id=conversation_id,
             role="assistant",
-            # THE SAME RECORD THE BUFFERED PATH WRITES, because it is the same response
-            # object out of the same run_chat: the model's own text plus the pairs its cards
-            # resolved against. A turn that streamed and one that did not are indis-
-            # tinguishable on the table, which is what keeps "the finished turn renders
-            # identically" true of a reopened conversation and not only of a live one.
             text=response.raw_text,
             sources=response.sources,
-            # The one field that is recorded rather than re-derived, by the same rule as the
-            # buffered path (app/handler.py, _stored_escalation): a reopened conversation
-            # re-renders the bytes the student was shown rather than reassembling them.
             escalation=(
                 response.escalation.model_dump(by_alias=True)
                 if response.escalation is not None
                 else None
             ),
-            # And the location card, by the same rule again (_stored_place): what a
-            # reopened turn shows is where the office was when the student asked.
             place=(
                 response.place.model_dump(by_alias=True)
                 if response.place is not None
@@ -223,10 +166,7 @@ def lambda_handler(event, context):
             )
     response.usage = usage
 
-    # THE AUTHORITATIVE PAYLOAD, and the whole reason the preview above is allowed to be
-    # rough: this is byte-for-byte what POST /chat would have returned for this turn, cards,
-    # caps, dashes, trailing split and safety panel included, because it came out of the
-    # same run_chat. The browser throws the preview away and renders this.
+    # Byte-for-byte what POST /chat would have returned for this turn.
     sink.final(response.model_dump(by_alias=True))
 
     logger.info(

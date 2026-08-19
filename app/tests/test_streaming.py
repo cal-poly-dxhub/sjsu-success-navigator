@@ -1,10 +1,7 @@
 """The WebSocket routes: who a caller is, and what a connection leaves behind.
 
-The identity story is the whole point of this file. On POST /chat the `sub` comes out of
-claims API Gateway's native JWT authorizer validated; here it comes out of the `context` a
-Lambda authorizer returned at $connect, which API Gateway then attaches to every route on
-the connection. Different mechanism, same rule: nothing a client sends in a frame can name
-a user.
+The route order, the preview rules and the 410 posture are in docs/chat-service.md,
+Streaming.
 """
 
 import json
@@ -18,13 +15,8 @@ CONNECTION_ID = "gXDKAK5mzeO4KEhleA=="
 
 
 def ws_event(route, sub=TEST_SUB, client_id="web-client-id", connection_id=CONNECTION_ID, body=None):
-    """A WebSocket route event, shaped as API Gateway actually sends one.
-
-    The authorizer context sits at `requestContext.authorizer` as a FLAT map - not under a
-    `jwt.claims` nesting like the HTTP API's - and it is present on every route, not only
-    $connect. Both of those are copied from a real event captured against a deployed probe;
-    a hand-imagined shape here would let the handler read a field that never arrives.
-    """
+    """A WebSocket route event, shaped as API Gateway actually sends one: the route key one
+    level down, and the authorizer context the $connect authorizer put there."""
     event = {
         "requestContext": {
             "routeKey": route,
@@ -56,8 +48,7 @@ def ws_store(monkeypatch):
 
 
 class _FakeManagement:
-    """apigatewaymanagementapi, recording what was pushed. `gone_after` starts raising the
-    410 API Gateway raises once the student has closed the tab."""
+    """apigatewaymanagementapi, recording what was pushed. `gone_after` starts raising 410."""
 
     def __init__(self, gone_after=None):
         self.frames = []
@@ -95,11 +86,7 @@ class _FakeLambda:
 
 @pytest.fixture
 def socket(monkeypatch):
-    """The management client, the worker invoker and the guardrail, all stubbed.
-
-    Returned as one object because a message-route test is almost always asking about the
-    relationship between them: what was pushed, and whether the worker was started at all.
-    """
+    """The management client, the worker invoker and the guardrail, all stubbed."""
     import streaming
 
     management = _FakeManagement()
@@ -125,10 +112,8 @@ def test_a_connect_records_the_connection_against_the_validated_sub(ws_store):
 
 
 def test_the_connection_record_carries_a_ttl_past_the_two_hour_hard_cap(ws_store):
-    """API Gateway closes an idle connection after 10 minutes and ANY connection after 2
-    hours, so a record that outlives those quotas describes a connection that cannot exist.
-    The TTL is the backstop for the $disconnect that never fires - a Lambda error, a
-    throttle - not a second opinion about when a connection ends."""
+    """API Gateway closes an idle connection after 10 minutes and any after 2 hours, so the
+    TTL sits past the hard cap: it only collects rows $disconnect never reached."""
     import streaming
 
     streaming.lambda_handler(ws_event("$connect"), None)
@@ -143,9 +128,7 @@ def test_the_connection_record_carries_a_ttl_past_the_two_hour_hard_cap(ws_store
 
 
 def test_a_connect_with_no_authorizer_claim_is_refused(ws_store):
-    """The route is authorizer-gated, so arriving without a `sub` is a misconfigured stack
-    rather than a student - and every key this connection would touch is built from that
-    claim. Same posture as POST /chat's 401: fail closed, write nothing."""
+    """The route is authorizer-gated, so no `sub` is a misconfigured stack, not a student."""
     import streaming
 
     response = streaming.lambda_handler(ws_event("$connect", sub=None), None)
@@ -156,9 +139,7 @@ def test_a_connect_with_no_authorizer_claim_is_refused(ws_store):
 
 
 def test_identity_is_never_read_from_the_frame(ws_store):
-    """The one thing this file exists to stop. A frame carrying somebody else's `sub` must
-    change nothing: the only identity is the one the $connect authorizer put in the
-    context, and the body is not consulted for it."""
+    """The one thing this file exists to stop: a frame carrying somebody else's `sub`."""
     import streaming
 
     event = ws_event("$connect", body={"sub": "victim-sub", "userId": "victim-sub"})
@@ -180,9 +161,7 @@ def test_a_disconnect_clears_the_record(ws_store):
 
 
 def test_a_disconnect_with_no_identity_is_not_an_error(ws_store):
-    """$disconnect is best effort by nature - API Gateway does not guarantee it fires at
-    all. With nothing addressable there is nothing to delete, and the TTL collects the row
-    either way, so this is not worth failing over."""
+    """$disconnect is best effort by nature, which is why the record carries a TTL."""
     import streaming
 
     response = streaming.lambda_handler(ws_event("$disconnect", sub=None), None)
@@ -192,9 +171,7 @@ def test_a_disconnect_with_no_identity_is_not_an_error(ws_store):
 
 
 def test_an_unknown_route_is_refused_rather_than_falling_through(ws_store):
-    """The stack creates a fixed set of routes. An unknown one means somebody added a route
-    and pointed it here, and falling through to a billable path is the kind of default that
-    is discovered from an invoice."""
+    """The stack creates a fixed set of routes, so an unknown one is refused."""
     import streaming
 
     response = streaming.lambda_handler(ws_event("$default", body={"action": "sendMessage"}), None)
@@ -204,10 +181,8 @@ def test_an_unknown_route_is_refused_rather_than_falling_through(ws_store):
 
 
 def test_the_route_key_is_read_from_the_request_context_not_the_top_level():
-    """An HTTP API payload-2.0 event carries `routeKey` at the top level; a WebSocket event
-    carries it inside `requestContext`. Reading the wrong one is not a crash - it is a
-    silent miss, which for the HTTP handler's own dispatch would mean running a billable
-    chat turn on a WebSocket frame."""
+    """A WebSocket event carries the route key one level down, and reading the wrong place
+    would make every frame an unknown route."""
     import streaming
 
     event = ws_event("$connect")
@@ -216,8 +191,7 @@ def test_the_route_key_is_read_from_the_request_context_not_the_top_level():
 
 
 def test_the_client_id_travels_for_the_rate_limit_and_is_not_an_identity():
-    """Same claim, same single use as on POST /chat: the rate limit's exemption list. It is
-    shared by everybody who signs in through that client, so nothing keys storage on it."""
+    """Same claim and same single use as on POST /chat: the rate limit's exemption list."""
     import streaming
 
     assert streaming.client_id_from(ws_event("$connect")) == "web-client-id"
@@ -237,18 +211,13 @@ def message_event(query="Where is the writing center?", conversation_id=None, **
 
 
 def test_a_message_persists_the_question_then_hands_off_without_answering(ws_store, socket):
-    """The route's whole job: get the student's message on record and start the worker.
-
-    IT RETURNS WITHOUT AN ANSWER, which is the point - a WebSocket route integration has the
-    same 29-second ceiling every API Gateway integration has, and the agent loop can use most
-    of it. The generation happens in a function that is not behind the gateway at all."""
+    """The route's whole job: get the student's message on record and start the worker."""
     import streaming
 
     response = streaming.lambda_handler(message_event(), None)
 
     assert response["statusCode"] == 200
-    # No "allowance" call: the daily cap is off in this suite, exactly as it is when the
-    # stack omits the environment variable. The cap's own ordering has its own test.
+    # No "allowance" call: the daily cap is off in this suite, as it is when unconfigured.
     assert ws_store.call_names == ["append"]
     written = ws_store.appended[0]
     assert written["role"] == "user"
@@ -267,8 +236,7 @@ def test_a_message_persists_the_question_then_hands_off_without_answering(ws_sto
 
 
 def test_the_worker_is_told_the_user_from_the_token_not_from_the_frame(ws_store, socket):
-    """A frame naming somebody else must change nothing. The worker keys a DynamoDB
-    partition on what it is handed, so this is the boundary that matters most."""
+    """A frame naming somebody else must change nothing: the worker keys on the token."""
     import streaming
 
     streaming.lambda_handler(
@@ -281,8 +249,8 @@ def test_the_worker_is_told_the_user_from_the_token_not_from_the_frame(ws_store,
 
 
 def test_the_client_is_told_the_conversation_id_before_the_worker_starts(ws_store, socket):
-    """The student's message is already stored under it. A client that never learned the id
-    would open a fresh conversation on its next turn and orphan this one."""
+    """The message is already stored under it, and a client that never learned the id would
+    open a fresh conversation on the next turn and orphan this one."""
     import streaming
 
     streaming.lambda_handler(message_event(), None)
@@ -294,12 +262,8 @@ def test_the_client_is_told_the_conversation_id_before_the_worker_starts(ws_stor
 
 
 def test_a_blocked_message_is_never_written_and_starts_no_worker(ws_store, socket, monkeypatch):
-    """NOTHING IS WRITTEN ON A GUARDRAIL BLOCK, and that is the same reason POST /chat gives:
-    storing it would smuggle the attack text into the history the model reads on the NEXT
-    turn, past the screen that just caught it.
-
-    The whole turn is one frame, and it is the same ChatResponse the buffered path returns -
-    usage included, because a blocked screen was billed like any other."""
+    """NOTHING IS WRITTEN ON A GUARDRAIL BLOCK: storing it would smuggle the attack text
+    into the history the model reads on the next turn."""
     import streaming
 
     monkeypatch.setattr(
@@ -319,9 +283,7 @@ def test_a_blocked_message_is_never_written_and_starts_no_worker(ws_store, socke
 def test_the_rate_limit_runs_before_the_guardrail_and_costs_nothing_billable(
     ws_store, socket, monkeypatch
 ):
-    """ATTEMPTS, NOT ANSWERS, and BEFORE the screen - the only ordering that makes this a
-    spend guard rather than a spend report. A refused turn spends one conditional DynamoDB
-    write and not one guardrail text unit."""
+    """ATTEMPTS, NOT ANSWERS, and BEFORE the screen: the only ordering that makes it a guard."""
     import dataclasses
 
     import streaming
@@ -346,16 +308,14 @@ def test_the_rate_limit_runs_before_the_guardrail_and_costs_nothing_billable(
     errors = socket.of_type("error")
     assert len(errors) == 1
     assert "daily limit" in errors[0]["message"].lower()
-    # The reset INSTANT travels so the browser can render the student's own clock, exactly
-    # as it does for the 429 on POST /chat.
+    # The reset INSTANT travels, so the browser renders the student's own clock.
     assert errors[0]["resetAt"].endswith("Z")
     assert errors[0]["limit"] == 1
 
 
 def test_a_refusal_is_an_error_frame_and_not_a_dropped_connection(ws_store, socket, monkeypatch):
-    """It has to be distinguishable from a socket failure. The client falls back to
-    POST /chat on a failure - which for a rate-limit refusal would ask the same question
-    twice and be refused again - so a definite server answer arrives as `error`."""
+    """It has to be distinguishable from a socket failure, or the client falls back to
+    POST /chat and asks the same question twice."""
     import dataclasses
 
     import streaming
@@ -406,10 +366,8 @@ def _sink(monkeypatch, management, min_chars=10, max_delay_ms=100000):
 
 
 def test_deltas_are_batched_rather_than_pushed_per_token(monkeypatch):
-    """EVERY PUSH IS A BILLABLE API GATEWAY MESSAGE. A frame per token would multiply the
-    message count by the token count for nothing anyone can see - the browser reveals text
-    at ~108 characters a second and the model outruns it, so the deltas queue client-side
-    either way."""
+    """EVERY PUSH IS A BILLABLE API GATEWAY MESSAGE, and the browser reveals text slower
+    than the model writes it."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=20)
 
@@ -424,9 +382,8 @@ def test_deltas_are_batched_rather_than_pushed_per_token(monkeypatch):
 
 
 def test_the_preview_stops_at_the_first_card_tag(monkeypatch):
-    """The model writes its whole turn as one text stream - lead-in, then <card> blocks - so
-    a raw delta stream would type markup onto the screen. The preview is the lead-in; the
-    cards arrive in the final payload, parsed from the complete reply."""
+    """The model writes its whole turn as one text stream, so a raw preview would type
+    `<card ref="2">` onto the screen."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -440,8 +397,7 @@ def test_the_preview_stops_at_the_first_card_tag(monkeypatch):
 
 
 def test_the_preview_never_rewrites_what_it_already_sent(monkeypatch):
-    """Append-only is what makes it safe to type out. Every frame is a suffix of the reply
-    so far, so nothing on screen is ever taken back."""
+    """Append-only is what makes it safe to type out: every frame is a suffix."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -453,9 +409,7 @@ def test_the_preview_never_rewrites_what_it_already_sent(monkeypatch):
 
 
 def test_a_410_stops_the_pushing_and_nothing_else(monkeypatch):
-    """A 410 means the student closed the tab. The turn is finished and persisted anyway -
-    the model call is already paid for, and a user message with no assistant reply is the
-    dangling turn docs/accounts-and-storage.md calls a reef."""
+    """A 410 means the student closed the tab. The turn is finished and persisted anyway."""
     management = _FakeManagement(gone_after=1)
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -471,8 +425,7 @@ def test_a_410_stops_the_pushing_and_nothing_else(monkeypatch):
 
 
 def test_the_final_frame_carries_the_payload_and_the_preview_is_not_it(monkeypatch):
-    """THE CENTRAL RULE. The preview is prose and a guess; the final payload is the same
-    ChatResponse POST /chat returns, and it is what gets rendered."""
+    """THE CENTRAL RULE: the preview is a guess, the final payload is the answer."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -484,8 +437,7 @@ def test_the_final_frame_carries_the_payload_and_the_preview_is_not_it(monkeypat
 
 
 def test_every_frame_names_its_turn(monkeypatch):
-    """Two turns can race on one connection, and a reply can arrive after the student has
-    moved on. The turn id is how the client puts a frame on the right bubble or drops it."""
+    """Two turns can race on one connection, and a reply can arrive after the student moved on."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -498,8 +450,7 @@ def test_every_frame_names_its_turn(monkeypatch):
 
 
 def test_a_status_event_says_what_the_silence_is(monkeypatch):
-    """Retrieval is the one part of a turn that takes real time and produces no text, so
-    without this the socket goes quiet and the UI has to either lie or say nothing."""
+    """Retrieval is the one part of a turn that takes real time and produces no text."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -509,10 +460,8 @@ def test_a_status_event_says_what_the_silence_is(monkeypatch):
 
 
 def test_the_card_stage_is_announced_when_the_model_starts_writing_cards(monkeypatch):
-    """THE GAP AFTER THE PROSE. The preview stops at the first tag, so from the student's
-    side the reply simply ends and nothing says whether anything else is coming. `<card` in
-    the model's own output is the event that closes the prose and opens that silence, so it
-    is the event the browser is told about - never a timer, and never a prediction."""
+    """THE GAP AFTER THE PROSE: the preview stops at the first tag, so the reply looks
+    finished while the cards are still being written."""
     import streaming
 
     management = _FakeManagement()
@@ -529,8 +478,7 @@ def test_the_card_stage_is_announced_when_the_model_starts_writing_cards(monkeyp
 
 
 def test_a_reply_with_no_cards_never_announces_one(monkeypatch):
-    """About one reply in ten is prose only, and an indicator promising resources that never
-    arrive is worse than the silence it filled. Nothing here predicts: no tag, no frame."""
+    """About one reply in ten is prose only, and an indicator promising nothing is worse."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -542,9 +490,8 @@ def test_a_reply_with_no_cards_never_announces_one(monkeypatch):
 
 
 def test_a_partial_card_tag_is_not_an_announcement_yet(monkeypatch):
-    """preview_safe_prefix stops on a PARTIAL because the rest of the tag might arrive. This
-    waits for the whole opening, because "cards are coming" said on a maybe is exactly the
-    promise that must not be made."""
+    """The preview stops on a PARTIAL because the tag might arrive; this waits for the whole
+    opening, because saying "cards are coming" on a maybe is the promise not to make."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -557,8 +504,7 @@ def test_a_partial_card_tag_is_not_an_announcement_yet(monkeypatch):
 
 
 def test_the_card_stage_is_announced_once_however_many_cards_are_written(monkeypatch):
-    """Every push is a billable API Gateway message, and the browser needs to be told once.
-    Four card blocks are still one answer to "are cards coming?"."""
+    """Every push is billable, and the browser needs to be told once."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -572,10 +518,8 @@ def test_the_card_stage_is_announced_once_however_many_cards_are_written(monkeyp
 
 
 def test_the_prose_tail_is_pushed_before_the_card_stage_is(monkeypatch):
-    """ORDERING, and it is load-bearing twice. The safe prefix cannot grow past the tag, so
-    the last words of the lead-in must not sit in the batcher behind a min_chars threshold
-    they will never reach. And the browser clears the indicator on arriving prose, so a
-    delta landing after the frame would take it straight back off."""
+    """ORDERING, load-bearing twice: the safe prefix cannot grow past the tag, and the
+    browser clears the indicator on any arriving prose."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=200)
 
@@ -589,9 +533,7 @@ def test_the_prose_tail_is_pushed_before_the_card_stage_is(monkeypatch):
 
 
 def test_a_safety_turn_announces_no_cards_because_it_will_have_none(monkeypatch):
-    """A safety turn drops its cards by contract (apply_safety_handoff_to_response), so a
-    reply carrying that tag has no card group to announce however many blocks the model
-    wrote beside it."""
+    """A safety turn drops its cards by contract, so it has no card group to announce."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=1)
 
@@ -601,12 +543,8 @@ def test_a_safety_turn_announces_no_cards_because_it_will_have_none(monkeypatch)
 
 
 def test_the_final_flush_continues_the_preview_rather_than_restarting_it(monkeypatch):
-    """REGRESSION. `flush` used to take the parsed `conversationalText` and slice it with an
-    offset measured against the RAW stream. They are different strings - the parsed one is
-    normalised and shorter - so once any preview had already been sent, the tail arrived as
-    a fragment beginning mid-word, and the student watched a sentence restart in the middle
-    of itself. The sink flushes its own accumulated text now, so the offset always indexes
-    the string it was measured against."""
+    """REGRESSION: `flush` used to slice the PARSED prose with an offset measured against
+    the RAW stream, which sent a fragment starting mid-word."""
     management = _FakeManagement()
     sink = _sink(monkeypatch, management, min_chars=10)
 

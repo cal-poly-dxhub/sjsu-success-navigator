@@ -1,4 +1,4 @@
-"""Settings: identity has no defaults, behaviour does."""
+"""Settings: identity has no defaults, behaviour does. See docs/chat-service.md, Settings."""
 
 import pytest
 
@@ -10,8 +10,7 @@ _IDENTITY = {
     "BEDROCK_REGION": "us-west-2",
     "INPUT_GUARDRAIL_ID": "gr-1",
     "INPUT_GUARDRAIL_VERSION": "3",
-    # The history table. Identity, not tuning: a function that cannot name its table would
-    # otherwise write a student's transcript into whatever a typo pointed at.
+# The history table is identity, not tuning.
     "CHAT_HISTORY_TABLE_NAME": "chat-history-test",
 }
 
@@ -26,16 +25,14 @@ def _set_identity(monkeypatch, **overrides):
 
 @pytest.mark.parametrize("missing", sorted(_IDENTITY))
 def test_missing_identity_raises_and_names_the_variable(monkeypatch, missing):
-    """Camp defaulted the KB id and the model id to literals, so a misconfigured deploy
-    ran happily against whatever those pointed at. Here it fails at import, by name."""
+    """A missing identity value raises at import, naming the variable."""
     _set_identity(monkeypatch, **{missing: None})
     with pytest.raises(SettingsError, match=missing):
         load_settings()
 
 
 def test_behavioural_knobs_default_to_camps_values(monkeypatch):
-    """Tuning values are not identity: a missing one is unambiguous, so it defaults
-    rather than failing the invocation."""
+    """Tuning values are not identity: a missing one is unambiguous, so it defaults."""
     _set_identity(monkeypatch)
     for key in (
         "NUMBER_OF_RESULTS",
@@ -59,8 +56,7 @@ def test_behavioural_knobs_default_to_camps_values(monkeypatch):
     assert settings.max_query_chars == 2000
     assert settings.max_converse_iterations == 6
     assert settings.max_history_messages == 12
-    # The read endpoints' caps, which are NOT the model's window: they bound a browser read
-    # of stored items, so they are larger and cost one query rather than tokens per turn.
+    # The read caps are NOT the model's window: they bound a browser read, not a token bill.
     assert settings.max_conversations_listed == 40
     assert settings.max_conversation_messages == 60
     assert settings.converse_deadline_seconds == 22
@@ -86,13 +82,8 @@ def test_a_non_numeric_knob_raises_rather_than_silently_defaulting(monkeypatch):
 
 
 def test_the_daily_message_limit_defaults_to_disabled(monkeypatch):
-    """THE ONE BEHAVIOURAL DEFAULT THAT IS NOT config.yaml's VALUE, and deliberately so.
-
-    The stack omits DAILY_MESSAGE_LIMIT entirely when the cap is off (the cost panel's gate
-    shape), so an unset variable HAS to mean disabled. A default of 60 here would mean a
-    wiring mistake invented a limit nobody configured, and students would start being refused
-    with nothing in config.yaml to explain it.
-    """
+    """THE ONE BEHAVIOURAL DEFAULT THAT IS NOT config.yaml's VALUE, and deliberately so;
+    see docs/chat-service.md, Settings."""
     _set_identity(monkeypatch)
     monkeypatch.delenv("DAILY_MESSAGE_LIMIT", raising=False)
 
@@ -115,9 +106,7 @@ def test_the_exemption_list_is_empty_when_unset(monkeypatch):
 
 
 def test_the_exemption_list_takes_more_than_one_client(monkeypatch):
-    """Plural on purpose, so a second machine client is a config edit rather than a code
-    change. Whitespace and empty entries are dropped rather than becoming ids that no token
-    can match but that read as if they might."""
+    """Plural on purpose, so a second machine client is a config edit rather than a code one."""
     _set_identity(monkeypatch)
     monkeypatch.setenv("RATE_LIMIT_EXEMPT_CLIENT_IDS", " eval-client , , second-client ")
 
@@ -130,10 +119,7 @@ def test_the_exemption_list_takes_more_than_one_client(monkeypatch):
 
 
 def test_the_escalation_recipient_defaults_to_empty(monkeypatch):
-    """EMPTY IS THE GATE, and it has to be, for the same reason DAILY_MESSAGE_LIMIT's zero
-    is: the stack omits every ESCALATION_* variable when no recipient is configured, so an
-    unset one must mean off. An address defaulted here would be a wiring mistake quietly
-    routing students' messages to a mailbox nobody in config.yaml chose."""
+    """EMPTY IS THE GATE, the same shape as the daily limit's zero."""
     _set_identity(monkeypatch)
     for key in ("ESCALATION_RECIPIENT", "ESCALATION_SUBJECT", "ESCALATION_MAX_CHARS"):
         monkeypatch.delenv(key, raising=False)
@@ -158,8 +144,8 @@ def test_the_escalation_wiring_is_read_from_the_environment(monkeypatch):
 
 
 def test_a_blank_subject_falls_back_rather_than_shipping_an_empty_line(monkeypatch):
-    """A deploy that set the address and dropped this variable would otherwise put an empty
-    subject in front of a staff mailbox, which is the one line they triage on."""
+    """A deploy that set the address and dropped this would put an empty subject line in
+    front of a staff mailbox."""
     _set_identity(monkeypatch)
     monkeypatch.setenv("ESCALATION_RECIPIENT", "sjsucares@sjsu.edu")
     monkeypatch.setenv("ESCALATION_SUBJECT", "   ")

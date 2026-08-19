@@ -1,66 +1,7 @@
-"""Cards, parsed from the tags the model emits - not cut out of anybody's prose.
+"""Cards, parsed from the tags the model emits, not cut out of anybody's prose.
 
-WHAT REPLACED WHAT. v1 had two card paths and neither one had an author. The tool path took
-a `submit_chat_response` JSON payload in which the model typed a `sourceUrl` string, which
-was then validated by EXACT string match against the retrieved URLs - so a URL that was
-right except for a trailing slash lost its link with no signal, and a URL the model invented
-outright was merely unlinked rather than rejected. The fallback path was worse: it built
-cards mechanically out of the retrieved PAGE text with a regex sentence split and a 220-char
-truncate, so on any timeout the student got cards nobody wrote, answering a question nobody
-had read. Both are gone. The model now emits its whole turn as text - prose plus <card>
-blocks - and this module is the only thing that reads it.
-
-THE MODEL CANNOT EXPRESS A URL. A card cites `ref="2"`, an integer from this turn's
-retrieval list, and the server resolves it against a map it built itself (TurnSources). The
-model is never shown a URL in the first place (see source_options_for_tool), so "do not
-invent URLs" stops being an instruction the model follows or ignores and becomes a shape its
-output has no room for. The failure mode is not reduced, it is unrepresentable.
-
-WHERE THE CAPS COME FROM. Every length cap arrives on Settings, sourced from config.yaml,
-and is read in exactly two places: here, where it is enforced, and prompts.py, where it is
-written into the contract the model is given. One value, so the number the model is told is
-by construction the number the server applies. The caps are GUARDS against a runaway
-response, set far above the length the prompt steers toward: an ellipsis in production
-means the prompt or the model is broken, so every truncation is logged at WARNING. Length
-steering is the prompt's job, not this module's.
-
-THE CARDS RENDER WHERE THE MODEL PUT THEM. The reply is split ONCE, at the end of the last
-card block: prose before it becomes the bubble above the grid, prose after it becomes the
-bubble below. One split rather than a general block list because a turn produces exactly one
-card group, so the only thing there is to preserve is which side of that group each piece of
-prose was on. This is what keeps a closing question under the cards it refers to instead of
-above the answer it is asking about.
-
-THE DESCRIPTION KEEPS ITS LINE BREAKS. Every other field is collapsed to one line, because
-every other field IS one line. <desc> is the one the student reads as a body of text, and
-the display parser keys on line starts - a bullet is a line beginning with a marker - so
-flattening its newlines into spaces turns a list the model wrote into one long sentence with
-dashes in it. Indentation is still collapsed: a model that indents its bullets under <desc>
-is formatting its XML, not asking for leading space on screen.
-
-THE ESCALATION TAG IS PARSED HERE AND ASSEMBLED ELSEWHERE. `<escalate_to_human>` carries
-PROSE ONLY - no id, no recipient, no attributes - so a model-chosen destination is
-unrepresentable in exactly the way a model-authored URL is. This module finds the block,
-takes its text out of the prose the student reads (the content is a draft email, not
-bubble copy), and hands it to app/escalation.py, which owns the address, the subject, the
-cap and the decision to offer at all. One block per turn: a second is ignored and logged,
-because a turn produces one offer and picking among two would be this module inventing an
-editorial rule.
-
-THE PLACE TAG IS THE SAME TRICK A THIRD TIME. `<place>career-center</place>` carries ONE
-CATALOGUE KEY - no attributes, no address, no URL - so the name, the address and the map
-links come from app/places.py's table and a model-authored address is unrepresentable. The
-block is removed WHOLE from the prose, the way a safety block's keys are, because a key is
-addressed to the server. One block per turn: a location card has one address on it, and
-picking among two would be this module inventing an editorial rule. Nothing here checks the
-key against the table, so a key that is not in it is a logged drop and no card, never a
-guessed one.
-
-AN UNRESOLVABLE REF KEEPS THE CARD. Decided against docs/cards-v2.md, which drops it. The
-reason is observability: a card that renders without its source button is a visible symptom,
-where a silently dropped card is a student seeing three cards instead of four and nobody
-finding out. The event is logged at WARNING with both the bad ref and the ids that were
-actually available, because the UI is the weaker half of that signal.
+The model cites a ref rather than a URL and the caps are runaway guards; see
+docs/cards-v2.md and docs/chat-service.md, Cards and the tag contract.
 """
 
 from __future__ import annotations
@@ -78,58 +19,35 @@ from retrieve import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
-# The label on the source link. Fixed here, not model-authored: it is chrome, and a model
-# that writes its own link labels eventually writes one that misdescribes the destination.
+# Fixed chrome, never model-authored. The model authors only the hidden <followup> prompt.
 SOURCE_ACTION_LABEL = "Open source"
 
-# The label on the follow-up button. Also fixed - the model authors only the hidden PROMPT
-# behind it (<followup>), which is what actually varies per card.
 FOLLOWUP_ACTION_LABEL = "Tell me more"
 
 _WHITESPACE_RE = re.compile(r"\s+")
-# Spaces and tabs, never a newline. The description is collapsed with this one so the line
-# breaks the model wrote survive to the browser - see _collapse_keeping_line_breaks.
+# Spaces and tabs, never a newline: <desc> keeps the line breaks the model wrote.
 _HORIZONTAL_WHITESPACE_RE = re.compile(r"[^\S\n]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 
-# Em and en dashes are rewritten out of everything the student reads. The prompt bans them
-# and its examples model the ban; this is the deterministic backstop for when the model
-# writes one anyway. An en dash between digits is a range and becomes a hyphen ("10-12");
-# every other em or en dash, with whatever whitespace surrounds it, becomes a comma and a
-# space, which is the punctuation doing the same job. ASCII hyphens pass through untouched.
-# Escapes rather than the characters themselves, so grepping the repo for a literal dash
-# stays a meaningful check.
+# Escapes rather than the characters, so grepping the repo for a dash stays meaningful.
 _EM_DASH = "\u2014"
 _EN_DASH = "\u2013"
 _DIGIT_RANGE_EN_DASH_RE = re.compile(rf"(?<=\d){_EN_DASH}(?=\d)")
 _EM_EN_DASH_RE = re.compile(rf"\s*[{_EM_DASH}{_EN_DASH}]\s*")
 
-# A <card> block: any attributes, any body, non-greedy so two adjacent cards do not collapse
-# into one. `ref` is pulled out of the attributes separately rather than being required by
-# this pattern, because a card whose ref is MISSING still has to be found - it is a card that
-# loses its link, not text that silently stays in the prose.
+# Non-greedy, so two adjacent cards do not collapse into one. `ref` is read separately,
+# because a card with no ref is still a card.
 _CARD_BLOCK_RE = re.compile(r"<card\b([^>]*)>(.*?)</card\s*>", re.DOTALL | re.IGNORECASE)
 _REF_ATTR_RE = re.compile(r"\bref\s*=\s*[\"']?\s*(\d+)", re.IGNORECASE)
 _SAFETY_TAG_RE = re.compile(r"<safety\s*/?>", re.IGNORECASE)
-# A keyed safety block: <safety>crisis-988, caps</safety>. The content is resource KEYS the
-# server resolves into the contact panel (app/safety.py), so the whole block - keys included -
-# is removed from the prose: the keys are instructions to the server, not text for the student.
+# A keyed safety block. The whole block leaves the prose: the keys address the server.
 _SAFETY_BLOCK_RE = re.compile(r"<safety\s*>(.*?)</safety\s*>", re.DOTALL | re.IGNORECASE)
 _SAFETY_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
-# The escalate-to-human block: <escalate_to_human>prose</escalate_to_human>. NO ATTRIBUTE
-# GROUP, unlike the card pattern, and that is the contract rather than an omission - the
-# block carries prose and nothing else, so there is no `to`, no id and no attribute for a
-# model-chosen destination to arrive in. Its content is the body of an email, so it is
-# removed WHOLE from the prose the student reads (see _clean_prose), the way a safety
-# block's keys are: it is addressed to the mail client, not to the chat bubble.
+# Prose only, no attribute group: a model-chosen recipient has nowhere to arrive.
 _ESCALATION_BLOCK_RE = re.compile(
     r"<escalate_to_human\s*>(.*?)</escalate_to_human\s*>", re.DOTALL | re.IGNORECASE
 )
-# The campus location block: <place>career-center</place>. ONE CATALOGUE KEY AND NOTHING
-# ELSE, which is the same shape as a safety block's keys and for the same reason - the
-# content is addressed to the server, not to the student, so the whole block comes out of
-# the prose. No attribute group, no second field: an address or a map URL the model wrote
-# has nowhere to arrive (app/places.py).
+# One catalogue key, no attribute group: a model-authored address has nowhere to arrive.
 _PLACE_BLOCK_RE = re.compile(r"<place\s*>(.*?)</place\s*>", re.DOTALL | re.IGNORECASE)
 _PLACE_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
 
@@ -142,19 +60,13 @@ _TITLE_RE = _field_re("title")
 _DESC_RE = _field_re("desc")
 _FOLLOWUP_RE = _field_re("followup")
 
-# Every tag this contract defines, opening or closing, well-formed or not. Used to scrub the
-# prose so a malformed block - an unclosed <card ref="2">, a stray </desc> - reaches the
-# student as text rather than as markup. Deliberately NOT a generic <[^>]+> sweep: that would
-# eat legitimate content the model might write about, and the guarantee needed here is only
-# that OUR tags never surface.
+# Deliberately not a generic <[^>]+> sweep; only this contract's own vocabulary.
 _ANY_KNOWN_TAG_RE = re.compile(
     r"</?\s*(?:card|title|desc|followup|safety|escalate_to_human|place)\b[^>]*/?>",
     re.IGNORECASE,
 )
 
-# The same vocabulary again, as literals rather than a pattern, for preview_safe_prefix
-# below. Derived from one tuple so the two can never come to disagree about what one of
-# this contract's tags looks like.
+# The same vocabulary as literals, for preview_safe_prefix. One tuple, so they agree.
 _TAG_NAMES = ("card", "title", "desc", "followup", "safety", "escalate_to_human", "place")
 _TAG_OPENINGS = tuple(
     f"<{slash}{name}" for name in _TAG_NAMES for slash in ("", "/")
@@ -162,67 +74,20 @@ _TAG_OPENINGS = tuple(
 
 
 def preview_safe_prefix(text: str) -> str:
-    """The leading run of a PARTIAL reply that is certainly outside this contract's tags.
-
-    THIS IS NOT A PARSER AND MUST NEVER BECOME ONE. It answers one question - "where does
-    the part I can safely show a student end?" - and it answers it by stopping, never by
-    interpreting. Nothing it returns is used to build a card, resolve a ref, decide a safety
-    handoff or apply a cap; all of that comes off the COMPLETE reply in parse_model_response,
-    which is the only thing in this file that reads a tag for meaning.
-
-    It exists because the model writes its whole turn as one text stream - lead-in prose,
-    then `<card>` blocks, then any closing prose - so a streaming preview that pushed raw
-    deltas would type `<card ref="2">` onto the screen. Stopping at the first tag makes the
-    preview exactly the lead-in, which is the half of the reply the student reads first and
-    the half the final payload calls `conversationalText`.
-
-    APPEND-ONLY, which is what makes it safe to stream. The text only ever grows, and this
-    only ever stops earlier or later in it, so the returned prefix never shrinks and never
-    rewrites what was already sent. A caller emits `preview_safe_prefix(accumulated)` minus
-    what it has already pushed.
-
-    A `<` that is not one of ours does NOT stop the preview - "under <15 units" streams
-    intact - because the guarantee needed is only that OUR tags never surface, exactly as
-    _ANY_KNOWN_TAG_RE's note says. A trailing partial (`...see <ca`) DOES stop it, because
-    the rest of that tag has not arrived yet and might.
-
-    Where the preview stops is also WHY it stopped, which `card_block_started` below reads
-    off the same text for the streaming UI.
-
-    Deliberately no dash normalisation and no capping. Those belong to the finished reply
-    and are applied there, once; doing them here would be the duplication this contract's
-    whole streaming design exists to avoid, and a substitution near the end of a partial
-    string could rewrite text already on screen.
-    """
+    """The leading run of a PARTIAL reply that is certainly outside this contract's tags."""
     for index, character in enumerate(text):
         if character != "<":
             continue
         rest = text[index:].lower()
         for opening in _TAG_OPENINGS:
-            # Either a tag starts here, or `rest` is a partial that could still become one
-            # once more of the stream arrives.
+            # A tag starts here, or `rest` is a partial that could still become one.
             if rest.startswith(opening) or opening.startswith(rest):
                 return text[:index]
     return text
 
 
 def card_block_started(text: str) -> bool:
-    """Has the model DEFINITELY begun writing a card block in this partial reply?
-
-    The streaming UI's one honest answer to "are cards coming?". A turn writes its lead-in
-    prose and then its `<card>` blocks, so the instant `<card` appears is the instant the
-    prose is finished and the part the student cannot see begins - the silence the browser
-    otherwise has nothing true to say about.
-
-    DEFINITELY, which is the whole difference between this and the stop rule above.
-    preview_safe_prefix stops on a PARTIAL (`...see <ca`) because the rest of that tag might
-    still arrive; this waits for the whole opening, because saying "cards are coming" on a
-    maybe is exactly the promise that must not be made. `<c` is not an answer yet.
-
-    A `<safety` anywhere in the reply takes it back to no: safety turns drop their cards by
-    contract (apply_safety_handoff_to_response), so a turn carrying that tag has no card
-    group to announce however many blocks the model wrote alongside it.
-    """
+    """Has the model DEFINITELY begun writing cards? A <safety> anywhere takes it back to no."""
     lowered = text.lower()
     if "<safety" in lowered:
         return False
@@ -231,10 +96,7 @@ def card_block_started(text: str) -> bool:
 
 @dataclass(frozen=True)
 class SourceOption:
-    """One retrieved source, as the model sees it: an id, a title, and text.
-
-    No URL. The model never receives one, so it can never echo one back.
-    """
+    """One retrieved source as the model sees it: an id, a title and text. No URL."""
 
     ref_id: int
     title: str
@@ -244,22 +106,7 @@ class SourceOption:
 
 
 class TurnSources:
-    """The id-to-source map for ONE turn, and the only thing that can produce a card's URL.
-
-    Ids are assigned here, per turn, and are deduplicated by URL across every retrieval call
-    the loop makes: a source that comes back from two different searches keeps the id it was
-    given the first time, so the model is never shown the same page under two numbers and
-    never has to guess which one to cite.
-
-    Ids are NOT stable across turns. A ref from a previous turn is exactly as unresolvable as
-    one the model invented, which is the intended behaviour - the map is rebuilt from the
-    sources this turn actually retrieved.
-
-    What IS persisted is the finished pairs a reply cited, and only those (see
-    `cited_source_urls` and `from_stored` below). That is what lets a stored reply be
-    re-rendered later without re-running the search: the URLs come back off the record rather
-    than out of a fresh retrieval that might resolve the same ref to a different page.
-    """
+    """The id-to-source map for ONE turn, and the only thing that can produce a card's URL."""
 
     def __init__(self) -> None:
         self._by_url: dict[str, SourceOption] = {}
@@ -267,13 +114,7 @@ class TurnSources:
         self._next_id = 1
 
     def add_chunks(self, chunks: list[RetrievedChunk], *, limit: int) -> list[SourceOption]:
-        """Register a retrieval result set and return what to show the model for THIS call.
-
-        Capped at `limit` per call rather than per turn: the cap exists so one tool result
-        stays readable, not to bound how much the model may learn over several searches.
-        Chunks with no source_url are dropped here - a source that cannot be linked has
-        nothing to offer a card whose entire job is provenance.
-        """
+        """Register a retrieval result set and return what to show the model for THIS call."""
         options: list[SourceOption] = []
 
         for chunk in sorted(chunks, key=lambda c: c.score, reverse=True):
@@ -286,8 +127,7 @@ class TurnSources:
 
             existing = self._by_url.get(url)
             if existing is not None:
-                # Same page, seen in an earlier search this turn. Reuse its id so the model
-                # is not shown one source under two numbers.
+                # Same page, seen in an earlier search this turn; reuse its id.
                 if existing not in options:
                     options.append(existing)
                 continue
@@ -308,19 +148,7 @@ class TurnSources:
 
     @classmethod
     def from_stored(cls, urls_by_ref: dict[int, str] | None) -> "TurnSources":
-        """The map a stored reply cited, rebuilt from the record rather than from a search.
-
-        THE READ PATH'S HALF OF "THE MODEL NEVER AUTHORS A URL". Re-rendering a stored reply
-        means resolving its `<card ref="2">` blocks again, and the only honest way to do that
-        is against the pairs that turn actually recorded: re-running the retrieval would
-        resolve the same ref against today's index, which can be a different page from the
-        one the student was shown, and taking a URL out of the model's text is the thing this
-        whole module exists to prevent.
-
-        `title` and `text` come back empty because nothing on the display path reads them -
-        they are what the MODEL was shown during the turn, and a stored reply is finished.
-        The one field a card needs from here is the URL.
-        """
+        """Rebuild the map a stored reply cited, off the record rather than a fresh search."""
         sources = cls()
         for ref_id, url in (urls_by_ref or {}).items():
             option = SourceOption(
@@ -341,9 +169,7 @@ class TurnSources:
         return self._by_id.get(ref_id)
 
     def ref_for_url(self, url: str) -> int | None:
-        """The id this turn gave a URL, or None. The inverse of `resolve`, and it exists for
-        one caller: working out which pairs a finished reply cited, so those and nothing else
-        are stored with it."""
+        """The id this turn gave a URL, or None. The inverse of `resolve`."""
         option = self._by_url.get((url or "").strip())
         return None if option is None else option.ref_id
 
@@ -368,20 +194,10 @@ class ParsedCard:
 class ParsedResponse:
     prose: str
     cards: list[ParsedCard]
-    # None = no safety tag. An empty tuple = a bare <safety/> (the standard panel). Keys are
-    # the model's triage choice; app/safety.py owns what each one resolves to.
+    # None means no tag; an empty tuple means a bare <safety/>.
     safety_keys: tuple[str, ...] | None
-    # Prose the model wrote AFTER its last card block, which renders BELOW the grid. Empty
-    # for the ordinary reply that ends with its cards.
     trailing_prose: str = ""
-    # The <escalate_to_human> block's prose, or None when the model emitted no tag. NOT a
-    # draft: nothing here knows the recipient, the subject or the cap, which is
-    # app/escalation.py's job. An empty string is a tag the model opened and left empty,
-    # which is a different fault from not offering at all and is logged as one there.
     escalation_prose: str | None = None
-    # The <place> block's catalogue key, or None when the model emitted no tag. NOT a
-    # location: nothing here knows whether the key exists, what it is called or where it is,
-    # which is app/places.py's table. A key that is not in that table yields no card.
     place_key: str | None = None
 
     @property
@@ -390,22 +206,7 @@ class ParsedResponse:
 
 
 def parse_model_response(text: str) -> ParsedResponse:
-    """Split one model turn into its prose and its card blocks, keeping the card group's
-    position in the reply.
-
-    ONE SPLIT POINT, at the end of the last card block: prose before it is the lead-in that
-    renders above the grid, prose after it renders below. That is deliberately not a general
-    block-interleaving parser, because a turn can only ever produce ONE card group - the
-    cards become a single StatementBatch, dealt as one deck, anchored to once - so the only
-    position information there is to keep is which side of that group a piece of prose was
-    on. Prose written BETWEEN two card blocks joins the lead: nothing can render inside the
-    grid, and it was written to introduce the cards that follow it.
-
-    The prose is everything OUTSIDE the card blocks, which is the fallback's whole mechanism:
-    if no block is well-formed then nothing is removed, every known tag is scrubbed, and the
-    student gets the model's complete text as one bubble. Content is never dropped on a parse
-    failure - only markup is.
-    """
+    """Split one model turn into prose and card blocks, keeping the card group's position."""
     source = text or ""
 
     matches = list(_CARD_BLOCK_RE.finditer(source))
@@ -438,22 +239,7 @@ def parse_model_response(text: str) -> ParsedResponse:
 
 
 def _place_key_in(*parts: str) -> str | None:
-    """The one campus-location key, read from both sides of the split.
-
-    Both sides for the reason the safety keys and the escalation block are read from both:
-    the split point says where PROSE renders, not which tags count, and a location named
-    under the cards is the same location. Called with the card blocks already removed, so a
-    stray tag inside a card body cannot conjure a card.
-
-    ONE BLOCK PER TURN, and one KEY inside it. A second block is ignored and logged, the
-    same way a second escalation block is: a turn points at one place, and choosing among
-    two would be a parser making an editorial decision. A block carrying several keys keeps
-    the first for the same reason - unlike the safety panel, which lists every resource that
-    fits, a location card is one card with one address on it.
-
-    Nothing here checks that the key exists. That is places.resolve_place's job, and keeping
-    it there is what makes an unknown key a logged drop rather than a parse failure.
-    """
+    """The one campus-location key, read from both sides of the split."""
     contents = [content for part in parts for content in _PLACE_BLOCK_RE.findall(part)]
     if not contents:
         return None
@@ -465,9 +251,7 @@ def _place_key_in(*parts: str) -> str | None:
         )
     keys = _PLACE_KEY_RE.findall(contents[0])
     if not keys:
-        # An empty or punctuation-only block. Distinct from no block at all - the model
-        # reached for the contract and wrote nothing usable - so it is logged rather than
-        # quietly treated as a turn that never asked for a location.
+        # The model reached for the contract and wrote nothing usable.
         logger.warning("An empty place block; no location card.")
         return None
     if len(keys) > 1:
@@ -481,18 +265,7 @@ def _place_key_in(*parts: str) -> str | None:
 
 
 def _escalation_prose_in(*parts: str) -> str | None:
-    """The one escalate-to-human block's prose, read from both sides of the split.
-
-    Both sides for the reason _safety_keys_in reads both: an offer written under the cards
-    is still an offer, and the split point is about where prose renders, not about which
-    tags count. Called with the card blocks already removed, so a stray tag inside a card
-    body cannot conjure a draft.
-
-    ONE BLOCK PER TURN. A second is ignored and logged rather than merged or preferred: a
-    turn makes one offer, and choosing between two would put an editorial rule in a parser.
-    Line breaks are kept, exactly as <desc> keeps them - the content is the body of an
-    email, and a paragraph break the model wrote is one a person will read.
-    """
+    """The one escalate-to-human block's prose, read from both sides of the split."""
     contents = [content for part in parts for content in _ESCALATION_BLOCK_RE.findall(part)]
     if not contents:
         return None
@@ -506,12 +279,7 @@ def _escalation_prose_in(*parts: str) -> str | None:
 
 
 def _safety_keys_in(*parts: str) -> tuple[str, ...] | None:
-    """The model's safety keys, read from both sides of the split.
-
-    Both sides, because a tag written under the cards is still a tag and losing it would
-    cost the panel entirely - the one failure this module cannot afford. Called with the
-    card blocks already removed, so a stray tag inside a card body does not fire a handoff.
-    """
+    """The model's safety keys, read from both sides of the split."""
     block_contents = [content for part in parts for content in _SAFETY_BLOCK_RE.findall(part)]
     if block_contents:
         return tuple(
@@ -520,8 +288,7 @@ def _safety_keys_in(*parts: str) -> tuple[str, ...] | None:
             for match in _SAFETY_KEY_RE.finditer(content)
         )
     if any(_SAFETY_TAG_RE.search(part) for part in parts):
-        # A bare <safety/> (or a stray unclosed <safety>): the tag still fires the handoff,
-        # with no keys, which resolves to the default crisis set.
+        # A bare or unclosed <safety>: the handoff fires with no keys, so the default set.
         return ()
     return None
 
@@ -532,13 +299,7 @@ def join_prose(*parts: str | None) -> str:
 
 
 def normalise_dashes(text: str) -> str:
-    """Rewrite em and en dashes into punctuation the UI is allowed to show.
-
-    Runs on the display path BEFORE cap truncation, so the caps measure the rewritten
-    string rather than the one the model typed. Each substitution is logged at INFO so the
-    model's dash rate stays measurable from the logs alone: if the prompt's ban is working,
-    these lines stop appearing.
-    """
+    """Rewrite em and en dashes into punctuation the UI may show. Runs before the caps."""
 
     def _to_hyphen(match: re.Match[str]) -> str:
         logger.info("Normalised an en dash in a digit range to a hyphen.")
@@ -558,19 +319,7 @@ def _collapse_whitespace(text: str) -> str:
 
 
 def _collapse_keeping_line_breaks(text: str) -> str:
-    """The same collapse, except that the model's line breaks stay.
-
-    ONLY the description needs this, and it needs it because the renderer keys on line
-    starts: a bullet is a line beginning with a marker, so a description whose newlines were
-    flattened into spaces arrives as one paragraph reading "... - Email: ... - Walk in: ..."
-    rather than as a list. The tags themselves are unchanged - this is whitespace handling
-    inside one field, not a new construct in the contract.
-
-    Indentation is still incidental and still goes: a model that indents its bullets under
-    <desc> is formatting its XML, not asking for leading space on screen. So each line is
-    collapsed and stripped on its own, and a run of blank lines closes up to one, the same
-    normalisation _clean_prose already applies to the prose either side of the cards.
-    """
+    """The same collapse, except that the model's line breaks stay. Only <desc> needs it."""
     lines = [
         _HORIZONTAL_WHITESPACE_RE.sub(" ", line).strip() for line in (text or "").splitlines()
     ]
@@ -586,16 +335,7 @@ def _first_field(pattern: re.Pattern[str], body: str, *, keep_line_breaks: bool 
 
 
 def _clean_prose(text: str) -> str:
-    """Scrub every known tag and normalise the blank lines a removed block leaves behind.
-
-    Safety blocks go WHOLE, content included, before the tag sweep: their content is resource
-    keys addressed to the server, and a fallback path that only stripped the tags would leak
-    "crisis-988, caps" into the bubble as text. An escalation block goes the same way and for
-    the same kind of reason - its content is the body of an email the student has not sent
-    yet, so leaving it in the bubble would say the message twice and say it as if it had
-    already gone. A place block goes whole for the safety block's own reason: its content is
-    a catalogue key the server reads, and a fallback that stripped only the tags would leak
-    "career-center" into the bubble as text."""
+    """Scrub every known tag, blocks whole, and close up the blank lines they leave."""
     stripped = _SAFETY_BLOCK_RE.sub("\n\n", text)
     stripped = _ESCALATION_BLOCK_RE.sub("\n\n", stripped)
     stripped = _PLACE_BLOCK_RE.sub("\n\n", stripped)
@@ -611,20 +351,7 @@ def strip_card_tags(text: str) -> str:
 
 
 def truncate_to_cap(text: str, cap: int, *, keep_line_breaks: bool = False) -> str:
-    """Shorten to `cap` characters INCLUDING the ellipsis, breaking on a word boundary.
-
-    Shortening happens here, where it can be measured, rather than in the layout, where v1
-    did it: a CSS line clamp hides text without shortening it, so the model was never held to
-    a budget and roughly a third of every description was cut with no ellipsis to show it.
-
-    `keep_line_breaks` is the description's normalisation (_collapse_keeping_line_breaks);
-    the cap value and the word-boundary rule are the same either way. A break is a boundary
-    like a space is, because after either collapse those are the only two whitespace
-    characters left in the string.
-
-    The caps this enforces are runaway guards, not editorial budgets - see _capped, which is
-    where enforcement actually routes and where hitting one is logged.
-    """
+    """Shorten to `cap` characters INCLUDING the ellipsis, breaking on a word boundary."""
     collapse = _collapse_keeping_line_breaks if keep_line_breaks else _collapse_whitespace
     normalized = collapse(text)
     if len(normalized) <= cap:
@@ -642,12 +369,7 @@ def truncate_to_cap(text: str, cap: int, *, keep_line_breaks: bool = False) -> s
 def _capped(
     text: str, cap: int, field: str, ref_id: int | None, *, keep_line_breaks: bool = False
 ) -> str:
-    """Apply one display field's guard cap, logging when it actually bites.
-
-    The caps sit far above what the prompt asks for, so a truncation here is a bug in the
-    prompt or the model rather than routine length variance - the WARNING is what turns a
-    quiet ellipsis on screen into a diagnosable event in the logs.
-    """
+    """Apply one display field's guard cap, logging when it actually bites."""
     collapse = _collapse_keeping_line_breaks if keep_line_breaks else _collapse_whitespace
     normalized = collapse(text)
     if len(normalized) > cap:
@@ -668,13 +390,7 @@ def cards_from_parsed(
     sources: TurnSources,
     settings: Settings,
 ) -> list[StatementCard]:
-    """Turn parsed blocks into wire cards: resolve the ref, apply the caps, build the actions.
-
-    A card needs a title and a description to exist at all - those are the card. Everything
-    else degrades rather than dropping: an unresolvable ref costs the source button (see the
-    module docstring), and only a missing or empty follow-up costs the follow-up button - an
-    over-cap one keeps it, logged, with the prompt sent whole.
-    """
+    """Turn parsed blocks into wire cards: resolve the ref, apply the caps, build the actions."""
     cards: list[StatementCard] = []
 
     for index, parsed in enumerate(parsed_cards):
@@ -686,14 +402,9 @@ def cards_from_parsed(
             )
             break
 
-        # Dashes are normalised before the cap is applied, so the cap measures the string
-        # the student will actually read.
         title = _capped(
             normalise_dashes(parsed.title), settings.card_title_max_chars, "title", parsed.ref_id
         )
-        # The description keeps its line breaks; every other field is one line. A bullet is
-        # a line that starts with a marker, so flattening them here would cost the list on
-        # screen and nothing would show that it had happened.
         desc = _capped(
             normalise_dashes(parsed.desc),
             settings.card_desc_max_chars,
@@ -722,11 +433,7 @@ def cards_from_parsed(
         if source is not None:
             actions.append(SourceAction(label=SOURCE_ACTION_LABEL))
 
-        # A follow-up is never truncated - a shortened question is a DIFFERENT question -
-        # and past the cap it keeps its button anyway. The prompt is sent, and shown, as
-        # the student's next turn, where it wraps like any typed message, so an over-long
-        # one costs nothing visible; the overrun is logged because the cap is a guard on a
-        # paid model input, and passing it means the prompt or the model is broken.
+        # Never truncated: a shortened question is a different question. Overruns are logged.
         followup = _collapse_whitespace(parsed.followup)
         if followup and len(followup) > settings.card_followup_max_chars:
             logger.warning(
@@ -746,9 +453,8 @@ def cards_from_parsed(
                 id=_card_id(index, source),
                 title=title,
                 body=desc,
-                # The type requires a string and the frontend reads the field, but nothing
-                # renders it without a `source` action - so an unresolved ref yields a card
-                # with no link rather than a card with a broken one.
+                # Nothing renders this without a `source` action, so an unresolved ref
+                # yields a card with no link rather than a broken one.
                 sourceUrl=source.source_url if source is not None else "",
                 actions=actions,
             )
@@ -761,16 +467,7 @@ def cited_source_urls(
     cards: list[StatementCard],
     sources: TurnSources,
 ) -> dict[int, str]:
-    """The ref-to-URL pairs a FINISHED reply cited. What gets stored beside its text.
-
-    Read off the cards that survived rather than off the blocks the model wrote, which is
-    the difference between recording what the student was shown and recording what was
-    asked for: a block dropped for having no title, a card past the cap, and every card on a
-    safety turn are all absent here, because none of them reached the screen.
-
-    A card whose ref did not resolve contributes nothing - it has no URL to record - and
-    re-rendering it later drops the source button again, exactly as the live turn did.
-    """
+    """The ref-to-URL pairs a FINISHED reply cited. What gets stored beside its text."""
     urls: dict[int, str] = {}
     for card in cards:
         ref_id = sources.ref_for_url(card.source_url)
@@ -791,18 +488,7 @@ def _card_id(index: int, source: SourceOption | None) -> str:
 
 
 def source_options_for_tool(options: list[SourceOption]) -> list[dict[str, object]]:
-    """The retrieval tool result, as the model sees it.
-
-    `id`, `title`, `text`. No URL, deliberately - see the module docstring. Nothing the model
-    can write consumes a URL, so sending one would only give it a string to copy into prose.
-
-    `text` is the WHOLE retrieved chunk, untruncated. It used to be sliced to 500 chars
-    here, which silently hid whatever sat past the cut - in practice the contact band at
-    the tail of every scraped page, so the model kept citing the right page while saying
-    it could not see a phone number that retrieval had already fetched (eval 2026-08-10).
-    The chunk is already bounded upstream by the ingestion chunking config; a second cap
-    in this layer has no job to do.
-    """
+    """The retrieval tool result: id, title and the WHOLE chunk. No URL, deliberately."""
     return [
         {
             "id": option.ref_id,

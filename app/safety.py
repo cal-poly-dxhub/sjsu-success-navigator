@@ -1,27 +1,8 @@
-"""Safety handoff: the model triages, the server owns every digit of contact info.
+"""Safety handoff: the model triages with keys, the server owns every digit of contact.
 
-There is no pre-model phrase gate (decision, 2026-08-10). The system prompt carries the
-emergency instruction and a roster of handoff resources, each with a short key; on an
-emergency the model emits `<safety>key, key</safety>` and this module resolves those keys
-into the fixed contact panel. The split mirrors the card ref contract: the model decides
-WHEN a handoff is needed and WHICH resources fit, but the label, number, and link the
-student sees come only from the table below - a contact the model invented has no way onto
-the screen, because keys are the only thing it can say.
-
-Failure direction is always toward showing help: an unknown key is dropped with a WARNING,
-a safety tag whose keys all fail to resolve gets the DEFAULT crisis set, and a reply whose
-prose cites crisis lines without the tag has the panel attached anyway (see
-apply_safety_handoff_to_response). No path renders an empty panel.
-
-THE TABLE IS data/contacts.csv, the `safety` rows of it, read at import through
-app/campus_data.py. The facts left this file for the reason the whole `data/` directory
-exists: a contact spelled once in Python and again in TypeScript has no test that can see
-both copies. Here it also buys something narrower - a crisis number is now a spreadsheet row
-a person at Student Affairs can correct without a code change, and `in_default_panel` marks
-the standard set on the same rows rather than in a second list beside them.
-
-Contact facts are drawn from the live SJSU pages, verified 2026-08-10 against
-eval/ground-truth.yaml - never LLM-generated.
+There is no pre-model phrase gate, and failure direction is always toward showing help.
+The table is the `safety` rows of data/contacts.csv, read at import; see
+docs/chat-service.md, Safety.
 """
 
 from __future__ import annotations
@@ -37,29 +18,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SafetyResource:
-    """One handoff destination: the contact block the panel renders, and the one-line
-    "when" the system prompt shows the model. `when=None` keeps a resource resolvable
-    (and usable in the default set) without offering it to the model."""
+    """One handoff destination. `when=None` keeps it resolvable without offering it."""
 
     contact: SafetyContact
     when: str | None
 
 
 # The handoff table, from the `safety` rows of data/contacts.csv, in file order. Read at
-# import: a malformed row is a cold start that fails with a line number, never a panel that
-# comes up one crisis number short.
+# import, so a malformed row fails the cold start rather than the panel.
 _CONTACTS_FILE = "contacts.csv"
 _SAFETY_KIND = "safety"
 
 
 def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
-    """The resources and the default panel, from ONE pass over the same rows.
-
-    Both come back together because they are the same table read two ways, and the default
-    set's ORDER IS THE FILE'S. A second list holding that order would be one more thing to
-    keep in step with the rows it names, which is the shape this whole directory exists to
-    stop.
-    """
+    """Return the resources and the default panel, from one pass over the same rows."""
     resources: dict[str, SafetyResource] = {}
     default_keys: list[str] = []
     for row in load_rows(
@@ -70,10 +42,8 @@ def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
         if row["kind"] != _SAFETY_KIND:
             continue
         key = row["id"]
-        # THE THREE CELLS THE PANEL RENDERS, checked here rather than by the file reader,
-        # because the OTHER kinds in this file legitimately leave some of them blank - a
-        # cares row is a link with no phone number, or a number with no link. A safety row is
-        # a button on a crisis panel, so all three are load-bearing and a blank one is fatal.
+        # Checked here, not by the file reader: other kinds may leave these blank, but a
+        # safety row is a button on a crisis panel, so a blank one is fatal.
         for column in ("label", "detail", "href"):
             if not row[column]:
                 raise CampusDataError(
@@ -117,12 +87,10 @@ def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
     return resources, tuple(default_keys)
 
 
-# The panel when the model emits a bare <safety/> or none of its keys resolve is today's
-# standard crisis set, marked row by row in data/contacts.csv rather than listed here.
+# The panel a bare tag or an all-unknown key list resolves to, marked row by row in the CSV.
 SAFETY_RESOURCES, DEFAULT_SAFETY_KEYS = _load_safety_table()
 
-# Shown when a safety turn arrives with no usable prose: the panel needs an introduction,
-# and this is the one sentence the server is allowed to author.
+# The one sentence the server authors, for a safety turn that arrives with no prose.
 SAFETY_FALLBACK_TEXT = (
     "Thanks for telling me. I'm not able to give counseling myself, so please reach a "
     "real person using the options below. You're not alone, and help is available right now."
@@ -136,9 +104,7 @@ _BODY = (
 
 
 def safety_roster_for_prompt() -> list[tuple[str, str]]:
-    """(key, when) pairs for the system prompt, in table order. The prompt and the resolver
-    read the same table, so a key the model is taught always resolves and a key it was
-    never taught is the only kind that can miss."""
+    """Return (key, when) pairs for the system prompt, in table order."""
     return [
         (key, resource.when)
         for key, resource in SAFETY_RESOURCES.items()
@@ -147,8 +113,7 @@ def safety_roster_for_prompt() -> list[tuple[str, str]]:
 
 
 def resolve_safety_handoff(keys: tuple[str, ...]) -> SafetyHandoff:
-    """The panel for one model-emitted key list: valid keys in emitted order, deduplicated;
-    unknown keys dropped with a WARNING; nothing valid means the default crisis set."""
+    """Resolve one model-emitted key list into a panel, in order and deduplicated."""
     contacts: list[SafetyContact] = []
     seen: set[str] = set()
     for key in keys:
@@ -201,27 +166,7 @@ def apply_safety_handoff_to_response(
     conversational_text: str,
     safety_keys: tuple[str, ...] | None,
 ) -> ChatResponse:
-    """Attach the resolved panel when the model emitted a safety tag, or the default panel
-    when its prose cites crisis lines without one. `safety_keys=None` means no tag; an
-    empty tuple means a bare tag. A safety turn carries no cards.
-
-    Attaching the panel also collapses a split reply back into one bubble. The cards it
-    dropped are what trailing prose renders under, so leaving the split would put half the
-    message below the panel - and the panel sits directly under the message it belongs to,
-    never buried inside it. That placement is a safety property, so it is enforced here,
-    beside the card drop, rather than left to the caller.
-
-    THE ESCALATION OFFER GOES WITH THEM, for the same reason and on the same line. A safety
-    turn's answer is the panel; an email draft under it would put a message the student has
-    to write, and wait on, between them and a number that answers now. The orchestrator
-    already skips building one when the model tagged the turn itself, so what this catches
-    is the other route in - prose that names crisis lines without the tag, where the model
-    thought it was writing an ordinary reply and offered to email an office.
-
-    THE LOCATION CARD GOES WITH THEM TOO, on the same line and for the same reason. It is
-    the same rule about what a safety turn may contain rather than a new one: a map and a
-    walking route are an errand, and a turn that attached the panel did so because somebody
-    needs a number now."""
+    """Attach the panel, and drop the cards, offer and location card a safety turn excludes."""
     if response.safety_handoff is not None:
         return response
 

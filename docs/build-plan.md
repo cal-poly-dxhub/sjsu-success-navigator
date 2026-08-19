@@ -328,7 +328,7 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       administrator issues keep working. THE ABSENCE IS THE GATE, the shape the cost panel
       already uses, and one key covers all three settings: local-only, a rehearsal Okta org,
       SJSU's tenant. THE PROVIDER NAME IS `Okta` AND IS NOT A KNOB (a constant in
-      infra/config.py, and a config key that looks like it might reach it is ignored): a
+      infra/infra/config.py, and a config key that looks like it might reach it is ignored): a
       federated user's Cognito username is `<providerName>_<nameid>`, so a rename mints new
       `sub` values - the DynamoDB partition key - and orphans every conversation the old
       identities wrote, with no update path, since ProviderName is the resource's physical id.

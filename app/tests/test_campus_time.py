@@ -1,8 +1,6 @@
 """The campus clock. The zone is the assertion, because the zone is the bug.
 
-Lambda's clock is UTC, so the failure this module exists to stop is not a missing time, it
-is a confident wrong one: a student typing at 8pm on a Tuesday, told by their own advisor
-that it is 3am on Wednesday. Every test here drives that instant.
+See docs/chat-service.md, The campus clock.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -15,15 +13,12 @@ def _utc(*args):
 
 
 def test_the_campus_zone_is_pinned_and_is_not_utc():
-    """The one value this whole module turns on. It is a literal here for the same reason
-    app/safety.py's contacts are literals: it is a fact about SJSU, not a knob."""
+    """The one value this whole module turns on, and it is a literal here deliberately."""
     assert campus_time.CAMPUS_TIMEZONE == "America/Los_Angeles"
 
 
 def test_a_utc_instant_is_stated_in_campus_time_not_utc():
-    """THE BUG, driven end to end. 03:14 UTC on Wednesday is 8:14pm on TUESDAY in San Jose:
-    the hour is wrong, the day is wrong, and the weekday is wrong, which is three chances
-    for an answer about office hours to be confidently useless."""
+    """THE BUG, driven end to end: 03:14 UTC on Wednesday is 8:14pm on TUESDAY in San Jose."""
     line = campus_time.campus_context_line(_utc(2026, 8, 12, 3, 14))
 
     assert "Tuesday, August 11, 2026" in line
@@ -32,8 +27,7 @@ def test_a_utc_instant_is_stated_in_campus_time_not_utc():
 
 
 def test_the_line_names_its_zone_both_ways():
-    """A time with no frame is a number the model has to guess at. It gets the abbreviation
-    a student would say out loud and the IANA name behind it."""
+    """A time with no frame is a number the model has to guess at."""
     line = campus_time.campus_context_line(_utc(2026, 8, 12, 21, 53))
 
     assert "PDT" in line
@@ -48,8 +42,7 @@ def test_the_line_carries_the_weekday():
 
 
 def test_the_abbreviation_follows_daylight_saving_rather_than_a_fixed_offset():
-    """An IANA name rather than a hardcoded -7, so the November switch is the tz database's
-    problem and not a thing anyone has to remember twice a year."""
+    """An IANA name rather than a hardcoded offset, so the switch is the tz database's job."""
     summer = campus_time.campus_context_line(_utc(2026, 7, 1, 19, 0))
     winter = campus_time.campus_context_line(_utc(2026, 12, 1, 19, 0))
 
@@ -76,8 +69,7 @@ def test_a_runtime_with_no_tz_database_costs_the_line_and_never_falls_back_to_ut
     monkeypatch, caplog
 ):
     """The one way this can fail, and the fallback is SILENCE. A UTC stamp would look like
-    a working clock and be wrong by eight hours, which is worse than a model that simply
-    does not know what time it is. Logged at WARNING, because nothing else would show it."""
+    a working clock and be wrong by seven or eight hours."""
 
     def _no_tz_database(name):
         raise campus_time.ZoneInfoNotFoundError(name)

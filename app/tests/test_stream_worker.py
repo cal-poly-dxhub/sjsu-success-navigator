@@ -1,9 +1,6 @@
 """The generation worker: the same turn POST /chat runs, ending in one authoritative frame.
 
-THE CENTRAL RULE, as tests. What streams is a preview; what the browser renders is the final
-payload, and that payload is exactly what the buffered handler would have produced for the
-same model text. The strongest assertion in this file is the one that builds the same turn
-both ways and compares them.
+See docs/chat-service.md, Streaming.
 """
 
 import copy
@@ -111,9 +108,8 @@ def _event(**overrides):
 
 
 def test_the_final_payload_is_what_post_chat_would_have_returned(worker, monkeypatch):
-    """THE ACCEPTANCE CRITERION. The same model text through both transports must render
-    the same finished turn - cards, prose, the trailing split, all of it - because both
-    exit through the same _response_from_text reading the same complete reply."""
+    """THE ACCEPTANCE CRITERION: the same model text renders identically through both
+    transports, because it goes through the same parser and the same exit."""
     from models import ChatRequest
 
     stream_worker.lambda_handler(_event(), _FakeContext())
@@ -137,8 +133,7 @@ def test_the_final_payload_is_what_post_chat_would_have_returned(worker, monkeyp
 
 
 def test_the_preview_never_contained_the_card_markup(worker):
-    """Prose only. The cards arrive in the final payload, parsed from the complete reply -
-    the student never sees a half-typed `<card ref="1">`."""
+    """Prose only. The cards arrive in the final payload, parsed from the complete reply."""
     stream_worker.lambda_handler(_event(), _FakeContext())
 
     streamed = "".join(frame["text"] for frame in worker.of_type("delta"))
@@ -149,9 +144,7 @@ def test_the_preview_never_contained_the_card_markup(worker):
 
 
 def test_the_reply_is_persisted_as_the_model_wrote_it(worker):
-    """The same record the buffered turn writes, because it is the same response object out
-    of the same run_chat: the reply whole, tags and all, plus the pairs its cards resolved
-    against. A streamed turn and a buffered one are indistinguishable on the table."""
+    """The same record the buffered turn writes, because it is the same response object."""
     stream_worker.lambda_handler(_event(), _FakeContext())
 
     written = worker.store.appended[-1]
@@ -163,8 +156,7 @@ def test_the_reply_is_persisted_as_the_model_wrote_it(worker):
 
 
 def test_the_turn_reads_history_without_re_reading_the_message_just_written(worker):
-    """The route function already wrote the student's message and passed its sort key. The
-    loop appends this turn in memory, so reading it back would say it twice."""
+    """The route function already wrote the message and passed its sort key, so it is excluded."""
     stream_worker.lambda_handler(_event(), _FakeContext())
 
     (_, kwargs) = next(call for call in worker.store.calls if call[0] == "read")
@@ -173,9 +165,7 @@ def test_the_turn_reads_history_without_re_reading_the_message_just_written(work
 
 
 def test_usage_carries_the_guardrail_the_route_function_already_billed(worker):
-    """ONE TALLY PER TURN, opened in the route function before the screen and finished here.
-    A meter that only counted what the worker spent would read low by exactly the screen
-    that every message pays for."""
+    """ONE TALLY PER TURN, opened in the route function before the screen and finished here."""
     stream_worker.lambda_handler(_event(), _FakeContext())
 
     usage = worker.of_type("final")[0]["payload"]["usage"]
@@ -193,10 +183,8 @@ def test_a_new_conversation_is_named_and_the_name_rides_out_on_the_final_frame(w
 
 
 def test_a_closed_tab_stops_the_pushing_but_the_turn_is_still_finished(monkeypatch, worker):
-    """MY CHOICE, stated: a 410 stops the frames and nothing else. The model call is already
-    paid for, and abandoning the turn would leave a user message with no assistant reply -
-    the dangling turn docs/accounts-and-storage.md calls a reef, which the next turn would
-    have to merge. Coming back to a coherent conversation is worth the writes."""
+    """A 410 stops the frames and nothing else: the model call is already paid for, and a
+    user message with no reply is the dangling turn the doc calls a reef."""
     worker.gone_after = 0  # every push 410s, from the first delta
 
     result = stream_worker.lambda_handler(_event(), _FakeContext())
@@ -211,8 +199,7 @@ def test_a_closed_tab_stops_the_pushing_but_the_turn_is_still_finished(monkeypat
 def test_a_failed_loop_tells_the_student_rather_than_leaving_the_socket_silent(
     worker, monkeypatch
 ):
-    """The alternative is a spinner that never resolves. The exception is logged, not sent:
-    a botocore message can quote the request, and the request is the student's own words."""
+    """The alternative is a spinner that never resolves. The exception is logged, not sent."""
 
     def _explode(*args, **kwargs):
         raise RuntimeError("bedrock is unavailable: 'where can I get help with an essay?'")
@@ -230,9 +217,7 @@ def test_a_failed_loop_tells_the_student_rather_than_leaving_the_socket_silent(
 
 
 def test_the_loop_gets_the_same_budget_the_buffered_path_gets(worker, monkeypatch):
-    """The worker is not behind the gateway's 29-second ceiling and could be given more, but
-    a longer budget would make a streamed turn answer questions a buffered turn gives up on
-    - and identical rendering is the property this feature is held to."""
+    """Deliberately the same budget as the buffered path, so the two answer the same set."""
     seen = {}
 
     real = orchestrator.run_chat
@@ -251,9 +236,7 @@ def test_the_loop_gets_the_same_budget_the_buffered_path_gets(worker, monkeypatc
 
 
 def test_nothing_is_attached_to_the_model_call_by_default(worker):
-    """The output guardrail is off, so a streamed reply is the same text a buffered one is.
-    Its only safe mode holds the response back to scan it in chunks, which spends most of
-    this feature's benefit on a screen today's guardrail cannot fire."""
+    """The output guardrail is off, so a streamed reply is the same text a buffered one is."""
     stream_worker.lambda_handler(_event(), _FakeContext())
 
     assert "guardrailConfig" not in worker.bedrock.kwargs
@@ -261,8 +244,7 @@ def test_nothing_is_attached_to_the_model_call_by_default(worker):
 
 
 def test_the_output_guardrail_can_only_ever_be_synchronous(monkeypatch):
-    """`async` releases text to the student before it has been scanned, which is not a
-    screen at all. There is no configuration that produces it - the mode is a literal."""
+    """`async` releases text before it has been scanned, so no configuration produces it."""
     monkeypatch.setattr(stream_worker, "_OUTPUT_GUARDRAIL", True)
 
     config = stream_worker._guardrail_config()
@@ -273,8 +255,7 @@ def test_the_output_guardrail_can_only_ever_be_synchronous(monkeypatch):
 
 
 def test_a_streamed_turn_stores_its_draft_beside_its_cards(worker, monkeypatch):
-    """The worker writes the same two records the buffered path does, and the draft is one
-    of the things stored rather than reproduced."""
+    """The worker writes the same two records the buffered path does, draft included."""
     import dataclasses
 
     from models import ChatResponse, EmailDraft
@@ -287,8 +268,7 @@ def test_a_streamed_turn_stores_its_draft_beside_its_cards(worker, monkeypatch):
             escalation=EmailDraft(to="sjsucares@sjsu.edu", subject="S", body="B"),
         ),
     )
-    # Nothing here reads Settings for the draft - the response already carries it - but the
-    # worker is the deployed path, so it runs with the feature configured.
+    # Nothing here reads Settings for the draft: the response already carries it.
     monkeypatch.setattr(
         stream_worker,
         "SETTINGS",
@@ -308,8 +288,7 @@ def test_a_streamed_turn_stores_its_draft_beside_its_cards(worker, monkeypatch):
 
 
 def test_a_streamed_turn_stores_its_location_beside_its_cards(worker, monkeypatch):
-    """Storage parity with the buffered path, which is what keeps a conversation the same
-    conversation whichever transport answered it."""
+    """Storage parity with the buffered path, which keeps a reopened conversation the same."""
     from models import ChatResponse, PlaceCard
 
     place = PlaceCard(
@@ -332,8 +311,7 @@ def test_a_streamed_turn_stores_its_location_beside_its_cards(worker, monkeypatc
 
 
 def test_the_final_payload_carries_the_location(worker, monkeypatch):
-    """The authoritative payload is a dump of the whole response, so a new field rides along
-    by construction. Asserted once, because "by construction" is the claim being made."""
+    """The authoritative payload is a dump of the whole response, so a new field rides along."""
     from models import ChatResponse, PlaceCard
 
     monkeypatch.setattr(
