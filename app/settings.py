@@ -1,19 +1,7 @@
 """Runtime settings for the chat Lambda, read from the environment the stack sets.
 
-Camp's backend/config.py reshaped for Lambda, and the reshaping is the point:
-
-  - NO pydantic-settings and no .env file. Every value arrives as an environment
-    variable set by infra/infra_stack.py, so config.yaml is the single source of truth
-    and there is no second place a value can come from.
-  - NO DEFAULTS for the wiring that identifies AWS resources. Camp defaulted
-    bedrock_kb_id to a literal knowledge-base id and the model id to a literal model
-    string; a misconfigured deploy therefore ran happily against whatever that id
-    pointed at. Here a missing one raises at import, so the function fails on its first
-    invocation with a named variable instead of a 502 on a student's question.
-  - Behavioural knobs (top-k, thresholds, caps) DO carry defaults, matching camp's
-    values exactly. They are tuning, not identity: a missing one is not ambiguous.
-
-Read once at module import (cold start), not per request.
+Read once at import. Identity values raise when missing and behavioural knobs carry
+defaults; see docs/chat-service.md, Settings.
 """
 
 from __future__ import annotations
@@ -48,11 +36,7 @@ def _int(name: str, default: int) -> int:
 
 
 def _id_set(name: str) -> frozenset[str]:
-    """A comma-separated list of ids from the environment, as a set. Empty when unset.
-
-    Empty is the SAFE direction here: the one thing this reads is the rate limit's exemption
-    list, so a missing or malformed value exempts nobody rather than everybody.
-    """
+    """Return a comma-separated id list from the environment as a set, empty when unset."""
     raw = os.environ.get(name) or ""
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
@@ -69,77 +53,29 @@ def _float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Settings:
-    # Identity: no defaults (see the module docstring).
     knowledge_base_id: str
     generation_model_id: str
-    # The model that names a conversation (app/titles.py). Identity, so no default, for the
-    # same reason the generation model has none: a literal here would mean a misconfigured
-    # deploy quietly billing a model nobody chose. It is a SEPARATE value rather than a
-    # reuse of generation_model_id because the two calls have nothing in common - one writes
-    # a student's answer under a long system prompt, the other writes four words - and the
-    # small model is both cheaper and, inside a two-second budget, the one that finishes.
     title_model_id: str
     bedrock_region: str
     input_guardrail_id: str
     input_guardrail_version: str
-    # The conversation-history table. Identity, so no default: a chat Lambda that cannot
-    # name its table would otherwise write a student's transcript into whatever a typo
-    # pointed at, or nowhere at all.
     chat_history_table_name: str
 
-    # Behaviour: camp's values as defaults.
     number_of_results: int = 8
     retrieve_min_score: float = 0.35
     generation_max_tokens: int = 1200
     generation_temperature: float = 0.2
     max_query_chars: int = 2000
     max_converse_iterations: int = 6
-    # How many previous messages a turn reads back out of DynamoDB - the Limit on the one
-    # descending query, and the window the model is shown. Messages, not turns: 12 is six
-    # exchanges. It used to trim a client-supplied transcript; the transcript is the
-    # server's now, so this bounds a read rather than distrusting a payload.
     max_history_messages: int = 12
-    # The two READ endpoints' caps, and deliberately not max_history_messages: that one is
-    # the window the MODEL is shown and every message in it is paid for in tokens on every
-    # turn, so it is small on purpose. These bound a browser read of stored items, where the
-    # cost is one query and the wrong number is a student's own history truncated in front
-    # of them.
     max_conversations_listed: int = 40
     max_conversation_messages: int = 60
-    # Wall-clock budget for the whole Converse loop. Defaults to 22 to match config.yaml;
-    # the handler narrows it further using Lambda's own remaining time.
     converse_deadline_seconds: int = 22
-    # The ONE cap on a conversation title, applied to both of the things that can produce
-    # one: the model's answer (app/titles.py rejects anything longer) and the first-message
-    # truncation that is the fallback (app/history.py). Two numbers would drift, and the
-    # drift would show up as a sidebar whose rows change length depending on which path
-    # named them.
     title_max_chars: int = 80
-    # The titling call's OWN wall-clock budget, in seconds, and the reason a titling outage
-    # cannot cost a student their answer: the reply is already written and returned by the
-    # time this runs, so past this budget the title is simply not attempted.
     title_deadline_seconds: int = 3
 
-    # The card contract (config.yaml `cards`). Each value is read by BOTH the parser in
-    # cards.py and the prompt builder in prompts.py, which is the whole point of it being one
-    # value: the cap the model is told is the cap the server enforces. Defaults match
-    # config.yaml, where each number is explained - the length caps are guards against a
-    # runaway response, set far above the length the prompt steers toward, so a truncation
-    # is a bug worth a WARNING rather than a daily event.
-    # THE PER-USER DAILY MESSAGE CAP (app/ratelimit.py). Zero means DISABLED, and that is
-    # the one behavioural default in this file that does NOT match config.yaml's value.
-    # It is deliberate: the stack omits the variable entirely when the cap is off, so an
-    # unset variable has to mean off. A default of 60 here would mean a wiring mistake
-    # silently invented a limit nobody configured, and every student would start being
-    # refused on their 61st message of the day with nothing in config.yaml to explain it.
-    #
-    # The opposite mistake - a dropped variable silently disabling the cap - is the one the
-    # infra test pins instead (test_the_chat_function_carries_the_daily_message_limit).
+    # 0 disables the cap; see docs/chat-service.md, Settings.
     daily_message_limit: int = 0
-    # App client ids whose callers the cap does not apply to, from the JWT's `client_id`
-    # claim. Exactly one today: the eval harness's machine client, which fires the whole
-    # ground-truth set as one account. Empty by default, so a missing variable means
-    # "nobody is exempt" rather than a hole.
     rate_limit_exempt_client_ids: frozenset[str] = frozenset()
 
     card_max_cards: int = 4
@@ -148,21 +84,9 @@ class Settings:
     card_desc_max_chars: int = 600
     card_followup_max_chars: int = 120
 
-    # THE ESCALATION RECIPIENT, and its EMPTINESS IS THE FEATURE'S GATE (config.yaml
-    # `escalation`). The stack omits the variable entirely when no address is configured,
-    # so an unset value has to mean off - the same shape as daily_message_limit above, and
-    # for a sharper reason: with no address there is nothing to write to, so prompts.py
-    # never tells the model the tag exists and escalation.py builds no draft even if it
-    # emits one anyway. Off is one state with one spelling.
+    # Empty disables the escalation path; see docs/chat-service.md, Settings.
     escalation_recipient: str = ""
-    # The subject every draft carries. A default rather than a blank, because a deploy that
-    # sets the address and drops this variable would otherwise put an empty subject line in
-    # front of a staff mailbox; it matches config.yaml's value, as the other behavioural
-    # defaults here do.
     escalation_subject: str = "A student would like to talk with someone"
-    # The draft prose's guard cap. Unlike every cap in `cards`, hitting it DROPS the offer
-    # rather than truncating it (app/escalation.py): a half-sentence email is worse than no
-    # email, and the student would not see what was cut until it had been sent.
     escalation_max_chars: int = 1200
 
 
@@ -172,8 +96,6 @@ def load_settings() -> Settings:
         knowledge_base_id=_required("KNOWLEDGE_BASE_ID"),
         generation_model_id=_required("GENERATION_MODEL_ID"),
         title_model_id=_required("TITLE_MODEL_ID"),
-        # Lambda auto-sets AWS_REGION and it is reserved, so the stack passes the region
-        # under its own key (see the chat Lambda's environment block).
         bedrock_region=_required("BEDROCK_REGION"),
         input_guardrail_id=_required("INPUT_GUARDRAIL_ID"),
         input_guardrail_version=_required("INPUT_GUARDRAIL_VERSION"),
@@ -190,7 +112,6 @@ def load_settings() -> Settings:
         converse_deadline_seconds=_int("CONVERSE_DEADLINE_SECONDS", 22),
         title_max_chars=_int("TITLE_MAX_CHARS", 80),
         title_deadline_seconds=_int("TITLE_DEADLINE_SECONDS", 3),
-        # Absent means disabled, which is why the default is 0 and not config.yaml's 60.
         daily_message_limit=_int("DAILY_MESSAGE_LIMIT", 0),
         rate_limit_exempt_client_ids=_id_set("RATE_LIMIT_EXEMPT_CLIENT_IDS"),
         card_max_cards=_int("CARD_MAX_CARDS", 4),
@@ -198,8 +119,6 @@ def load_settings() -> Settings:
         card_title_max_chars=_int("CARD_TITLE_MAX_CHARS", 90),
         card_desc_max_chars=_int("CARD_DESC_MAX_CHARS", 600),
         card_followup_max_chars=_int("CARD_FOLLOWUP_MAX_CHARS", 120),
-        # Absent means the escalation path is off, which is why this is not _required even
-        # though it is an address rather than a tuning knob.
         escalation_recipient=(os.environ.get("ESCALATION_RECIPIENT") or "").strip(),
         escalation_subject=(
             (os.environ.get("ESCALATION_SUBJECT") or "").strip()

@@ -1,10 +1,6 @@
 """The conversation store: the item shapes the doc fixes, and the one query a turn makes.
 
-Nothing here reaches DynamoDB. What is being pinned is the request this code SENDS - the
-keys, the projection, the consistency, the direction - because every one of those is a
-property no unit test could recover after the fact from a table nobody can create without
-an account, and several of them (the key schema above all) are immutable once there is data
-on the table.
+See docs/accounts-and-storage.md and docs/chat-service.md, Storage.
 """
 
 import re
@@ -19,12 +15,7 @@ _CONV = "01J0000000000000000000000A"
 
 
 class _ClientError(Exception):
-    """Shaped like botocore's ClientError, because the error CODE is what the store reads.
-
-    The suite stubs boto3 out entirely (tests/conftest.py), so botocore.exceptions does not
-    exist here - and that is the same reason history.py matches on the code rather than
-    importing the class. This stand-in is that contract written down: an exception carrying
-    `response["Error"]["Code"]`."""
+    """Shaped like botocore's ClientError, because the error CODE is what the store reads."""
 
     def __init__(self, code):
         super().__init__(code)
@@ -32,11 +23,7 @@ class _ClientError(Exception):
 
 
 class _FakeTable:
-    """Records calls and hands back canned Items. `raises_on` fails one operation.
-
-    `pages` overrides `items` when a test needs Query to paginate; each entry is one page,
-    and every page but the last reports a LastEvaluatedKey.
-    """
+    """Records calls and hands back canned Items. `raises_on` fails one operation."""
 
     def __init__(self, items=(), raises_on=None, pages=None):
         self.items = list(items)
@@ -115,18 +102,13 @@ def _item(role, text, sort_key):
 
 
 def test_a_ulid_is_the_shape_a_conversation_id_is_validated_against():
-    """The anti-drift pin between the two halves of the id contract: history.new_ulid mints
-    them and models.CONVERSATION_ID_PATTERN is what an incoming one is checked against, so a
-    server-minted id that its own validator rejected would be a conversation nobody could
-    continue."""
+    """The anti-drift pin between the two halves of the id contract: minted and accepted."""
     for _ in range(50):
         assert re.match(CONVERSATION_ID_PATTERN, history.new_ulid())
 
 
 def test_a_ulid_sorts_by_time_even_when_its_random_half_does_not(monkeypatch):
-    """The whole reason this is not a uuid4. Messages are ordered by their sort key and
-    nothing else, so an id that sorts arbitrarily shuffles a conversation. The randomness is
-    forced to its extremes here, so the ordering can only be coming from the timestamp."""
+    """The whole reason this is not a uuid4: the sort key is the message order."""
     monkeypatch.setattr(history, "_last_ulid_int", 0)
     clock = [1_700_000_000.0]
     monkeypatch.setattr(history.time, "time", lambda: clock[0])
@@ -141,8 +123,7 @@ def test_a_ulid_sorts_by_time_even_when_its_random_half_does_not(monkeypatch):
 
 
 def test_two_ids_minted_in_one_millisecond_still_increase(monkeypatch):
-    """Otherwise the order of a question and its answer would be decided by the random half
-    of the id - a coin toss, on the rare turn that lands inside one millisecond."""
+    """Otherwise a question and its answer would be ordered by their random halves."""
     monkeypatch.setattr(history, "_last_ulid_int", 0)
     monkeypatch.setattr(history.time, "time", lambda: 1_700_000_000.0)
 
@@ -170,9 +151,7 @@ def test_a_message_is_one_item_with_the_docs_keys(table):
 
 
 def test_the_partition_key_is_built_from_the_sub_and_nothing_else(table):
-    """The isolation story for this table in one assertion: the partition is not something
-    a request can name, so a forged conversation id reads as an empty conversation belonging
-    to the forger."""
+    """The isolation story in one assertion: the partition is not something a request names."""
     table.store.append_message(
         user_id="attacker", conversation_id=_CONV, role="user", text="x"
     )
@@ -180,8 +159,7 @@ def test_the_partition_key_is_built_from_the_sub_and_nothing_else(table):
 
 
 def test_an_assistant_message_is_stored_as_the_model_wrote_it(table):
-    """THE RECORD IS THE REPLY, not the halves it was rendered into. The tags stay in, which
-    is what lets a reopened conversation be re-parsed rather than reassembled."""
+    """THE RECORD IS THE REPLY, not the halves it was rendered into."""
     reply = 'Two places can help.\n\n<card ref="1"><title>Writing Center</title></card>\n\nWhich one?'
     table.store.append_message(
         user_id=_SUB,
@@ -194,9 +172,7 @@ def test_an_assistant_message_is_stored_as_the_model_wrote_it(table):
 
 
 def test_an_assistant_message_carries_the_sources_its_cards_cited(table):
-    """The one thing in a reply the model could not have written: it never sees a URL. The
-    refs are keys of a DynamoDB map, which has no numeric key type, so they go in as strings.
-    """
+    """The one thing in a reply the model could not have written: it never sees a URL."""
     table.store.append_message(
         user_id=_SUB,
         conversation_id=_CONV,
@@ -218,8 +194,7 @@ def test_a_reply_that_cited_nothing_stores_no_sources_attribute(table):
 
 
 def test_a_message_never_carries_the_rendered_cards_any_more(table):
-    """The attribute is READ, for the rows already written with it, and never written. A
-    turn that wrote both shapes would be two records of one reply, free to disagree."""
+    """The attribute is READ, for the rows already written with it, and never written."""
     table.store.append_message(
         user_id=_SUB,
         conversation_id=_CONV,
@@ -276,8 +251,8 @@ def test_a_long_first_message_is_truncated_into_a_title(table):
 
 
 def test_a_header_failure_does_not_lose_the_message(table, caplog):
-    """The message is already durable when the counter is bumped. A drifted count is
-    repairable from the messages; the messages are not repairable from anything."""
+    """The message is already durable when the counter is bumped, and a drifted count is
+    repairable from the messages while the messages are not repairable from anything."""
     table.raises_on = "update_item"
 
     with caplog.at_level("ERROR"):
@@ -291,9 +266,7 @@ def test_a_header_failure_does_not_lose_the_message(table, caplog):
 
 
 def test_a_failed_message_write_is_not_swallowed(table):
-    """The opposite direction, and deliberately: the handler decides whether a lost message
-    is worth failing the turn over (it is not), but it cannot decide that if this returns
-    quietly."""
+    """The opposite direction, deliberately: the handler decides what a lost message costs."""
     table.raises_on = "put_item"
     with pytest.raises(RuntimeError):
         table.store.append_message(
@@ -316,16 +289,12 @@ def test_the_context_read_is_one_descending_limited_consistent_query(table):
     assert query["KeyConditionExpression"] == "pk = :pk AND begins_with(sk, :prefix)"
     assert query["ScanIndexForward"] is False, "newest first, so the Limit is the window"
     assert query["Limit"] == 12
-    # Strongly consistent, and the case it covers is the PREVIOUS turn, not this one: two
-    # quick messages against an eventually consistent read can miss the last assistant
-    # reply, which silently loses a turn.
+    # Strongly consistent, and the case it covers is the PREVIOUS turn, not this one.
     assert query["ConsistentRead"] is True
 
 
 def test_the_context_projection_fetches_text_and_never_cards(table):
-    """Two projections of the same query (the doc). The model is fed original message text;
-    rendered cards are for a display read, and the cheapest way to guarantee they are never
-    fed back is not to fetch them."""
+    """Two projections of the same query: the model is fed text, the browser gets the rest."""
     table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=12)
 
     query = table.queries[0]
@@ -344,9 +313,7 @@ def test_the_read_comes_back_oldest_first(table):
 
 
 def test_the_message_this_turn_just_wrote_is_excluded(table):
-    """You never read back your own write: the orchestrator appends the current message in
-    memory, so including it here would say it twice. The extra row asked for is the slot it
-    occupies - asking for `limit` and then dropping it would quietly shorten the window."""
+    """You never read back your own write: the orchestrator appends this turn in memory."""
     table.items = [
         _item("user", "the message just written", "MSG#C#0003"),
         _item("assistant", "second", "MSG#C#0002"),
@@ -374,8 +341,7 @@ def test_the_window_is_the_newest_n_after_the_exclusion(table):
 
 
 def test_an_unreadable_item_is_skipped_rather_than_failing_the_turn(table, caplog):
-    """The only way one of these exists is a shape this code did not write. Refusing to
-    answer over a stray item would be a worse outcome than answering with less context."""
+    """The only way one of these exists is a shape this code did not write."""
     table.items = [
         _item("assistant", "second", "MSG#C#0003"),
         {"sk": "MSG#C#0002", "role": "system", "text": "not a role we write"},
@@ -396,11 +362,7 @@ def test_a_zero_window_asks_dynamodb_nothing(table):
     assert table.queries == []
 
 
-# --- the display reads -------------------------------------------------------------------
-#
-# The other half of the doc's two projections. Same items, same partition, a different
-# ProjectionExpression - and these are the ones that DO fetch cards, which is precisely why
-# they are a separate method from the context read rather than a flag on it.
+# --- the display reads ----------------------------------------------------------------
 
 
 def _header(conversation_id, **attrs):
@@ -416,9 +378,7 @@ def _header(conversation_id, **attrs):
 
 
 def test_the_conversation_list_is_one_query_on_the_users_own_partition(table):
-    """The doc's first access pattern. There is no owner attribute to filter on and none to
-    forget: the partition key is built from the JWT claim, so 'list my conversations' and
-    'list only mine' are the same query."""
+    """The doc's first access pattern: no owner attribute to filter on and none to forget."""
     table.items = [_header("01J0000000000000000000000A")]
 
     table.store.list_conversations(user_id=_SUB, limit=40)
@@ -430,8 +390,7 @@ def test_the_conversation_list_is_one_query_on_the_users_own_partition(table):
     assert query["Limit"] == 40
     # Newest FIRST, so the limit takes the newest conversations rather than the oldest.
     assert query["ScanIndexForward"] is False
-    # A student who sends a turn and reloads must see it: an eventually consistent read can
-    # miss the header that turn just created.
+    # A student who sends a turn and reloads must see it.
     assert query["ConsistentRead"] is True
 
 
@@ -461,9 +420,7 @@ def test_the_list_is_ordered_by_last_activity(table):
 
 
 def test_a_header_with_no_title_still_gets_a_row(table):
-    """The one way that happens is a turn whose user write failed and whose assistant write
-    created the header. That conversation is still the student's, and a blank row would be
-    less legible than a named one."""
+    """The one way that happens is a turn whose user write failed but whose reply landed."""
     table.items = [_header("01J0000000000000000000000A", title="")]
 
     assert table.store.list_conversations(user_id=_SUB, limit=40)[0].title
@@ -475,9 +432,7 @@ def test_a_zero_list_window_asks_dynamodb_nothing(table):
 
 
 def test_the_display_read_fetches_the_sources_the_context_read_refuses_to(table):
-    """The whole difference between the two projections, in one assertion. The refs come
-    back as INTS: DynamoDB map keys are strings and there is no numeric key type, so the
-    conversion happens once, at the boundary, rather than in the card parser."""
+    """The whole difference between the two projections, in one assertion."""
     table.items = [
         {
             "sk": f"MSG#{_CONV}#01",
@@ -503,9 +458,7 @@ def test_the_display_read_fetches_the_sources_the_context_read_refuses_to(table)
 def test_the_display_read_still_serves_a_row_written_before_the_record_kept_model_text(
     table,
 ):
-    """The rows already on the table. Nothing writes `cards` any more and the read still
-    fetches it, because a row that has it is a row whose text is already-rendered prose -
-    and the handler needs to know which of the two shapes it is holding."""
+    """The rows already on the table: nothing writes `cards` any more and the read serves them."""
     table.items = [
         {
             "sk": f"MSG#{_CONV}#01",
@@ -524,9 +477,7 @@ def test_the_display_read_still_serves_a_row_written_before_the_record_kept_mode
 
 
 def test_an_unreadable_source_ref_costs_one_link_and_not_the_conversation(table, caplog):
-    """Same posture as the unreadable-item skip: the only way a non-numeric ref gets here is
-    a row this code did not write, and refusing to open the conversation over it would be a
-    worse outcome than opening it with one card missing its link."""
+    """Same posture as the unreadable-item skip: one link, never the conversation."""
     table.items = [
         {
             "sk": f"MSG#{_CONV}#01",
@@ -546,9 +497,8 @@ def test_an_unreadable_source_ref_costs_one_link_and_not_the_conversation(table,
 
 
 def test_the_display_read_comes_back_oldest_first(table):
-    """DynamoDB is asked for the newest `limit` (descending), because a conversation longer
-    than the cap should show its END - then the page is reversed, because that is the order
-    a transcript is read in."""
+    """DynamoDB is asked for the newest `limit` descending, then reversed, because a long
+    conversation must show the end a student is returning to."""
     table.items = [
         _item("assistant", "second", f"MSG#{_CONV}#02"),
         _item("user", "first", f"MSG#{_CONV}#01"),
@@ -612,20 +562,14 @@ def test_a_generated_title_replaces_the_first_message_one(table):
 
 
 def test_a_generated_title_cannot_create_a_header(table):
-    """An UpdateItem with no condition is an upsert. Without this, titling a conversation
-    whose writes all failed would mint a header with a title and no messages under it - a
-    row in the sidebar that opens empty."""
+    """An UpdateItem with no condition is an upsert, which would mint an empty conversation."""
     table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
     assert "attribute_exists(sk)" in table.updates[0]["ConditionExpression"]
 
 
 def test_a_generated_title_never_overwrites_a_student_chosen_name(table):
-    """The promise this feature makes to a student who renamed a chat, written as a
-    condition rather than as an ordering: no automatic titling can take their name away.
-
-    Today the ordering alone would do it (titling runs on the first turn, a rename cannot
-    have happened yet), but that is an accident of when things run and this is the
-    property."""
+    """The promise to a student who renamed a chat, written as a condition rather than left
+    to the ordering that happens to hold today."""
     table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
     condition = table.updates[0]["ConditionExpression"]
     assert "attribute_not_exists(#userTitled)" in condition
@@ -642,8 +586,7 @@ def test_a_failed_condition_is_a_false_not_an_exception(monkeypatch):
 
 
 def test_any_other_dynamodb_failure_still_raises(monkeypatch):
-    """A throttled rename must not be reported to the student as "no such conversation".
-    Only the one named condition is swallowed; everything else reaches the handler's 502."""
+    """A throttled rename must not be reported to the student as "no such conversation"."""
     fake = _FakeTable(raises_on="update_item")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -681,10 +624,8 @@ def test_a_delete_removes_every_message_before_the_header(table):
 
 
 def test_a_delete_that_fails_midway_leaves_the_header(monkeypatch):
-    """THE ORDERING IS THE WHOLE DESIGN. Failing here leaves an empty but VISIBLE
-    conversation, which the student can delete again. The reverse - header gone, messages
-    left - is an invisible orphaned transcript that nothing lists, nothing can address, and
-    no TTL will collect, because expiresAt is unset on these items."""
+    """THE ORDERING IS THE WHOLE DESIGN: this leaves an empty but VISIBLE conversation, and
+    the other order leaves an orphaned transcript nothing can reach."""
     fake = _FakeTable(items=[{"sk": f"MSG#{_CONV}#01"}], raises_on="batch_delete")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -696,8 +637,7 @@ def test_a_delete_that_fails_midway_leaves_the_header(monkeypatch):
 
 
 def test_a_delete_pages_through_a_long_conversation(monkeypatch):
-    """Query returns at most 1 MB. Stopping at the first page would leave the tail of a long
-    conversation behind - the same orphaned-data failure, arriving quietly."""
+    """Query returns at most 1 MB, so stopping at the first page would orphan the tail."""
     pages = [
         [{"sk": f"MSG#{_CONV}#01"}, {"sk": f"MSG#{_CONV}#02"}],
         [{"sk": f"MSG#{_CONV}#03"}],
@@ -722,17 +662,14 @@ def test_a_delete_only_ever_addresses_the_callers_own_partition(table):
 
 
 def test_deleting_a_conversation_that_is_not_there_is_a_no_op(table):
-    """Idempotent by construction: a forged id addresses a prefix inside the caller's own
-    partition that holds nothing, and DeleteItem on an absent key is not an error."""
+    """Idempotent by construction: a forged id addresses a prefix holding nothing."""
     table.items = []
     assert table.store.delete_conversation(user_id=_SUB, conversation_id=_CONV) == 0
     assert table.batched_deletes == []
 
 
 def test_the_title_cap_travels_with_the_store(monkeypatch):
-    """One number for both things that can name a conversation. A store built with the
-    configured cap truncates the fallback title to it; the model title is held to the same
-    value in app/titles.py."""
+    """One number for both things that can name a conversation."""
     fake = _FakeTable()
     store = history.ConversationStore("chat-history-test", title_max_chars=20)
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -747,14 +684,8 @@ def test_the_title_cap_travels_with_the_store(monkeypatch):
 
 
 def test_the_allowance_claim_is_one_atomic_conditional_write(table):
-    """THE WHOLE RACE GUARANTEE, in one request. The compare and the increment are the same
-    operation: DynamoDB evaluates `count < :limit` against the value the item holds at the
-    instant of the write, so two concurrent turns at the limit cannot both pass.
-
-    The shape is what is pinned, because it is the part no test can recover afterwards - a
-    read-then-write refactor would still pass every behavioural test in a single-threaded
-    suite and lose the property completely in production.
-    """
+    """THE WHOLE RACE GUARANTEE, in one request: the compare and the increment are the same
+    operation, and the condition is evaluated against the value the item holds then."""
     assert (
         table.store.claim_message_allowance(
             user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
@@ -774,9 +705,7 @@ def test_the_allowance_claim_is_one_atomic_conditional_write(table):
 
 
 def test_the_counter_is_its_own_item_in_the_users_partition(table):
-    """Same partition as the caller's conversations - built from the JWT claim like every
-    other key here - under a third sort-key prefix that no existing read can see: the list is
-    begins_with('CONV#') and both message reads are begins_with('MSG#<convId>#')."""
+    """Same partition as the caller's conversations, built from the JWT claim like every key."""
     table.store.claim_message_allowance(
         user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
     )
@@ -787,9 +716,7 @@ def test_the_counter_is_its_own_item_in_the_users_partition(table):
 
 
 def test_the_counter_carries_the_tables_ttl_attribute(table):
-    """`expiresAt`, epoch seconds, written with if_not_exists so the window's end is fixed by
-    the request that opened it rather than rewritten on every message. This is the first
-    thing in the app to set the attribute the table has always had enabled."""
+    """`expiresAt`, epoch seconds, with if_not_exists so the window's end is fixed once."""
     table.store.claim_message_allowance(
         user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
     )
@@ -801,8 +728,7 @@ def test_the_counter_carries_the_tables_ttl_attribute(table):
 
 
 def test_count_goes_through_expression_attribute_names(table):
-    """`count` is a DynamoDB reserved word. Used bare it fails the call at RUNTIME - every
-    message refused with an error that looks nothing like a rate limit."""
+    """`count` is a DynamoDB reserved word, and used bare it fails at RUNTIME."""
     table.store.claim_message_allowance(
         user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
     )
@@ -810,8 +736,7 @@ def test_count_goes_through_expression_attribute_names(table):
 
 
 def test_a_spent_allowance_is_a_false_not_an_exception(monkeypatch):
-    """The condition failing is the guard working, so it comes back as a value rather than as
-    an error the caller has to know how to interpret."""
+    """The condition failing is the guard working, so it comes back as a value."""
     fake = _FakeTable(raises_on="condition")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -825,8 +750,7 @@ def test_a_spent_allowance_is_a_false_not_an_exception(monkeypatch):
 
 
 def test_any_other_failure_on_the_allowance_write_still_raises(monkeypatch):
-    """A throttled counter write must not read as "the student is over their limit". It is
-    re-raised, and app/ratelimit.py decides - it fails OPEN and logs at ERROR."""
+    """A throttled counter write must not read as "the student is over their limit"."""
     fake = _FakeTable(raises_on="update_item")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -841,12 +765,8 @@ def test_any_other_failure_on_the_allowance_write_still_raises(monkeypatch):
 
 
 def test_a_connection_is_an_item_in_the_users_own_partition(table):
-    """pk=USER#<sub>, sk=CONN#<connectionId> - a fourth sort-key prefix in the partition
-    the user already owns, exactly as the rate counter is a third.
-
-    THE PARTITION IS THE USER, NOT THE CONNECTION, and that is the assertion. Keying on the
-    connection id would make the row addressable by a value that is not a JWT claim, which
-    is the one property this whole table is built on (docs/accounts-and-storage.md)."""
+    """pk=USER#<sub>, sk=CONN#<connectionId>: a fourth prefix in the partition already keyed
+    on the user, so it needed no table and no grant."""
     table.store.open_connection(user_id=_SUB, connection_id="abc123=", expires_at=1_700_010_000)
 
     item = table.puts[0]["Item"]
@@ -857,10 +777,7 @@ def test_a_connection_is_an_item_in_the_users_own_partition(table):
 
 
 def test_a_connection_record_is_invisible_to_every_read_in_the_module(table):
-    """It shares the partition with the conversations, so the thing that keeps it out of a
-    student's sidebar is the sort-key prefix and nothing else. The conversation list asks
-    for begins_with('CONV#') and both message reads for begins_with('MSG#<convId>#'), so
-    'CONN#' is unreachable from all three - no read had to learn to skip it."""
+    """It shares the partition, so the sort-key prefixes are what keep it out of a read."""
     table.store.list_conversations(user_id=_SUB, limit=10)
     table.store.conversation_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
     table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
@@ -880,9 +797,7 @@ def test_closing_a_connection_deletes_exactly_that_row(table):
 
 
 def test_a_failed_connection_write_does_not_cost_the_student_their_connection(monkeypatch):
-    """The record is a record, not a gate: nothing reads it to decide whether a student may
-    stream. Same posture as the header counter above - a write that fails logs and the turn
-    goes on."""
+    """The record is a record, not a gate: nothing reads it to let a student stream."""
     fake = _FakeTable(raises_on="put_item")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -918,8 +833,7 @@ def test_an_assistant_message_carries_its_escalation_draft(table):
 
 
 def test_a_reply_with_no_offer_stores_no_escalation_attribute(table):
-    """Same rule as the cards beside it: an absent attribute says the turn made no offer,
-    where an empty map would say it made one and it was blank."""
+    """Same rule as the cards beside it: an absent attribute says the turn made no offer."""
     table.store.append_message(
         user_id=_SUB, conversation_id=_CONV, role="assistant", text="Here you go."
     )
@@ -927,8 +841,7 @@ def test_a_reply_with_no_offer_stores_no_escalation_attribute(table):
 
 
 def test_the_display_read_fetches_the_draft_and_the_context_read_does_not(table):
-    """The two projections again. A draft is display-only, exactly like a card: the model
-    is fed message text and never handed back what it offered last time."""
+    """The two projections again: a draft is display-only, exactly like a card."""
     table.items = [
         {
             "sk": f"MSG#{_CONV}#01",
@@ -1000,8 +913,7 @@ def test_a_reply_with_no_location_stores_no_place_attribute(table):
 
 
 def test_the_display_read_fetches_the_location_and_the_context_read_does_not(table):
-    """The two projections one more time. A location is display-only, exactly like a card:
-    the model is fed message text and never handed back the panel it produced last turn."""
+    """The two projections one more time: a location is display-only, exactly like a card."""
     table.items = [
         {
             "sk": f"MSG#{_CONV}#01",

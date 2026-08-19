@@ -1,12 +1,7 @@
-"""Put app/ on sys.path so the Lambda's flat imports (`from settings import ...`) resolve
-in tests exactly as they do in the deployed function, where the handler and its modules sit
-side by side at the bundle root.
+"""Put app/ on sys.path so the Lambda's flat imports resolve as they do when deployed.
 
-Also stubs boto3 before any app module is imported. The suite is hermetic by design: the
-chat path is Bedrock calls all the way down, and none of them can be exercised without an
-account, so a test run must never depend on boto3 being installed or on credentials
-existing. Anything that would touch AWS is monkeypatched per test - DynamoDB included,
-which is what the fake store at the bottom of this file is for.
+Also stubs boto3 before any app module is imported: the suite is hermetic; see
+docs/chat-service.md, What the suites pin.
 """
 
 import json
@@ -18,9 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# The identity variables the CDK stack sets. settings.load_settings() raises without them,
-# by design (app/settings.py), and handler.py calls it at import - so they have to exist
-# before collection, not inside a fixture. setdefault so a test can still override.
+# Set before collection, not in a fixture: load_settings() raises without them and
+# handler.py calls it at import. setdefault, so a test can still override.
 for _name, _value in {
     "KNOWLEDGE_BASE_ID": "KB-TEST",
     "GENERATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
@@ -68,14 +62,11 @@ import pytest  # noqa: E402 - after the stubs, deliberately
 from history import ConversationSummary, DisplayMessage, StoredMessage  # noqa: E402
 
 
-# The Cognito sub every test signs its requests with, unless it is testing what happens
-# without one.
+# The sub every test signs with, unless it is testing what happens without one.
 TEST_SUB = "11111111-2222-3333-4444-555555555555"
 
 
-# The app client id a browser's token carries. A real deployment has exactly two - the web
-# client and the eval harness's machine client - and only the second is ever exempt from the
-# rate limit, so this one stands in for "an ordinary student".
+# An ordinary student's app client. A real deployment has exactly two.
 TEST_CLIENT_ID = "web-client-id"
 
 # The eval harness's machine client, the one the stack puts in RATE_LIMIT_EXEMPT_CLIENT_IDS.
@@ -83,17 +74,7 @@ EXEMPT_CLIENT_ID = "eval-client-id"
 
 
 def _authorized(event, sub, client_id=TEST_CLIENT_ID):
-    """Attach the claims the JWT authorizer would have put on the event.
-
-    Tests build events THROUGH these helpers so nothing accidentally asserts on a request
-    the deployed stack could not produce: every route is authorizer-gated, so a request with
-    no `sub` is a misconfiguration rather than an anonymous student.
-
-    `client_id` rides alongside because a Cognito ACCESS token carries it and API Gateway
-    validates it against the authorizer's audience list - it is what the rate limit's
-    exemption is keyed on. Defaulted to the web client so an ordinary test event is an
-    ordinary student rather than an exempt machine.
-    """
+    """Attach the claims the JWT authorizer would have put on the event."""
     if sub is not None:
         claims = {"sub": sub}
         if client_id is not None:
@@ -157,11 +138,8 @@ def delete_event(conversation_id, sub=TEST_SUB):
 
 
 class FakeConversationStore:
-    """A ConversationStore stand-in that records the turn's table access in order.
-
-    The order is the assertion in most tests that use it: the student's message is written
-    BEFORE the model is called, so a disclosure that then times out is still on record.
-    """
+    """A ConversationStore stand-in that records the turn's table access IN ORDER, which is
+    the assertion in most tests that use it."""
 
     def __init__(
         self,
@@ -178,23 +156,18 @@ class FakeConversationStore:
         self.fail_on = set(fail_on)
         self.conversations = list(conversations)
         self.messages = list(messages)
-        # The rate-limit counters, keyed exactly as the real item is: (user, window). Seeded
-        # by a test that wants a user already partway through their day.
+        # Keyed exactly as the real item is. Seeded by a test that wants a partway day.
         self.counters = dict(counters or {})
-        # DynamoDB serialises updates to a single item, and claim_message_allowance leans on
-        # that entirely - the compare and the increment are one operation. The fake holds a
-        # lock so a concurrency test exercises the same guarantee rather than Python's
-        # interpreter happening to switch threads somewhere convenient.
+        # The lock models what DynamoDB buys from a conditional ADD on one item: compare
+        # and increment as one operation.
         self._counter_lock = threading.Lock()
-        # What the two CONDITIONAL writes report back. False is not an error: it is the
-        # condition holding - no such header, or one the student named themselves.
+        # What the two CONDITIONAL writes report. False is the condition holding, not an error.
         self.renamed = renamed
         self.titled = titled
         self.deleted_messages = deleted_messages
         self.calls = []
         self.appended = []
-        # Open WebSocket connections, as (user_id, connection_id). The real item is
-        # pk=USER#<sub>, sk=CONN#<connectionId>, which is why the pair is the identity here.
+        # The real item is pk=USER#<sub>, sk=CONN#<connectionId>, so the pair is the identity.
         self.connections = set()
 
     def append_message(self, **kwargs):
@@ -206,15 +179,7 @@ class FakeConversationStore:
         return sort_key
 
     def claim_message_allowance(self, *, user_id, window_key, limit, expires_at):
-        """DynamoDB's conditional ADD, modelled: compare and increment as ONE step.
-
-        This is the semantics the real call buys from `ConditionExpression` plus `ADD` on a
-        single item - the condition is evaluated against the value the item holds at the
-        moment of the write, so two writers cannot both see the same count and both increment
-        it. The lock is what makes that true here; in DynamoDB it is the item itself.
-
-        test_history.py asserts separately that the real store sends exactly that expression.
-        """
+        """DynamoDB's conditional ADD, modelled: compare and increment as ONE step."""
         self.calls.append(("allowance", {"user_id": user_id, "window_key": window_key}))
         if "allowance" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (rate limit write)")
@@ -263,9 +228,8 @@ class FakeConversationStore:
         return self.deleted_messages
 
     def open_connection(self, **kwargs):
-        """The WebSocket connection record. Note it does NOT raise on `fail_on`: the real
-        one swallows its own failures, because the record is a record and not a gate - a
-        write that fails must not cost a student their connection."""
+        """The connection record. It does NOT raise on `fail_on`: the real one swallows its
+        own failures, because the record is a record and not a gate."""
         self.calls.append(("connect", kwargs))
         self.connections.add((kwargs["user_id"], kwargs["connection_id"]))
 
@@ -289,13 +253,8 @@ def store(monkeypatch):
 
 @pytest.fixture
 def daily_limit(monkeypatch):
-    """Turn the per-user daily cap on for one test, at whatever number it asks for.
-
-    The cap is OFF in the rest of the suite, which is deliberate rather than convenient: the
-    deployed default reads from an environment variable the stack omits when the feature is
-    disabled, so a suite that switched it on globally would stop testing the shape every
-    other test is about. Tests that want it say so.
-    """
+    """Turn the per-user daily cap on for one test. It is OFF everywhere else, because the
+    deployed default reads an environment variable the stack omits when it is disabled."""
     import dataclasses
 
     import handler
@@ -325,19 +284,7 @@ def displayed(
     cards=None,
     place=None,
 ):
-    """One stored row, as the display read hands it back.
-
-    `text` on an assistant row is the model's own reply, tags and all, and `sources` is what
-    its `<card ref="N">` blocks resolve against - the handler re-parses the two into a turn.
-
-    `cards` is the LEGACY shape and a test passing it is saying so on purpose: rows written
-    before the record kept model text carry rendered cards beside prose that has already been
-    through the parser. Nothing writes them any more; the read path still has to serve them.
-
-    `place` is neither of those. It is the location card as it resolved on the turn that
-    stored it, and it is still written - the read path hands back the recorded card rather
-    than resolving the key in `text` a second time (app/history.py, append_message).
-    """
+    """One stored row, as the display read hands it back."""
     return DisplayMessage(
         role=role,
         text=text,

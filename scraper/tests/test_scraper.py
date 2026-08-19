@@ -1,10 +1,7 @@
-"""Unit tests for the local scraper. No live network calls: HTTP is mocked via httpx.MockTransport,
-and content extraction is exercised against static in-repo HTML fixtures and PDFs built inline by
-`_build_pdf` - a real PDF byte stream rather than a stub, so pypdf does the parsing the Lambda does.
+"""Unit tests for the local scraper. No live network: HTTP is mocked via httpx.MockTransport.
 
-The crawl-list tests carry the most weight here. The list is the corpus - it decides what gets
-fetched AND what the Lambda's prune keeps - so `load_seed_pages` has to reject a bad list rather
-than return a short one, and every rejection below is a delete-the-knowledge-base bug it prevents.
+The extraction behaviours these pin, and the audit numbers behind them, are in
+docs/scraper.md.
 """
 
 import csv
@@ -18,8 +15,7 @@ import pytest
 
 import scraper
 
-# A realistic static page: boilerplate nav/header/footer/sidebar wrapping a real article body.
-# trafilatura should keep the article and drop the boilerplate.
+# A realistic static page: boilerplate wrapping a real article, in the corpus's own shape.
 FIXTURE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -51,12 +47,7 @@ FIXTURE_HTML = """
 </html>
 """
 
-# Some pages carry replacement-char garbage baked into their SOURCE: the entities
-# &#239;&#191;&#189; (which decode to U+00EF U+00BF U+00BD = the 3-char sequence "ï¿½") stand where
-# an apostrophe or accented letter was lost to an upstream cp1252->UTF-8 mis-decode at authoring
-# time. This fixture reproduces that exactly - a clean UTF-8 page whose content carries the
-# baked-in garbage. The scraper cannot recover the lost chars (U+FFFD is information-free), only
-# strip the garbage.
+# Replacement-char garbage baked into a page's own SOURCE; see docs/scraper.md, Extraction.
 FIXTURE_MOJIBAKE_HTML = (
     "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Counseling Services</title></head>"
     "<body><main><article><h1>Counseling Services</h1>"
@@ -66,9 +57,7 @@ FIXTURE_MOJIBAKE_HTML = (
     "</article></main></body></html>"
 )
 
-# University pages use tables for LAYOUT as well as for data. trafilatura renders them as mangled
-# markdown tables ("| cell | |" with empty cells). We want flat prose, not tables. This fixture
-# reproduces that: a one-content-cell row (empty 2nd cell) and a two-cell contact row.
+# University pages use tables for LAYOUT as well as data, so trafilatura emits empty cells.
 FIXTURE_TABLE_HTML = (
     "<!DOCTYPE html><html><head><title>Financial Aid Deadlines</title></head><body><main><article>"
     "<h1>Financial Aid Deadlines</h1>"
@@ -84,8 +73,7 @@ FIXTURE_TABLE_HTML = (
     "</article></main></body></html>"
 )
 
-# The crawl list carries two more columns than the scraper reads (static_html, body_text_chars).
-# They are page-selection evidence and must be ignored rather than tripping validation.
+# The crawl list carries two more columns than the scraper reads, and they must be ignored.
 SEED_HEADER = "url,section,title,static_html,body_text_chars\n"
 SEED_ROWS = (
     "https://www.sjsu.edu/advising/,academic-advising,Academic Advising,True,4210\n"
@@ -129,8 +117,7 @@ def test_load_seed_pages_preserves_file_order(tmp_path):
 
 
 def test_a_missing_crawl_list_raises_rather_than_scraping_nothing(tmp_path):
-    # THE failure this guard exists for. Returning [] here would hand prune_stale_objects an empty
-    # expected set, which deletes every document in the knowledge base and then re-ingests nothing.
+    # THE failure this guard exists for: [] here would prune the whole knowledge base.
     with pytest.raises(scraper.SeedListError, match="not found"):
         scraper.load_seed_pages(tmp_path / "absent.csv")
 
@@ -147,9 +134,8 @@ def test_an_empty_crawl_list_raises(tmp_path):
 
 @pytest.mark.parametrize("dropped", scraper.SEED_COLUMNS)
 def test_a_missing_required_column_raises_naming_the_column(tmp_path, dropped):
-    # `section` is as required as `url`: it rides into the metadata sidecar, and app/cards.py keys
-    # its ranking and follow-up buttons off it. A sectionless page still answers questions, so the
-    # degradation would otherwise be invisible.
+    # `section` is as required as `url`: it rides into the metadata sidecar, and a page
+    # missing it would be an invisible gap rather than a loud one.
     columns = [c for c in ("url", "section", "title") if c != dropped]
     body = ",".join(columns) + "\n" + ",".join(f"v-{c}" for c in columns) + "\n"
     with pytest.raises(scraper.SeedListError, match=dropped):
@@ -181,8 +167,7 @@ def test_a_non_http_url_raises(tmp_path, url):
 
 
 def test_a_duplicate_url_raises(tmp_path):
-    # Duplicates are not merely wasteful: the same slug would be uploaded twice per run, and a
-    # copy-paste duplicate usually means a row that was meant to be edited and was not.
+    # A duplicate would upload the same slug twice per run and mask a copy-paste mistake.
     body = (
         "url,section,title\n"
         "https://www.sjsu.edu/advising/,academic-advising,Advising\n"
@@ -194,8 +179,7 @@ def test_a_duplicate_url_raises(tmp_path):
 
 
 def test_an_unreadable_crawl_list_raises_as_a_seed_list_error(tmp_path):
-    # Invalid UTF-8 (a truncated multi-byte sequence) is what a corrupted asset looks like. It must
-    # surface as SeedListError so the handler's fatal path catches the same class either way.
+    # Invalid UTF-8 is what a corrupted asset looks like: a SeedListError, never a crash.
     path = tmp_path / "urls.csv"
     path.write_bytes(b"url,section,title\nhttps://x/a,sec,\xff\xfe title\n")
     with pytest.raises(scraper.SeedListError, match="could not be read"):
@@ -203,11 +187,7 @@ def test_an_unreadable_crawl_list_raises_as_a_seed_list_error(tmp_path):
 
 
 def test_the_real_crawl_list_is_valid_and_complete():
-    """The committed data/urls.csv itself, not a fixture. This is the file that ships as the
-    Lambda layer, so a truncated or half-edited commit should fail here rather than at 11:30 UTC.
-
-    The expected count is derived from the file rather than hardcoded, so adding pages is a
-    one-file edit - but a truncated file still fails, because the rows it kept would not match."""
+    """The committed data/urls.csv itself, not a fixture: this is the file that ships."""
     path = Path(__file__).resolve().parents[2] / "data" / "urls.csv"
     pages = scraper.load_seed_pages(path)
 
@@ -234,7 +214,6 @@ def test_slugify_is_deterministic():
 
 def test_slugify_is_filesystem_safe_and_readable():
     slug = scraper.slugify_url("https://www.sjsu.edu/advising/index.php")
-    # Only lowercase alphanumerics and hyphens; readable host/path retained.
     assert re.fullmatch(r"[a-z0-9-]+", slug)
     assert slug.startswith("www-sjsu-edu-advising-index-php-")
 
@@ -276,7 +255,7 @@ def test_build_metadata_shape_and_injected_timestamp():
 
 def test_metadata_has_required_attribution_keys():
     md = scraper.build_metadata("u", "u", None, "sec", "x", timestamp="2026-08-05T00:00:00Z")
-    # section is on this list, not optional: it is what cards.py ranks and routes on.
+    # section is on this list, not optional: it is the crawl list's curated grouping.
     for key in ("source_url", "title", "section", "scrape_timestamp"):
         assert key in md
 
@@ -287,10 +266,8 @@ def test_metadata_has_required_attribution_keys():
 def test_extract_markdown_keeps_article_drops_boilerplate():
     title, markdown = scraper.extract_markdown(FIXTURE_HTML, url="https://www.sjsu.edu/advising/")
     assert markdown, "expected non-empty markdown from the fixture"
-    # Main content survives.
     assert "Monday through Friday" in markdown
     assert "academic probation" in markdown
-    # Boilerplate is stripped.
     assert "Admissions" not in markdown
     assert "Quick Links" not in markdown
     assert "All rights reserved" not in markdown
@@ -298,13 +275,7 @@ def test_extract_markdown_keeps_article_drops_boilerplate():
     assert title and "Academic Advising" in title
 
 
-# --- the template supplement pass (static fixtures, no network) --------------------------------
-#
-# The www.sjsu.edu CMS template, reduced to the two layouts that break an article extractor
-# (2026-08-10 corpus audit): the office's phone/email/hours in a styled band OUTSIDE <main>
-# (role="complementary"), and main content carried as link-tile grids rather than paragraphs.
-# trafilatura drops both; the supplement pass must bring both back, without duplicating the
-# prose trafilatura did keep and without letting nav/footer chrome back in.
+# --- the template supplement pass (static fixtures, no network) ---------------------------
 
 FIXTURE_SJSU_TEMPLATE_HTML = """
 <!DOCTYPE html>
@@ -345,8 +316,7 @@ FIXTURE_SJSU_TEMPLATE_HTML = """
 </html>
 """
 
-# A landing page that is ONLY tiles - no paragraph for trafilatura to anchor on. Before the
-# supplement pass this page could extract to nothing and fail as "no content extracted".
+# A landing page that is ONLY tiles, with no paragraph for trafilatura to anchor on.
 FIXTURE_TILES_ONLY_HTML = """
 <!DOCTYPE html>
 <html><head><title>Get Help | Library</title></head>
@@ -365,22 +335,20 @@ FIXTURE_TILES_ONLY_HTML = """
 
 
 def test_contact_band_reaches_the_markdown():
-    """The band lives outside <main> with role="complementary" - exactly what an article
-    extractor strips - and it holds the facts a routing answer needs. It must survive."""
+    """The band lives outside <main> with role="complementary": exactly what an article
+    extractor is right to drop and we cannot afford to lose."""
     _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
     assert markdown
     assert "408-924-1601" in markdown
     assert "bursar@sjsu.edu" in markdown
     assert "Monday - Friday 9:00 a.m. - 4:00 p.m." in markdown
-    # The band separates its lines with <br> alone; text extraction must not glue them into
-    # "408-924-1601Monday", which is a corrupted fact rather than a phone number and an hours line.
+    # The band separates its lines with <br> alone, which must not glue facts together.
     assert "408-924-1601 Monday" in markdown
 
 
 def test_link_tile_text_reaches_the_markdown_and_chrome_still_does_not():
     _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
     assert markdown
-    # Tile labels and descriptions - the actual content of a landing page.
     assert "Fees and Due Dates" in markdown
     assert "Installment payment plans spread tuition" in markdown
     # The supplement pass must not reopen the door to chrome.
@@ -389,8 +357,7 @@ def test_link_tile_text_reaches_the_markdown_and_chrome_still_does_not():
 
 
 def test_supplement_pass_adds_nothing_twice():
-    """Prose that trafilatura already kept is also a region block; dedup must keep it single.
-    Dedup is on letters-and-digits normalization, so markdown escaping cannot fake a difference."""
+    """Prose trafilatura already kept is also a region block; dedup must keep it single."""
     _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
     assert markdown.count("affordable high-quality education") == 1
     assert markdown.count("Installment payment plans") == 1
@@ -398,10 +365,8 @@ def test_supplement_pass_adds_nothing_twice():
 
 
 def test_the_contact_band_leads_the_document():
-    """The band is assembled FIRST, not appended (2026-08-10): appended, every office's
-    phone landed in the document's tail chunk under FIXED_SIZE chunking, a chunk with
-    digits but often no office name - the shape the eval's contact-lookup failures all
-    shared. Leading, it sits in chunk 1 beside the title scrape_page prepends."""
+    """The band is assembled FIRST, not appended, so contacts land in chunk 1 beside the
+    title (2026-08-10; see docs/scraper.md, The HTML supplement pass)."""
     _, markdown = scraper.extract_markdown(
         FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php"
     )
@@ -410,8 +375,7 @@ def test_the_contact_band_leads_the_document():
 
 
 def test_tiles_only_page_still_extracts():
-    """A page with no paragraphs at all must still produce a document, not an ok=False result -
-    ask-librarian is this shape."""
+    """A page with no paragraphs at all must still produce a document, not an ok=False."""
     _, markdown = scraper.extract_markdown(FIXTURE_TILES_ONLY_HTML, url="https://library.sjsu.edu/ask-librarian")
     assert markdown
     assert "Chat with a Librarian" in markdown
@@ -419,14 +383,11 @@ def test_tiles_only_page_still_extracts():
 
 
 def test_supplement_pass_skips_chrome_marked_by_aria_role():
-    """The LibGuides template marks its navbar with role="banner" on a plain <div>, so tag names
-    alone cannot exclude it. Asserted on the supplement pass directly: on a fixture this small
-    trafilatura's own heuristics keep everything (unlike on real pages), so the public output
-    cannot distinguish whose text the chrome was."""
+    """The LibGuides template marks its navbar role="banner" on a plain div, so tag names
+    alone do not exclude it."""
     tree = scraper._parse_tree(FIXTURE_TILES_ONLY_HTML)
     blocks = []
-    # Walk the whole body, not the content region: the banner sits outside role="main", so only
-    # a body-wide walk (the fallback for pages with no marked region) exercises the role skip.
+    # The whole body, not the content region: the banner sits outside role="main".
     scraper._collect_blocks(tree.find("body"), blocks)
     assert any("Chat with a Librarian" in b for b in blocks)
     assert not any("Library Home" in b for b in blocks)
@@ -444,13 +405,7 @@ def test_supplement_pass_survives_unparseable_html():
 
 
 def _build_pdf(pages) -> bytes:
-    """A minimal, valid multi-page PDF drawing one text line per string in `pages[i]`.
-
-    Handwritten rather than generated by a library so the tests own their fixture exactly: the
-    furniture tests need a running footer that differs only in its page number, and the
-    no-usable-text test needs a PDF with pages and no text operators at all. Both are properties
-    of the bytes, so the bytes are what the test writes.
-    """
+    """A minimal, valid multi-page PDF drawing one text line per string in `pages[i]`."""
     objs = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
         3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
@@ -484,8 +439,7 @@ def _build_pdf(pages) -> bytes:
     return bytes(out)
 
 
-# Shaped like the real Writing Center handouts: a running footer whose only per-page difference is
-# the page number, wrapped around the prose we actually want.
+# Shaped like the real Writing Center handouts: a footer differing only in its page number.
 FIXTURE_PDF_PAGES = [
     [
         "Email Etiquette for Students, Rev. Summer 2014  1 of 2",
@@ -507,8 +461,7 @@ def test_extract_pdf_returns_the_prose():
 
 
 def test_extract_pdf_strips_the_running_footer_from_every_page():
-    """The whole point of the furniture pass. Chunking is FIXED_SIZE and page-blind, so a footer
-    left in place is noise wedged into the middle of chunks, once per page."""
+    """The whole point of the furniture pass: chunking is FIXED_SIZE and page-blind."""
     _title, text = scraper.extract_pdf(_build_pdf(FIXTURE_PDF_PAGES))
     assert "Email Etiquette for Students" not in text
     assert "1 of 2" not in text and "2 of 2" not in text
@@ -522,8 +475,7 @@ def test_extract_pdf_keeps_a_line_that_appears_on_only_one_page():
 
 
 def test_extract_pdf_returns_no_title_so_the_curated_one_wins():
-    """PDF /Title metadata on this corpus is empty, a template placeholder, or a filename - and the
-    title is what a student sees attributed on a card. See extract_pdf."""
+    """PDF /Title on this corpus is empty, a placeholder or a filename; the curated one wins."""
     title, _text = scraper.extract_pdf(_build_pdf(FIXTURE_PDF_PAGES))
     assert title is None
 
@@ -613,13 +565,10 @@ def test_flatten_markdown_tables_unit():
     )
     out = scraper._flatten_markdown_tables(src)
     lines = out.split("\n")
-    # No markdown-table markup survives.
     assert "| |" not in out
     assert not any(ln.strip().startswith("|") for ln in lines)
-    # Heading and non-table prose pass through untouched.
     assert "# Title" in lines
     assert "Regular paragraph." in lines
-    # Separator row dropped; content cells become their own prose lines.
     assert "FAFSA priority deadline -- March 2." in lines
     assert "Phone: (408) 283-7500" in lines
     assert "Email: fao@sjsu.edu" in lines
@@ -630,15 +579,12 @@ def test_extract_markdown_flattens_layout_tables_to_prose():
         FIXTURE_TABLE_HTML, url="https://www.sjsu.edu/faso/deadlines/"
     )
     assert markdown
-    # No table markup: no empty-cell junk, and no line is a table row.
     assert "| |" not in markdown
     assert not any(ln.strip().startswith("|") for ln in markdown.split("\n"))
-    # Cell TEXT is preserved as flat prose.
     assert "FAFSA priority deadline -- March 2 for the following academic year." in markdown
     assert "Phone: (408) 283-7500" in markdown
     assert "Email: fao@sjsu.edu" in markdown
     assert "San Jose, CA 95192" in markdown
-    # Headings survive (include_tables stays True; we only strip pipes).
     assert "# Financial Aid Deadlines" in markdown
 
 
@@ -660,15 +606,14 @@ def test_scrape_page_success_carries_the_curated_section(monkeypatch):
     assert result.ok
     assert "Monday through Friday" in result.markdown
     assert result.section == "academic-advising"
-    # And it reaches the sidecar, which is where retrieval and cards.py read it back out.
+    # And it reaches the sidecar, which is where retrieval reads it back out.
     assert result.metadata["section"] == "academic-advising"
     assert result.metadata["source_url"] == page["url"]
     assert result.metadata["content_chars"] == len(result.markdown)
 
 
 def test_scrape_page_scrubs_mojibake_end_to_end():
-    # Server sends the page correctly as UTF-8 (as the real site does); the baked-in "ï¿½" garbage
-    # must be scrubbed out of the result markdown end to end.
+    # Served correctly as UTF-8, as the real site does: the garbage is in the source itself.
     def handler(request):
         return httpx.Response(
             200,
@@ -686,9 +631,7 @@ def test_scrape_page_scrubs_mojibake_end_to_end():
 
 
 def test_scrape_page_leads_with_the_title_as_a_heading():
-    """The page introduces itself: Bedrock embeds only chunk text, never the metadata
-    sidecar, so the title must live in the document or a chunk can carry an office's
-    facts with nothing naming the office."""
+    """The page introduces itself: Bedrock embeds only chunk text, never the sidecar."""
 
     def handler(request):
         return httpx.Response(200, html=FIXTURE_HTML)
@@ -720,7 +663,7 @@ def test_scrape_page_heading_uses_the_curated_title_fallback():
 
 def test_scrape_page_falls_back_to_the_curated_title():
     # A page whose <title> trafilatura cannot read must still cite as something a student
-    # recognizes rather than as a null - the crawl list's title is the safety net.
+    # recognises rather than as a null.
     def handler(request):
         return httpx.Response(
             200,
@@ -788,8 +731,7 @@ def test_scrape_page_handles_a_pdf_and_titles_it_from_the_crawl_list():
         result = scraper.scrape_page(page, client)
 
     assert result.ok
-    # The curated title, not the filename and not a PDF metadata placeholder - it is what a
-    # student sees attributed on the card.
+    # The curated title, not a filename and not a PDF metadata placeholder.
     assert result.title == "Email Etiquette"
     assert result.markdown.startswith("# Email Etiquette")
     assert "Use a formal salutation and signature" in result.markdown
@@ -797,8 +739,7 @@ def test_scrape_page_handles_a_pdf_and_titles_it_from_the_crawl_list():
 
 
 def test_scrape_page_fails_loudly_on_an_image_only_pdf(caplog):
-    """The corpus must not gain a titled, cited, contentless document. Failed pages are skipped and
-    the prune keys off the crawl list, so the last good version of this URL survives untouched."""
+    """The corpus must not gain a titled, cited, contentless document."""
     def handler(request):
         return httpx.Response(
             200, content=_build_pdf([[], []]), headers={"content-type": "application/pdf"}
@@ -827,7 +768,6 @@ def test_scrape_pages_continues_past_a_failure():
     with _client(handler) as client:
         results = scraper.scrape_pages(pages, client=client)
 
-    # One result per input page, in input order, and one failure does not abort the run.
     assert len(results) == 2
     assert results[0].ok is True
     assert results[1].ok is False
@@ -865,8 +805,7 @@ def test_write_result_skips_failed(tmp_path):
 
 
 def test_cli_exits_2_on_a_bad_crawl_list_without_scraping(tmp_path, monkeypatch):
-    # Same fatal treatment as the Lambda: a bad list is a hard stop, not a zero-page run. The
-    # scrape must not even be attempted, which is what the exploding stub proves.
+    # Same fatal treatment as the Lambda: a bad list is a hard stop, not a zero-page run.
     def explode(*a, **kw):
         raise AssertionError("scrape_pages must not run when the crawl list is unusable")
 

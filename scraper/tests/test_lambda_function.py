@@ -1,13 +1,7 @@
-"""Tests for the scraper Lambda handler. No live network/AWS: scrape_pages and the S3 /
-bedrock-agent clients are monkeypatched, and boto3 is stubbed (it's provided by the Lambda runtime,
-not installed in the scraper venv).
+"""Tests for the scraper Lambda handler. No live network and no AWS.
 
-Two properties carry most of the weight, because both fail SILENTLY and both destroy the corpus:
-
-  1. A bad crawl list must fail the invocation BEFORE the prune. A run that fetches nothing hands
-     prune_stale_objects an empty expected set, which deletes every document in the bucket.
-  2. The prune keys off the crawl LIST, never off what a run managed to fetch. Otherwise one 404
-     on a page deletes its document and quietly drops those answers from the bot.
+The gate and prune properties these pin, and why each matters, are in docs/scraper.md,
+What the suite pins.
 """
 
 import json
@@ -18,16 +12,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Stub boto3 BEFORE importing the handler (the handler does `import boto3` at module load). The
-# tests replace the client getters, so boto3 itself is never called.
+# Stub boto3 BEFORE importing the handler, which imports it at module load.
 sys.modules.setdefault("boto3", types.ModuleType("boto3"))
 
 import lambda_function as lf  # noqa: E402
 from scraper import ScrapeResult, SeedListError  # noqa: E402
 
-# The crawl list no longer travels in the environment - it ships as a bundled layer asset and only
-# its FILENAME is an env var (Lambda's 4 KB aggregate env cap; see the handler docstring). So the
-# fixture below stubs load_seed_pages/seed_list_path rather than setting a URLs variable.
+# The crawl list ships as a bundled layer asset; only its filename is in the environment.
 BASE_ENV = {
     "URL_LIST_FILE": "urls.csv",
     "SCRAPE_TIMEOUT_SECONDS": "15",
@@ -74,8 +65,7 @@ def _wire(monkeypatch, results, pages=None):
     monkeypatch.setattr(lf, "load_seed_pages", lambda path: list(SEED_PAGES if pages is None else pages))
     monkeypatch.setattr(lf, "scrape_pages", lambda pages, **kw: results)
     s3, bedrock_agent = MagicMock(), MagicMock()
-    # Empty head = no stored fingerprint = every page reads as changed, which is the state of a
-    # fresh bucket. Tests that exercise the gating set a fingerprint explicitly.
+# Empty head = no stored fingerprint = every page reads as changed, as on a fresh bucket.
     s3.head_object.return_value = {}
     bedrock_agent.start_ingestion_job.return_value = {
         "ingestionJob": {"ingestionJobId": "job-1", "status": "STARTING"}
@@ -125,10 +115,7 @@ def test_uploads_markdown_and_metadata_and_triggers_ingestion(monkeypatch):
 
 
 def test_the_sidecar_carries_section_alongside_source_url_and_title(monkeypatch):
-    # Not cosmetic and not covered by the assertions above. cards.py reads `section` off every
-    # retrieved chunk to deprioritize noisy sections and to choose a card's follow-up button. Drop
-    # it and the cards still render - ranked wrong, with a generic button, and nothing in the logs
-    # explains why. It is the one metadata field whose absence is invisible at runtime.
+    # `section` reaches the sidecar and comes back on every retrieved chunk.
     s3, _ = _wire(monkeypatch, [_ok()])
     lf.handler({}, None)
 
@@ -142,8 +129,7 @@ def test_the_sidecar_carries_section_alongside_source_url_and_title(monkeypatch)
 
 
 def test_the_sidecar_key_is_metadata_json_not_a_plain_json_document(monkeypatch):
-    # Bedrock treats `*.metadata.json` as METADATA for the sibling document. A plain `<slug>.json`
-    # (the local scraper's inspection filename) would be INGESTED as its own JSON document.
+    # Bedrock treats `*.metadata.json` as metadata for the sibling document.
     s3, _ = _wire(monkeypatch, [_ok()])
     lf.handler({}, None)
     keys = {c.kwargs["Key"] for c in s3.put_object.call_args_list}
@@ -172,8 +158,6 @@ def test_no_successes_skips_ingestion(monkeypatch):
 
 
 def test_passes_the_whole_crawl_list_and_the_config_to_scrape_pages(monkeypatch):
-    # One daily run, no tiers: every invocation is the complete sweep, so the pages handed to
-    # scrape_pages are the crawl list in full - including the sections, which ride into the sidecar.
     captured = {}
     for k, v in BASE_ENV.items():
         monkeypatch.setenv(k, v)
@@ -196,8 +180,7 @@ def test_passes_the_whole_crawl_list_and_the_config_to_scrape_pages(monkeypatch)
 
 
 def test_the_event_is_ignored(monkeypatch):
-    # No tiers means nothing in the event is read. A scheduled invocation, a manual invoke and the
-    # deploy trigger's payload must all do the identical complete sweep.
+    # No tiers: nothing in the event is read, so every invocation is the complete sweep.
     s3_a, _ = _wire(monkeypatch, [_ok()])
     scheduled = lf.handler({"source": "aws.events"}, None)
     s3_b, _ = _wire(monkeypatch, [_ok()])
@@ -208,9 +191,7 @@ def test_the_event_is_ignored(monkeypatch):
 
 
 def test_the_run_summary_reports_configured_pages_and_duration(monkeypatch):
-    # pages_configured vs pages_fetched is how a silently shrinking crawl list shows up in the
-    # logs; duration_seconds is the instrument for the 15-minute-timeout question (the corpus was
-    # sized by scaling gav's measurements, and the top of that range is ~12 minutes).
+    # pages_configured against pages_fetched is how a shrinking crawl list becomes visible.
     _wire(monkeypatch, [_ok(), _fail()])
     out = lf.handler({}, None)
     summary = out["summary"]
@@ -227,8 +208,7 @@ def test_the_run_summary_reports_configured_pages_and_duration(monkeypatch):
 
 
 def test_seed_list_path_prefers_the_layer_mount(monkeypatch, tmp_path):
-    # /opt is where Lambda extracts layer content. Both candidate dirs are redirected into tmp so
-    # the test does not depend on the machine's real /opt.
+    # /opt is where Lambda extracts layer content; both candidates are redirected here.
     opt, local = tmp_path / "opt", tmp_path / "local"
     opt.mkdir()
     local.mkdir()
@@ -250,8 +230,6 @@ def test_seed_list_path_falls_back_to_the_function_bundle(monkeypatch, tmp_path)
 
 
 def test_seed_list_path_reads_the_filename_from_the_environment(monkeypatch, tmp_path):
-    # The env var carries a FILENAME, never the list itself: 203 pages is 19 KB as compact JSON
-    # against Lambda's 4 KB aggregate environment cap, which cannot be raised.
     opt = tmp_path / "opt"
     opt.mkdir()
     (opt / "custom.csv").write_text("x", encoding="utf-8")
@@ -269,9 +247,7 @@ def test_a_missing_bundled_list_raises_naming_where_it_looked(monkeypatch, tmp_p
 
 
 def test_a_bad_crawl_list_fails_the_invocation_before_anything_is_deleted(monkeypatch):
-    # THE guarantee. An unusable list must abort the run, not produce a zero-page sweep: zero pages
-    # means an empty expected set, and the prune would then delete every document in the knowledge
-    # base and start an ingestion job over the wreckage. A Lambda that raises has pruned nothing.
+    # THE guarantee: an unusable list aborts before the prune ever runs.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
 
     def boom(path):
@@ -332,8 +308,6 @@ def test_prune_deletes_only_what_the_crawl_list_no_longer_wants(monkeypatch):
 
 
 def test_prune_never_raises_when_s3_refuses(monkeypatch):
-    # Housekeeping must not break a scrape that already succeeded - e.g. if the role is missing
-    # s3:ListBucket, the run should still upload and ingest.
     s3, _ = _wire(monkeypatch, [_ok()])
     s3.get_paginator.side_effect = RuntimeError("AccessDenied")
 
@@ -341,9 +315,7 @@ def test_prune_never_raises_when_s3_refuses(monkeypatch):
 
 
 def test_a_failed_fetch_does_not_delete_that_page_from_the_knowledge_base(monkeypatch):
-    # THE point of keying on the crawl list. Both pages are listed; /b 404s this run. Pruning by
-    # what uploaded successfully would delete /b's document and silently drop its answers from the
-    # bot until someone noticed. Its last-good document must survive a transient failure.
+    # The point of keying on the crawl list: both pages are listed and /b 404s this run.
     s3, _ = _wire(monkeypatch, [_ok(), _fail()])
     b_slug = lf.slugify_url("https://x/b")
     s3.get_paginator.return_value = _paginated(
@@ -358,8 +330,7 @@ def test_a_failed_fetch_does_not_delete_that_page_from_the_knowledge_base(monkey
 
 
 def test_a_page_removed_from_the_crawl_list_is_pruned(monkeypatch):
-    # The other half: de-listing a page has to actually retire its document, or removal is a silent
-    # no-op and the KB answers forever from a page nobody maintains.
+    # The other half: de-listing a page has to actually retire its document.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()], pages=[SEED_PAGES[0]])
     b_slug = lf.slugify_url("https://x/b")
     s3.get_paginator.return_value = _paginated(
@@ -386,8 +357,6 @@ def test_ingestion_runs_for_a_prune_only_change(monkeypatch):
 
 
 def test_content_fingerprint_ignores_the_scrape_timestamp():
-    # Without this the gate is an expensive no-op: the timestamp moves on every run, so every page
-    # would read as changed, re-upload, and re-trigger ingestion daily.
     md = "# Page\n\nbody"
     base = {
         "source_url": "https://x/a",
@@ -406,8 +375,7 @@ def test_content_fingerprint_moves_on_body_title_url_or_section_change():
     assert lf.content_fingerprint(md + " more", meta) != baseline
     assert lf.content_fingerprint(md, dict(meta, title="Renamed")) != baseline
     assert lf.content_fingerprint(md, dict(meta, source_url="https://x/moved")) != baseline
-    # section is in the fingerprint so RE-SECTIONING a page re-uploads it. The body is unchanged,
-    # but the sidecar is not, and cards.py ranks and routes off that sidecar value.
+    # Re-sectioning re-uploads: the body is unchanged, so only the sidecar field moved.
     assert lf.content_fingerprint(md, dict(meta, section="financial-aid")) != baseline
 
 
@@ -438,8 +406,7 @@ def test_unchanged_page_uploads_nothing_and_starts_no_ingestion(monkeypatch):
 
 
 def test_a_second_consecutive_run_over_unchanged_content_reports_zero_changes(monkeypatch):
-    # The acceptance property, end to end: run once against an empty bucket, feed run one's own
-    # stamped fingerprint back as what S3 now holds, and run again.
+    # The acceptance property end to end: run one's uploads become run two's stored state.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
 
     first = lf.handler({}, None)
@@ -462,8 +429,6 @@ def test_a_second_consecutive_run_over_unchanged_content_reports_zero_changes(mo
 
 
 def test_a_missing_fingerprint_is_treated_as_changed(monkeypatch):
-    # Objects written before change gating existed carry no fingerprint; so does an object S3
-    # refuses to HEAD. Both must re-upload (and thereby stamp themselves), never silently skip.
     s3, _ = _wire(monkeypatch, [_ok()])
     s3.head_object.side_effect = RuntimeError("AccessDenied")
 
@@ -472,11 +437,8 @@ def test_a_missing_fingerprint_is_treated_as_changed(monkeypatch):
 
 
 def test_an_unchanged_page_is_never_pruned_as_stale(monkeypatch):
-    # The regression change gating introduces if you are not careful. The prune's belt-and-braces
-    # union used to cover every live page for free, because every successful page was re-uploaded
-    # on every run. Once unchanged pages stop uploading, a page can be live, correct, and absent
-    # from that union - and a slug-derivation mismatch would then delete it. Pages found unchanged
-    # must count as live.
+    # The regression change gating introduces: an unchanged page uploads nothing, so a prune
+    # keyed on this run's uploads would delete what it just confirmed.
     s3, _ = _wire(monkeypatch, [_ok()])
     stored = lf.content_fingerprint(_ok().markdown, _ok().metadata)
     s3.head_object.return_value = {"Metadata": {lf.CONTENT_HASH_METADATA_KEY: stored}}
@@ -494,8 +456,6 @@ def test_an_unchanged_page_is_never_pruned_as_stale(monkeypatch):
 
 
 def test_overlapping_run_defers_instead_of_failing(monkeypatch):
-    # Bedrock allows one ingestion job per data source. An overlap - a manual invoke landing on the
-    # schedule, or the deploy trigger firing mid-run - must skip cleanly.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
     bedrock_agent.list_ingestion_jobs.return_value = {
         "ingestionJobSummaries": [_job("running-job", "IN_PROGRESS", 100)]
@@ -511,10 +471,8 @@ def test_overlapping_run_defers_instead_of_failing(monkeypatch):
 
 
 def test_a_deferred_change_is_picked_up_by_the_next_run(monkeypatch):
-    # THE reason deferring is safe. This run changes nothing, so "did I upload?" says no ingestion
-    # is needed - but the bucket holds an object newer than the last job, which is exactly what a
-    # previously deferred run leaves behind. Without this the deferred change would sit unindexed
-    # forever, because no later run would ever see it as changed either.
+    # Why deferring is safe: this run changes nothing, so only the bucket-newer rule catches
+    # the content the deferred run left unindexed.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
     stored = lf.content_fingerprint(_ok().markdown, _ok().metadata)
     s3.head_object.return_value = {"Metadata": {lf.CONTENT_HASH_METADATA_KEY: stored}}
@@ -549,8 +507,6 @@ def test_a_fully_indexed_unchanged_bucket_starts_nothing(monkeypatch):
 
 
 def test_a_race_on_start_ingestion_defers_rather_than_raising(monkeypatch):
-    # Another run can win between our list and our start, and StartIngestionJob is rate-limited to
-    # one per ten seconds. Either way the scrape has already succeeded and must not fail.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
 
     class ConflictException(Exception):

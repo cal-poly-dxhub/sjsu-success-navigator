@@ -1,17 +1,7 @@
 """The escalate-to-human draft: what the server assembles, and every reason it refuses to.
 
-The assembly itself is the least interesting test here. What matters is that this module
-is the only thing that can address a message and the only thing that decides whether an
-offer exists at all, so each refusal below is a way the feature is asked to do something
-the design says it must not:
-
-  - a tag in a deployment with no recipient  -> no offer (the prompt never taught the tag)
-  - prose past the cap                       -> no offer, and NEVER a shortened one
-  - an empty block                           -> no offer
-
-The cap case is the one that must not regress into the card contract's habit. Everything
-else in this app truncates at a word boundary and logs; a truncated email is a message the
-student can send before noticing what went missing.
+Nothing sends from here and an over-cap draft is dropped rather than trimmed; see
+docs/chat-service.md, Escalation.
 """
 
 import logging
@@ -51,18 +41,13 @@ def test_the_draft_is_the_prose_and_the_provenance_line():
     assert draft is not None
     assert draft.to == "sjsucares@sjsu.edu"
     assert draft.subject == "A student would like to talk with someone"
-    # The whole body, in order, and nothing else in it. Spelled as an equality rather than
-    # two `in` checks: this string IS what the mail client is handed and what the student
-    # reads on screen before pressing send, so a third line appearing here is a change to
-    # what a member of staff receives.
+    # The whole body, in order, and nothing else in it. An equality, not a substring check:
+    # a line added here reaches a member of staff's inbox.
     assert draft.body == f"{_PROSE}\n\n{PROVENANCE_LINE}"
 
 
 def test_the_draft_names_no_email_addresses_at_all():
-    """It used to end with "you can reach me at <the student's verified email>", read from
-    the JWT claim. The message leaves from the student's own mail client and their own
-    account, so that line told staff what the header already told them - and removing it
-    removed every reason this path needed to know who the student is."""
+    """It used to name the student's own address, which the message header already carries."""
     draft = build_email_draft(_PROSE, settings=_SETTINGS)
 
     assert "@" not in draft.body
@@ -70,11 +55,7 @@ def test_the_draft_names_no_email_addresses_at_all():
 
 
 def test_the_draft_carries_no_conversation_id_transcript_or_assessment():
-    """The message contains what the student can see, and nothing about the machinery.
-
-    A conversation id or a transcript in here would be a thing staff received that the
-    preview did not show and the student never agreed to send.
-    """
+    """The message contains what the student can see, and nothing about the machinery."""
     draft = build_email_draft(_PROSE, settings=_SETTINGS)
 
     assert set(draft.model_dump()) == {"to", "subject", "body"}
@@ -87,12 +68,7 @@ def test_no_tag_is_no_offer_and_no_noise(caplog):
 
 
 def test_a_deployment_with_no_recipient_makes_no_offer(caplog):
-    """The absence of the address is the gate, and it holds even if a tag arrives anyway.
-
-    The prompt does not mention the tag in this deployment (app/prompts.py), so a block
-    here is the model reaching for a contract nobody gave it - which is worth a WARNING and
-    is still not an offer.
-    """
+    """The absence of the address is the gate, and it holds even if a tag arrives anyway."""
     settings = _settings(escalation_recipient="")
 
     assert not escalation_available(settings)
@@ -113,11 +89,7 @@ def test_over_the_cap_the_offer_is_dropped_and_never_truncated(caplog):
 
 
 def test_at_the_cap_exactly_the_offer_stands():
-    """The cap is a ceiling on the model's prose, not on the assembled body.
-
-    The two lines the server adds are not the model's budget to spend, and a boundary that
-    counted them would move whenever that copy was edited.
-    """
+    """The cap is a ceiling on the model's prose, not on the assembled body."""
     prose = "x" * _SETTINGS.escalation_max_chars
 
     draft = build_email_draft(prose, settings=_SETTINGS)
@@ -134,6 +106,5 @@ def test_an_empty_block_makes_no_offer(caplog):
 
 @pytest.mark.parametrize("recipient,expected", [("", False), ("  ", False), ("a@b.edu", True)])
 def test_availability_is_the_presence_of_an_address(recipient, expected):
-    """One value gates the prompt section and the assembler, so they cannot disagree about
-    whether this deployment has the feature."""
+    """One value gates the prompt section and the assembler, so they cannot disagree."""
     assert escalation_available(_settings(escalation_recipient=recipient)) is expected

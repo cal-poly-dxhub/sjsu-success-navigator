@@ -1,31 +1,8 @@
 """The one reader of repo-root `data/`, and the one place a bad row stops the process.
 
-WHY THE FACTS LEFT THE CODE. The SJSU Cares address was written out in app/places.py and
-again in frontend/src/lib/sjsuCares.ts, and its mailbox in config.yaml and again in that same
-TypeScript file. Nothing compared them. If the office moved, the map card and the "Talk to a
-person" panel would disagree inside one app and every test would still pass, because a fact
-spelled twice in two languages has no test that can see both copies. So the facts moved to
-`data/` at the repo root, and BOTH languages read from there: Python through this module, the
-browser through a TypeScript module regenerated from these same files on every frontend build
-(frontend/scripts/generate-campus-data.mjs). The captain's other requirement falls out of the
-same move - a CSV opens in Excel, so correcting a phone number is not a code change.
-
-RAISING IS THE WHOLE CONTRACT. Every loader here raises `CampusDataError` on a missing file, a
-missing column, an empty required cell, a duplicate key, a header with no rows, or a row whose
-cell count is not the header's in either direction. It never returns a short list, and the reason is the same one scraper.py gives for the crawl list one
-directory over: a partial read is indistinguishable from a small table. A contacts.csv
-truncated by a bad merge would drop a crisis phone number off the safety panel and log
-nothing; a short urls.csv would hand the scraper's prune an empty expected set and delete the
-knowledge base. A process that dies at import is a deploy that fails loudly. A process that
-quietly loads four of seven crisis contacts is a student who is not given a number.
-
-WHERE THE FILES ARE AT RUNTIME. `data/` sits at the repo root, OUTSIDE app/, and the chat
-Lambda's asset is app/ - `Code.from_asset` takes one directory. So the data travels the way
-the crawl list already travelled: as a Lambda layer, whose content Lambda extracts to /opt.
-`_data_file` looks in /opt first and falls back to the repo checkout, which is what makes the
-tests, `scripts/render_place_maps.py` and a local run read the same bytes the deployed
-function reads. It looks for the FILE rather than the directory on purpose - /opt exists on a
-developer's Mac and holds no CSV.
+Every loader raises CampusDataError rather than returning a short list, because a partial
+read is indistinguishable from a small table. The files ship as a Lambda layer extracted to
+/opt, with the repo checkout as the fallback; see data/README.md.
 """
 
 from __future__ import annotations
@@ -33,18 +10,16 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-# /opt is where Lambda extracts layer content (the CampusDataLayer in infra/infra_stack.py
-# stages data/ itself, so the CSVs land at /opt/<name>.csv). The repo checkout is second, for
-# tests, the map renderer and any local run.
+# /opt is where Lambda extracts layer content; the repo checkout is second, for tests, the
+# map renderer and any local run.
 _DATA_DIRS: tuple[Path, ...] = (
     Path("/opt"),
     Path(__file__).resolve().parents[1] / "data",
 )
 
 
-# csv.DictReader's overflow key and its filler for a row that ran out of cells. Sentinels
-# rather than None or "", because an EMPTY cell is legitimate in an optional column and "there
-# was no cell here at all" has to stay distinguishable from it.
+# csv.DictReader's overflow key and its filler for a row that ran out of cells. Sentinels,
+# because an empty optional cell is legitimate and has to stay distinguishable from no cell.
 _EXTRA_CELLS = "__extra_cells__"
 _NO_CELL = object()
 
@@ -70,10 +45,8 @@ def _data_file(name: str) -> Path:
 def load_rows(name: str, required: tuple[str, ...], *, optional: tuple[str, ...] = ()) -> list[dict[str, str]]:
     """One data file as a list of row dicts, in file order. Raises rather than returning less.
 
-    `required` columns must be present in the header and non-empty in every row. `optional`
-    columns must be present in the header too - a missing one is a file that has drifted from
-    the code reading it - but may be empty in any row. Unknown extra columns are ignored, so a
-    non-engineer can keep a working note beside a row without breaking the build.
+    Both `required` and `optional` columns must be in the header; only `required` must be
+    non-empty per row. Unknown extra columns are ignored, so a note beside a row is harmless.
     """
     path = _data_file(name)
     try:
@@ -94,18 +67,9 @@ def load_rows(name: str, required: tuple[str, ...], *, optional: tuple[str, ...]
 
     rows: list[dict[str, str]] = []
     for line_number, raw in enumerate(raw_rows, start=2):  # line 1 is the header
-        # A ROW WHOSE CELL COUNT IS NOT THE HEADER'S, in either direction. Both are silent
-        # corruptions rather than obvious ones, and both were found by damaging the real files
-        # rather than by reasoning about them:
-        #   too many - a decimal comma. "37,336178" in `lat` shifts every later cell one to
-        #     the left, so buildings.csv parsed cleanly with lat=37, lon=336178 and a building
-        #     somewhere off the coast of Africa.
-        #   too few  - a write that stopped part-way, which is what a bad merge or an
-        #     interrupted save leaves. csv reads the unterminated last field happily and the
-        #     columns past it simply are not there, so contacts.csv loaded with three crisis
-        #     contacts missing and nothing said so.
-        # Neither is a cell this module could validate, because each cell it did look at was
-        # perfectly well formed. The shape is the only tell.
+        # A row whose cell count is not the header's, in either direction: a decimal comma
+        # shifts every later cell, a part-way write drops the columns past it. Every cell
+        # this module could look at is well formed in both cases, so the shape is the tell.
         if _EXTRA_CELLS in raw:
             raise CampusDataError(
                 f"{name} line {line_number}: more cells than the header has columns "
@@ -148,11 +112,7 @@ def load_keyed(
     *,
     optional: tuple[str, ...] = (),
 ) -> dict[str, dict[str, str]]:
-    """`load_rows` keyed by one column, in file order, with duplicates fatal.
-
-    A duplicate key is a row that silently wins over another - two SJSU Cares entries where
-    the second's address is the one anybody sees - so it raises instead of overwriting.
-    """
+    """`load_rows` keyed by one column, in file order. A duplicate would silently win."""
     rows = load_rows(name, (key_column, *required), optional=optional)
     keyed: dict[str, dict[str, str]] = {}
     for line_number, row in enumerate(rows, start=2):
@@ -167,12 +127,7 @@ def load_keyed(
 
 
 def parse_coordinate(value: str, *, name: str, key: str, column: str) -> float:
-    """One latitude or longitude cell as a float, or a CampusDataError naming the cell.
-
-    Spelled out rather than left to `float()` because the failure this catches is a person
-    editing a spreadsheet: a stray degree sign or a comma decimal separator would otherwise
-    raise a bare ValueError with nothing in it to say which row to fix.
-    """
+    """One coordinate cell as a float, or a CampusDataError naming the row to fix."""
     try:
         return float(value)
     except ValueError as exc:
@@ -184,13 +139,7 @@ def parse_coordinate(value: str, *, name: str, key: str, column: str) -> float:
 
 
 def parse_flag(value: str, *, name: str, key: str, column: str) -> bool:
-    """A yes/no cell as a bool. Anything else raises rather than reading as "no".
-
-    The one reader of this today is contacts.csv's `in_default_panel`, which decides whether a
-    crisis contact appears on the panel a student gets when the model tags an emergency
-    without naming resources. A typo silently meaning "no" is a number missing from that
-    panel, so a typo is fatal instead.
-    """
+    """A yes/no cell as a bool. Anything else raises: a typo meaning "no" drops a contact."""
     lowered = value.strip().lower()
     if lowered in ("yes", "true", "1"):
         return True

@@ -1,10 +1,7 @@
 """Model-triage safety: the model emits resource keys, this module owns every digit.
 
-The resolution tests are the load-bearing ones. Failure direction is always toward showing
-help: unknown keys drop with a WARNING, a tag with nothing valid resolves to the default
-crisis set, and prose that cites a hotline without the tag still gets the panel attached.
-There is no pre-model phrase gate any more (decision, 2026-08-10) - the pipeline test at
-the bottom pins that a crisis message flows through the guardrail into the loop.
+Failure direction is always toward showing help, and there is no pre-model phrase gate;
+see docs/chat-service.md, Safety.
 """
 
 import json
@@ -29,8 +26,7 @@ def _plain_response(text):
 
 
 def test_every_key_the_prompt_teaches_resolves():
-    """The prompt roster and the resolver read the same table, so a taught key can never
-    miss. This test is what makes that claim structural rather than aspirational."""
+    """What makes "a key the model is taught always resolves" structural, not aspirational."""
     roster = safety.safety_roster_for_prompt()
     assert roster, "the prompt roster must not be empty"
     for key, when in roster:
@@ -52,8 +48,7 @@ def test_unknown_keys_drop_with_a_warning_and_valid_ones_survive(caplog):
 
 
 def test_nothing_valid_resolves_to_the_default_crisis_set():
-    """Never an empty panel: a model that emitted garbage keys still shows the student the
-    standard crisis contacts."""
+    """Never an empty panel: garbage keys still show the standard crisis contacts."""
     handoff = safety.resolve_safety_handoff(("bogus", ""))
     assert [c.id for c in handoff.contacts] == list(safety.DEFAULT_SAFETY_KEYS)
 
@@ -64,9 +59,7 @@ def test_a_bare_tag_resolves_to_the_default_crisis_set():
 
 
 def test_every_contact_is_authored_in_the_table_never_by_the_model():
-    """Keys are the model's entire vocabulary. Each resolves to a fixed contact whose id
-    matches its key and whose href is real, so an invented number has no path to the
-    screen - the same construction as the card ref contract."""
+    """Keys are the model's entire vocabulary, so an invented number has no path to screen."""
     for key, resource in safety.SAFETY_RESOURCES.items():
         assert resource.contact.id == key
         assert resource.contact.href
@@ -88,8 +81,7 @@ def test_emitted_keys_choose_the_panel_and_drop_the_cards():
 
 
 def test_the_output_scanner_attaches_the_default_panel_when_prose_cites_a_hotline():
-    """The second net: a model that names a crisis line in prose but forgets the tag still
-    produces the official panel, never a bare mention of 988 with nothing tappable."""
+    """The second net: a crisis line named in prose without the tag still gets the panel."""
     result = safety.apply_safety_handoff_to_response(
         _plain_response("Please call 988 for support."),
         conversational_text="Please call 988 for support.",
@@ -101,10 +93,8 @@ def test_the_output_scanner_attaches_the_default_panel_when_prose_cites_a_hotlin
 
 
 def test_the_panel_takes_a_location_card_with_it():
-    """THE OTHER ROUTE INTO A SAFETY TURN, which is the one that can actually carry a map:
-    the model wrote an ordinary reply, named a place, and mentioned a crisis line in prose
-    without tagging the turn. The panel gets bolted on here, and it takes everything else
-    with it - a map and a walking route are an errand, and this turn is a phone call."""
+    """The other route into a safety turn, and the one that can carry a map. It takes
+    everything else with it: this turn is a phone call, not an errand."""
     from models import PlaceCard
 
     response = _plain_response("Please call 988. The Wellness Center is open too.")
@@ -138,9 +128,8 @@ def test_plain_answers_pass_through_untouched():
 
 
 def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch, store):
-    """Triage belongs to the model now (decision, 2026-08-10). A crisis phrase is not
-    short-circuited before the loop: the guardrail screens it and the loop answers it,
-    with the safety panel coming out of the model's own <safety> block."""
+    """Triage belongs to the model: the guardrail screens a crisis phrase and the loop
+    answers it, with the panel coming out of the model's own <safety> block."""
 
     class _PassingGuardrail:
         def __init__(self):
@@ -184,10 +173,8 @@ def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch,
 
 # --- the table is data/contacts.csv, and a bad row stops the process ------------------------
 #
-# The resolver tests above run against the committed file. These run against a written-out one,
-# because what needs pinning is the failure: this table is where a crisis phone number lives,
-# and every one of these malformations would otherwise produce a panel that renders, looks
-# right, and is missing a number.
+# These run against a written-out file, because what needs pinning is the failure: every one of
+# these malformations would otherwise produce a panel that renders and is missing a number.
 
 
 @pytest.fixture
@@ -207,9 +194,7 @@ def contacts(tmp_path, monkeypatch):
 
 
 def test_the_committed_table_is_the_one_the_module_loaded():
-    """The tables are read from data/contacts.csv at import, not written out in the module.
-    This is the assertion that the FILE is what the resolver answers from - the rest of this
-    suite would pass just as well against a hardcoded dict."""
+    """The assertion that the FILE is what the resolver answers from, not a hardcoded dict."""
     from campus_data import load_rows
 
     rows = [
@@ -230,9 +215,7 @@ def test_the_committed_table_is_the_one_the_module_loaded():
 
 
 def test_the_default_panel_is_the_files_own_order():
-    """DEFAULT_SAFETY_KEYS is `in_default_panel` read down the file, not a second list. A
-    second list is the thing that drifts, and the drift would be a panel whose order nobody
-    chose."""
+    """DEFAULT_SAFETY_KEYS is `in_default_panel` read down the file, not a second list."""
     from campus_data import load_rows
 
     expected = tuple(
@@ -247,8 +230,7 @@ def test_the_default_panel_is_the_files_own_order():
 
 
 def test_a_file_with_no_safety_rows_raises(contacts):
-    """A file that loaded quietly with its safety rows gone is a crisis panel with nothing on
-    it. Cares rows alone are not a table."""
+    """A file whose safety rows are gone is a crisis panel with nothing on it."""
     from campus_data import CampusDataError
 
     contacts("cares,sjsu-cares-phone,Phone,408.924.1234,,,no,")
@@ -257,9 +239,7 @@ def test_a_file_with_no_safety_rows_raises(contacts):
 
 
 def test_safety_rows_with_nothing_marked_for_the_default_panel_raise(contacts):
-    """The default panel is what a student gets when the model tags an emergency and names no
-    resource. Empty is a handoff with no numbers on it, so it is fatal rather than a fallback
-    to the first row."""
+    """Empty is a handoff with no numbers on it, so it is fatal rather than a fallback."""
     from campus_data import CampusDataError
 
     contacts("safety,caps,CAPS,Counseling,https://example.org/,soon,no,")
@@ -276,10 +256,7 @@ def test_safety_rows_with_nothing_marked_for_the_default_panel_raise(contacts):
     ],
 )
 def test_a_safety_row_missing_any_of_its_three_cells_raises(contacts, row):
-    """Every safety row becomes a button on the crisis panel. A blank label is a button with
-    no words on it and a blank href is one that goes nowhere - and the OTHER kinds in this
-    file leave these cells empty legitimately, so the check belongs here rather than in the
-    file reader."""
+    """Every safety row becomes a button, so a blank label or href is fatal for this kind."""
     from campus_data import CampusDataError
 
     contacts(row)
@@ -300,8 +277,7 @@ def test_two_safety_rows_with_one_id_raise(contacts):
 
 
 def test_an_empty_when_keeps_a_row_resolvable_without_offering_it(contacts):
-    """The shape crisis-page uses: in the default set, never a triage choice the model makes.
-    An empty cell has to mean that rather than failing or becoming an empty roster line."""
+    """The shape crisis-page uses: in the default set, never a triage choice for the model."""
     contacts(
         "safety,crisis-988,Call 988,Lifeline,https://988lifeline.org/,thoughts of self-harm,yes,",
         "safety,crisis-page,Crisis page,Guidance,https://example.org/,,yes,",

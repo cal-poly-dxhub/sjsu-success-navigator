@@ -1,19 +1,7 @@
-"""The card contract: what the model emits, what the student gets.
+"""The card contract: what the model emits, and what the student gets.
 
-Every test here is one of the ways the contract can be handed something imperfect. The
-well-formed case is the cheapest to get right and the least likely to break; the value is in
-the other five, because each one used to be handled by inference and is now handled by a
-rule:
-
-  - a card whose <desc> runs long          -> shortened here, where it can be measured
-  - a card with no ref                     -> keeps its text, loses its link
-  - a card citing an id nobody handed it   -> same, and it is logged with the valid ids
-  - a reply with no cards at all           -> a bubble, and no reveal affordance
-  - a reply whose tags are malformed       -> the whole thing as prose, tags scrubbed
-
-The last one is the one that must never regress. v1 answered a parse failure with cards built
-mechanically out of retrieved page text, so a broken response became confident referrals
-nobody had written.
+The ref scheme, the runaway-guard caps and the one split point are in docs/cards-v2.md
+and docs/chat-service.md, Cards and the tag contract.
 """
 
 import logging
@@ -108,9 +96,8 @@ def test_well_formed_output_yields_cards_and_prose():
 
 
 def test_the_server_resolves_the_url_the_ref_pointed_at():
-    """The invariant the whole id scheme rests on. A map that resolves the WRONG url is
-    worse than one that fails to resolve: the card links somewhere confidently and looks
-    entirely fine."""
+    """The invariant the whole id scheme rests on: a map that resolves the WRONG url is worse
+    than one that resolves nothing."""
     tutoring = _chunk()
     aid = _chunk(url="https://www.sjsu.edu/faso/index.php", title="Financial Aid", score=0.8)
     turn = _sources(tutoring, aid)
@@ -137,8 +124,7 @@ def test_a_resolved_card_carries_both_buttons():
 
 
 def test_the_followup_prompt_is_model_authored_not_derived_from_a_section():
-    """v1 looked the follow-up up in a 23-row table keyed on the crawl list's `section`, so
-    every card in a section asked the same question regardless of what the student wanted."""
+    """v1 looked the follow-up up in a table keyed on `section`; now the model authors it."""
     turn = _sources(_chunk(section="tutoring-academic-support"))
     card = cards_from_parsed(
         [ParsedCard(ref_id=1, title="T", desc="D", followup="Can I get help with Calc 2 specifically?")],
@@ -164,10 +150,8 @@ _BULLETED_DESC = """Sammy here.
 
 
 def test_a_description_keeps_the_line_breaks_the_model_wrote():
-    """The whole point of this field's separate normalisation. The display parser keys on
-    line STARTS, so a description whose newlines were collapsed into spaces reaches the
-    student as one sentence reading "... an advisor has read. - Email: ... - Walk in: ..."
-    and renders as a paragraph rather than as the list the model wrote."""
+    """The whole point of this field's separate normalisation: the display parser keys on
+    line starts, so a flattened description loses the list with nothing on screen to say so."""
     parsed = parse_model_response(_BULLETED_DESC)
     body = cards_from_parsed(parsed.cards, _sources(_chunk()), _SETTINGS)[0].body
 
@@ -179,8 +163,7 @@ def test_a_description_keeps_the_line_breaks_the_model_wrote():
 
 
 def test_a_description_still_loses_its_indentation():
-    """Incidental whitespace is still incidental. A model that indents its bullets inside
-    <desc> is formatting its XML, and leading space on screen is not what it asked for."""
+    """Incidental whitespace is still incidental: indented bullets are formatted XML."""
     parsed = parse_model_response(
         "<card ref='1'>"
         "<desc>\n"
@@ -196,8 +179,7 @@ def test_a_description_still_loses_its_indentation():
 
 
 def test_a_run_of_blank_lines_in_a_description_closes_up():
-    """Same normalisation the prose either side of the cards already gets: a paragraph break
-    is one blank line, however many the model typed."""
+    """The same normalisation the prose either side of the cards already gets."""
     parsed = parse_model_response(
         '<card ref="1"><title>T</title><desc>First.\n\n\n\nSecond.</desc></card>'
     )
@@ -206,8 +188,7 @@ def test_a_run_of_blank_lines_in_a_description_closes_up():
 
 
 def test_the_other_fields_are_still_collapsed_to_one_line():
-    """Only <desc> changed. A title is a heading and a follow-up is a question sent as the
-    student's next turn - neither has anywhere to put a line break."""
+    """Only <desc> changed: a title is a heading and a follow-up is one question."""
     parsed = parse_model_response(
         '<card ref="1">'
         "<title>Advising\n  drop-ins</title>"
@@ -221,8 +202,7 @@ def test_the_other_fields_are_still_collapsed_to_one_line():
 
 
 def test_a_bulleted_description_is_measured_and_capped_like_any_other(caplog):
-    """The cap is unchanged and still bites - the guard does not get weaker because the
-    field now has newlines in it, and a break is a word boundary exactly like a space."""
+    """The guard does not get weaker because the description happens to be a list."""
     settings = _settings(card_desc_max_chars=40)
 
     with caplog.at_level("WARNING"):
@@ -236,8 +216,7 @@ def test_a_bulleted_description_is_measured_and_capped_like_any_other(caplog):
 
 
 def test_a_bulleted_description_within_its_cap_is_not_truncated_or_logged(caplog):
-    """The newlines count toward the cap, but the cap sits far above the steer, so an
-    ordinary bulleted card must pass through whole and silently."""
+    """The newlines count toward the cap, but the cap sits far above the steer."""
     with caplog.at_level("WARNING"):
         card = cards_from_parsed(
             parse_model_response(_BULLETED_DESC).cards, _sources(_chunk()), _SETTINGS
@@ -248,9 +227,7 @@ def test_a_bulleted_description_within_its_cap_is_not_truncated_or_logged(caplog
 
 
 def test_truncating_a_multiline_field_leaves_no_bullet_marker_hanging():
-    """A break is a word boundary like a space, and the marker left at the cut goes with the
-    same rstrip that already takes a trailing comma or hyphen - so the ellipsis follows the
-    last whole word rather than an empty bullet."""
+    """A break is a word boundary like a space, so a hanging marker goes with the cut."""
     text = "Two ways in.\n- Email advising@sjsu.edu"
 
     assert truncate_to_cap(text, 20, keep_line_breaks=True) == "Two ways in…"
@@ -281,9 +258,7 @@ Does either of those sound like what you need?"""
 
 
 def test_prose_before_and_after_the_cards_keeps_its_side():
-    """The ordering this contract exists for. The model writes a lead-in, its cards, then a
-    closing question, and the student has to read them in that order - a question that
-    renders above the grid is asking about an answer they have not reached yet."""
+    """The ordering this contract exists for: a closing question renders under its cards."""
     parsed = parse_model_response(_PROSE_ON_BOTH_SIDES)
 
     assert parsed.prose == "Two offices handle this, and they are below."
@@ -292,8 +267,7 @@ def test_prose_before_and_after_the_cards_keeps_its_side():
 
 
 def test_prose_between_two_cards_joins_the_lead():
-    """The grid is one group, so there is no inside for prose to render in. It joins the
-    lead rather than the trailer because it was written to introduce the cards after it."""
+    """The grid is one group, so there is no inside for prose to render in."""
     parsed = parse_model_response(
         "Start here.\n\n"
         '<card ref="1"><title>A</title><desc>D</desc></card>\n\n'
@@ -307,8 +281,7 @@ def test_prose_between_two_cards_joins_the_lead():
 
 
 def test_a_reply_that_ends_with_its_cards_has_no_trailing_prose():
-    """The ordinary shape. Nothing after the last block means nothing renders below the
-    grid, which is the case that must stay exactly as it was."""
+    """The ordinary shape: nothing after the last block means nothing renders below the grid."""
     parsed = parse_model_response(_WELL_FORMED)
     assert parsed.trailing_prose == ""
 
@@ -319,8 +292,7 @@ def test_a_reply_with_no_cards_is_never_split():
 
 
 def test_an_unclosed_block_leaves_the_reply_unsplit():
-    """No card parsed means no grid on screen, so there is no position to preserve and the
-    fallback's one bubble must carry everything."""
+    """No card parsed means no grid, so there is no position to preserve."""
     parsed = parse_model_response(
         'Here is what I found.\n\n<card ref="1"><title>T</title><desc>D.\n\nAnything else?'
     )
@@ -331,8 +303,7 @@ def test_an_unclosed_block_leaves_the_reply_unsplit():
 
 
 def test_a_safety_tag_under_the_cards_still_fires():
-    """Read from both sides of the split. Losing a tag because of where it was written
-    would cost the panel outright, which is the one failure this must not have."""
+    """Read from both sides of the split: losing a tag to its position would cost the panel."""
     parsed = parse_model_response(
         '<card ref="1"><title>T</title><desc>D</desc></card>\n\n<safety>crisis-988</safety>'
     )
@@ -359,9 +330,7 @@ def test_joining_a_split_reply_puts_a_blank_line_between_the_halves():
 
 
 def test_a_card_with_no_ref_keeps_its_text_and_loses_its_link(caplog):
-    """DECIDED AGAINST docs/cards-v2.md, which drops the card. A card that renders without
-    its source button is a visible symptom; a dropped card is three cards where there should
-    be four and nobody notices. The log line is the stronger half of that signal."""
+    """DECIDED AGAINST docs/cards-v2.md, which drops the card, for observability."""
     turn = _sources(_chunk())
     parsed = parse_model_response(
         "<card><title>Tutoring</title><desc>Free help.</desc></card>"
@@ -399,8 +368,7 @@ def test_a_card_citing_an_unknown_id_keeps_its_text_and_loses_its_link(caplog):
 
 
 def test_an_id_from_a_previous_turn_is_as_unresolvable_as_an_invented_one():
-    """Ids are per-turn and nothing persists them, so a stale ref must not resolve against
-    whatever happens to occupy that number now."""
+    """Ids are per-turn and nothing persists them, so a stale ref must not resolve."""
     turn_one = _sources(_chunk())
     turn_two = TurnSources()  # a fresh turn that retrieved nothing
 
@@ -416,11 +384,8 @@ def test_an_id_from_a_previous_turn_is_as_unresolvable_as_an_invented_one():
 
 
 def test_an_over_cap_description_is_shortened_at_a_word_boundary(caplog):
-    """Shortened where it can be measured, never hidden by the layout. v1 capped at 220 and
-    let a 4-line CSS clamp swallow the rest, so roughly a third of every description was cut
-    with nothing on screen to show it had been. The cap is a runaway guard now, far above
-    the length the prompt steers toward, so hitting it is also a WARNING: an ellipsis on
-    screen means a bug, and the log is where the bug is diagnosable."""
+    """Shortened where it can be measured, never hidden by the layout: v1 capped at 220 and
+    a CSS clamp swallowed the rest with nothing on screen to show it."""
     settings = _settings(card_desc_max_chars=40)
     turn = _sources(_chunk())
 
@@ -462,8 +427,7 @@ def test_an_over_cap_title_is_shortened_the_same_way(caplog):
 
 
 def test_fields_within_their_caps_log_no_warning(caplog):
-    """The WARNING is the ellipsis-means-a-bug signal. An ordinary response must not emit
-    it, or the signal drowns in routine noise and stops meaning anything."""
+    """The WARNING is the ellipsis-means-a-bug signal, so an ordinary response must not emit one."""
     turn = _sources(_chunk())
 
     with caplog.at_level("WARNING"):
@@ -484,11 +448,8 @@ def test_fields_within_their_caps_log_no_warning(caplog):
 
 
 def test_an_over_cap_followup_keeps_its_button_and_is_logged(caplog):
-    """A shortened question is a DIFFERENT question, so a follow-up is never truncated -
-    and it no longer loses its button either. The prompt is sent, and shown, as the
-    student's next turn, where a long one simply wraps, so dropping the button was a
-    visible regression guarding against nothing visible. The overrun is logged instead:
-    the cap is a guard, and passing it means the prompt or the model is broken."""
+    """A shortened question is a DIFFERENT question, so a follow-up is never truncated and
+    keeps its button; the overrun is logged because the cap guards a paid model input."""
     settings = _settings(card_followup_max_chars=20)
     turn = _sources(_chunk())
     long_followup = "How do I book an appointment with a calculus tutor this week?"
@@ -529,16 +490,13 @@ def test_truncation_never_exceeds_the_cap_including_the_ellipsis():
 
 # --- Dash normalisation ---------------------------------------------------------------------
 
-# The dashes under test are written as escapes, not characters, so grepping the repo for a
-# literal em or en dash stays a meaningful check.
+# The dashes under test are written as escapes, so grepping the repo for one stays meaningful.
 _EM = "\u2014"
 _EN = "\u2013"
 
 
 def test_an_em_dash_in_a_card_becomes_a_comma():
-    """The prompt bans em and en dashes; this is the deterministic backstop for when the
-    model writes one anyway. A dash in running text is doing a comma's job, so the rewrite
-    keeps the sentence rather than the character."""
+    """The prompt bans em and en dashes; this is the deterministic backstop."""
     parsed = parse_model_response(
         '<card ref="1">'
         f"<title>Tutoring {_EM} free</title>"
@@ -569,8 +527,7 @@ def test_prose_dashes_are_normalised_like_card_text():
 
 
 def test_an_en_dash_between_digits_becomes_a_hyphen():
-    """The one place an en dash carries meaning a comma would destroy: "10, 12" says two
-    numbers where "10-12" says a span."""
+    """The one place an en dash carries meaning a comma would destroy: a digit range."""
     assert cards.normalise_dashes(f"Open 10{_EN}12 on weekdays.") == "Open 10-12 on weekdays."
 
 
@@ -582,9 +539,7 @@ def test_ascii_hyphens_pass_through_untouched():
 
 
 def test_dashes_are_normalised_before_the_cap_is_measured():
-    """The cap must measure the string the student reads. A spaced em dash is three
-    characters and ", " is two, so a description measured before the rewrite would be
-    truncated even though what actually renders fits."""
+    """The cap must measure the string the student reads, not the one the model typed."""
     desc = ("a" * 10) + f" {_EM} " + ("b" * 9)  # 22 chars as written, 21 once rewritten
     parsed = [ParsedCard(ref_id=1, title="T", desc=desc, followup="")]
 
@@ -595,8 +550,7 @@ def test_dashes_are_normalised_before_the_cap_is_measured():
 
 
 def test_each_dash_substitution_is_logged(caplog):
-    """The INFO line per substitution is how the dash rate stays measurable: if the
-    prompt's ban is working, these lines stop appearing in the logs."""
+    """The INFO line per substitution is how the dash rate stays measurable from the logs."""
     with caplog.at_level("INFO"):
         cards.normalise_dashes(f"stress {_EM} sleep {_EN} both")
 
@@ -681,8 +635,7 @@ def test_stray_closing_tags_are_scrubbed_from_the_prose():
 
 
 def test_scrubbing_leaves_unrelated_angle_brackets_alone():
-    """A deliberately narrow scrub. A generic <[^>]+> sweep would eat content the model may
-    legitimately write, and the guarantee needed is only that OUR tags never surface."""
+    """A deliberately narrow scrub: a generic sweep would eat content the model may write."""
     text = "Enrol in <12 units and you stay part-time. Use the <strong> tag in your essay."
     assert strip_card_tags(text) == text
 
@@ -703,8 +656,7 @@ def test_no_safety_tag_means_no_safety_request():
 
 
 def test_a_keyed_safety_block_yields_its_keys_and_leaks_nothing_into_the_prose():
-    """The keys are instructions to the server, not text for the student: the WHOLE block
-    goes, so 'crisis-988, caps' can never surface in the bubble."""
+    """The keys are instructions to the server, so the WHOLE block leaves the prose."""
     parsed = parse_model_response(
         "You're not alone, and help is close.\n\n<safety>crisis-988, caps</safety>"
     )
@@ -726,8 +678,7 @@ def test_a_keyed_block_with_no_valid_tokens_is_a_bare_tag():
 
 
 def test_the_fallback_scrub_removes_a_safety_block_whole():
-    """The zero-card fallback path rebuilds the bubble from the raw reply, so it must drop
-    the block's key content too, not just the tags around it."""
+    """The zero-card fallback rebuilds the bubble from the raw reply, so it must drop it too."""
     text = "Support is below.\n\n<safety>sas</safety>"
     assert strip_card_tags(text) == "Support is below."
 
@@ -736,9 +687,7 @@ def test_the_fallback_scrub_removes_a_safety_block_whole():
 
 
 def test_a_place_block_yields_its_key_and_leaks_nothing_into_the_prose():
-    """A catalogue key is addressed to the server, exactly as a safety key is, so the WHOLE
-    block leaves the bubble. A student who reads "career-center" in their answer is reading
-    machinery."""
+    """A catalogue key is addressed to the server, exactly as a safety key is."""
     parsed = parse_model_response(
         "The Career Center does this all day.\n\n<place>career-center</place>"
     )
@@ -759,8 +708,8 @@ def test_no_place_block_means_no_key():
 
 
 def test_a_place_block_under_the_cards_still_counts():
-    """Both sides of the split are read, for the reason the safety keys are: the split point
-    says where PROSE renders, not which tags count."""
+    """Both sides of the split are read: the split point says where prose renders, not which
+    tags count."""
     parsed = parse_model_response(
         '<card ref="1"><title>t</title><desc>d</desc></card>\n\n'
         "<place>spartan-food-pantry</place>"
@@ -769,8 +718,7 @@ def test_a_place_block_under_the_cards_still_counts():
 
 
 def test_a_second_place_block_is_ignored_and_logged(caplog):
-    """One turn points at one place. Choosing between two would be a parser making an
-    editorial decision, and the first one written is the one the reply was built around."""
+    """One turn points at one place; choosing between two would be an editorial rule."""
     with caplog.at_level(logging.WARNING, logger="cards"):
         parsed = parse_model_response(
             "<place>career-center</place>\n\n<place>writing-center</place>"
@@ -780,8 +728,7 @@ def test_a_second_place_block_is_ignored_and_logged(caplog):
 
 
 def test_a_place_block_with_two_keys_keeps_the_first_and_logs(caplog):
-    """Unlike a safety block, which lists every resource that fits, a location card has one
-    address on it."""
+    """Unlike a safety block, which lists every resource that fits, a card has one address."""
     with caplog.at_level(logging.WARNING, logger="cards"):
         parsed = parse_model_response("<place>career-center, writing-center</place>")
     assert parsed.place_key == "career-center"
@@ -789,8 +736,7 @@ def test_a_place_block_with_two_keys_keeps_the_first_and_logs(caplog):
 
 
 def test_an_empty_place_block_is_logged_rather_than_treated_as_absent(caplog):
-    """Reaching for the contract and writing nothing usable is a different fault from never
-    reaching for it, so it is not folded into the quiet case."""
+    """Reaching for the contract and writing nothing usable is a different fault from absence."""
     with caplog.at_level(logging.WARNING, logger="cards"):
         parsed = parse_model_response("<place>  </place>\n\nHere you go.")
     assert parsed.place_key is None
@@ -798,15 +744,12 @@ def test_an_empty_place_block_is_logged_rather_than_treated_as_absent(caplog):
 
 
 def test_the_fallback_scrub_removes_a_place_block_whole():
-    """The zero-card fallback rebuilds the bubble from the raw reply, so it has to drop the
-    key content too and not only the tags around it."""
+    """The zero-card fallback rebuilds from the raw reply, so it has to drop the key too."""
     assert strip_card_tags("Go here.\n\n<place>career-center</place>") == "Go here."
 
 
 def test_the_preview_stops_at_a_place_tag():
-    """The streamed preview must never type a tag onto the screen, and `place` is one of
-    ours now - which it is by construction, since the stop list is built from the same tuple
-    the scrub pattern is."""
+    """The streamed preview must never type a tag onto the screen, `place` included."""
     assert cards.preview_safe_prefix("Head to Clark Hall. <place>career") == (
         "Head to Clark Hall. "
     )
@@ -816,8 +759,7 @@ def test_the_preview_stops_at_a_place_tag():
 
 
 def test_the_model_is_never_shown_a_url():
-    """The reason an invented URL is unrepresentable rather than merely detectable: there is
-    no URL in the model's input to copy and no field in its output to put one in."""
+    """The reason an invented URL is unrepresentable rather than merely detectable."""
     turn = TurnSources()
     options = turn.add_chunks([_chunk()], limit=6)
     payload = source_options_for_tool(options)
@@ -827,12 +769,7 @@ def test_the_model_is_never_shown_a_url():
 
 
 def test_sources_are_deduplicated_by_url_across_searches():
-    """The same page found by two different searches keeps its first id, so the model is
-    never shown one source under two numbers.
-
-    Asserted by URL rather than by position: results are offered best-score-first, so the
-    repeat's place in the second list depends on its score, and only its ID is the contract.
-    """
+    """A page found by two searches keeps its first id, so one page is never two numbers."""
     turn = TurnSources()
     first = turn.add_chunks([_chunk(score=0.9)], limit=6)
     second = turn.add_chunks(
@@ -847,8 +784,7 @@ def test_sources_are_deduplicated_by_url_across_searches():
 
 
 def test_a_chunk_with_no_source_url_is_not_offered_as_a_source():
-    """A card's entire job is provenance, so a source that cannot be linked has nothing to
-    offer one."""
+    """A card's entire job is provenance, so an unlinkable source has nothing to offer one."""
     turn = TurnSources()
     options = turn.add_chunks([_chunk(url=None), _chunk()], limit=6)
 
@@ -903,8 +839,7 @@ def test_a_batch_carries_the_cards_and_the_query():
     ],
 )
 def test_the_parser_tolerates_the_shapes_a_model_actually_writes(raw):
-    """Quoting, case and incidental whitespace vary run to run. None of them is a contract
-    violation, and treating them as one would drop cards over formatting."""
+    """Quoting, case and incidental whitespace vary run to run, and none is a contract break."""
     parsed = parse_model_response(raw)
 
     assert len(parsed.cards) == 1
@@ -917,30 +852,25 @@ def test_the_parser_tolerates_the_shapes_a_model_actually_writes(raw):
 
 
 def test_the_preview_is_everything_before_the_first_card_tag():
-    """The model writes one text stream - lead-in, then card blocks - so this is what makes
-    a streamed preview the lead-in rather than a screen with markup typing onto it."""
+    """The model writes one text stream, so this is what makes a streamed preview safe."""
     text = 'Two places can help.\n\n<card ref="1"><title>Writing Center</title></card>'
     assert cards.preview_safe_prefix(text) == "Two places can help.\n\n"
 
 
 def test_a_partial_tag_at_the_end_of_a_chunk_is_held_back():
-    """Deltas straddle tag boundaries constantly. Emitting `<ca` and then discovering it was
-    the start of a card block would have already put markup on screen."""
+    """Deltas straddle tag boundaries constantly, and an emitted `<ca` cannot be taken back."""
     for partial in ("<", "<c", "<ca", "<car", "<card", "<card ref=", "</", "</ca"):
         assert cards.preview_safe_prefix(f"Try this. {partial}") == "Try this. "
 
 
 def test_a_less_than_sign_that_is_not_ours_streams_intact():
-    """The guarantee needed is only that OUR tags never surface - the same reason the tag
-    scrub is a named vocabulary rather than a generic <[^>]+> sweep. A student asking about
-    unit loads should not lose half a sentence to it."""
+    """The guarantee needed is only that OUR tags never surface."""
     for text in ("Take <15 units to stay part time.", "a < b", "5<6 and 7>6"):
         assert cards.preview_safe_prefix(text) == text
 
 
 def test_every_tag_in_the_contract_stops_the_preview():
-    """One vocabulary, shared with the scrub. A tag this did not know about would reach a
-    student as markup."""
+    """One vocabulary, shared with the scrub: an unknown tag would reach a student raw."""
     for tag in ("card", "title", "desc", "followup", "safety", "escalate_to_human"):
         assert cards.preview_safe_prefix(f"prose <{tag}>x</{tag}>") == "prose "
         assert cards.preview_safe_prefix(f"prose </{tag}>") == "prose "
@@ -948,14 +878,12 @@ def test_every_tag_in_the_contract_stops_the_preview():
 
 
 def test_the_prefix_only_ever_grows_as_the_reply_does():
-    """Append-only is what makes it safe to type out: every push is a suffix of the reply so
-    far, so nothing on screen is ever taken back."""
+    """Append-only is what makes it safe to type out: every push is a suffix."""
     reply = 'Here is the answer.\n\n<card ref="1"><title>T</title></card>\n\nAnything else?'
     seen = ""
     for length in range(len(reply) + 1):
         prefix = cards.preview_safe_prefix(reply[:length])
-        # Each prefix EXTENDS the last one: never shorter, and never a rewrite of what was
-        # already sent. That pair is exactly what a caller needs to push `prefix[sent:]`.
+    # Each prefix EXTENDS the last: never shorter, never a rewrite of what was sent.
         assert prefix.startswith(seen), (length, prefix, seen)
         seen = prefix
 
@@ -964,22 +892,19 @@ def test_the_prefix_only_ever_grows_as_the_reply_does():
 
 
 def test_a_card_opening_is_what_says_cards_are_coming():
-    """The lead-in ends where the first card block begins, so this is the same instant the
-    preview stops - which is what makes it a signal about the reply rather than a guess."""
+    """The lead-in ends where the first card block begins."""
     assert cards.card_block_started('Two places.\n\n<card ref="2">')
     assert cards.card_block_started("Two places.\n\n<CARD REF='2'>")
 
 
 def test_prose_alone_never_says_cards_are_coming():
-    """About one reply in ten is prose only. An indicator promising resources that never
-    arrive is worse than the gap it filled, so nothing here predicts from length or timing."""
+    """About one reply in ten is prose only, and a false promise is worse than silence."""
     for text in ("", "The deadline is 4pm.", "Take <15 units to stay part time.", "a < b"):
         assert not cards.card_block_started(text)
 
 
 def test_a_partial_opening_is_not_an_answer_yet():
-    """preview_safe_prefix stops on a partial because the rest of the tag MIGHT arrive; this
-    waits for the whole opening, because a maybe is not something to promise a student."""
+    """The preview stops on a partial; this waits for the whole opening."""
     for partial in ("Try this. <", "Try this. <c", "Try this. <ca", "Try this. <car"):
         assert not cards.card_block_started(partial)
     assert cards.card_block_started("Try this. <card")
@@ -992,8 +917,7 @@ def test_another_tag_of_the_contract_is_not_a_card():
 
 
 def test_a_safety_tag_takes_it_back_to_no():
-    """Safety turns drop their cards by contract, so a reply carrying that tag has no card
-    group to announce however many blocks the model wrote beside it."""
+    """Safety turns drop their cards by contract, so that tag has no card group to announce."""
     assert not cards.card_block_started("Please call now.\n\n<safety>caps</safety>")
     assert not cards.card_block_started(
         'Please call now.\n\n<safety>caps</safety>\n<card ref="1">'
@@ -1001,8 +925,7 @@ def test_a_safety_tag_takes_it_back_to_no():
 
 
 def test_it_never_takes_back_an_answer_as_the_cards_are_written():
-    """Once it is true it stays true for the rest of the card blocks, so a caller can send
-    one frame and stop asking."""
+    """Once true it stays true for the rest of the blocks, so a caller can send one frame."""
     reply = 'Here.\n\n<card ref="1"><title>T</title></card>\n<card ref="2"></card>'
     first = next(
         length for length in range(len(reply) + 1) if cards.card_block_started(reply[:length])
@@ -1011,21 +934,13 @@ def test_it_never_takes_back_an_answer_as_the_cards_are_written():
 
 
 def test_the_preview_does_not_cap_or_normalise_anything():
-    """Both belong to the finished reply and are applied there, once. Doing either here
-    would be the duplication the streaming design exists to avoid - and a substitution near
-    the end of a partial string could rewrite text already on screen."""
+    """Both belong to the finished reply: a substitution here could rewrite text on screen."""
     long_text = "x" * 5000
     assert cards.preview_safe_prefix(long_text) == long_text
     assert cards.preview_safe_prefix("a — b") == "a — b"
 
 
-# --- the escalate-to-human block ------------------------------------------------------
-#
-# The tag carries PROSE ONLY. There is no attribute group in its pattern and no field
-# inside it, so a model-chosen recipient is not something this parser rejects - it is
-# something the shape has no room for, exactly as a card's URL is. What these cover is the
-# other half: the block's content is the body of an email, so it must leave the prose the
-# student reads, and a turn makes one offer however many blocks arrive.
+# --- the escalate-to-human block: prose only, so a chosen recipient is unrepresentable ----
 
 
 def test_the_escalation_block_is_parsed_and_never_rendered():
@@ -1043,8 +958,7 @@ def test_the_escalation_block_is_parsed_and_never_rendered():
 
 
 def test_no_escalation_tag_is_none_rather_than_an_empty_offer():
-    """None and "" are different states: no tag at all, versus a tag the model left empty.
-    The second is a fault worth logging (app/escalation.py) and the first is every turn."""
+    """None and "" are different states: no tag at all, versus a tag the model left empty."""
     assert parse_model_response("Just an answer.").escalation_prose is None
     assert parse_model_response(
         "<escalate_to_human>  </escalate_to_human>"
@@ -1052,8 +966,7 @@ def test_no_escalation_tag_is_none_rather_than_an_empty_offer():
 
 
 def test_an_escalation_block_under_the_cards_still_counts():
-    """Read from BOTH sides of the split, like the safety tag: where a block sits decides
-    where prose renders, never whether a tag counts."""
+    """Read from BOTH sides of the split, like the safety tag."""
     raw = (
         "Here is what I found.\n\n"
         '<card ref="1"><title>Registrar</title><desc>Holds and enrolment.</desc></card>\n\n'
@@ -1068,8 +981,7 @@ def test_an_escalation_block_under_the_cards_still_counts():
 
 
 def test_a_second_escalation_block_is_ignored_and_logged(caplog):
-    """One turn, one offer. Merging them or preferring the longer one would put an
-    editorial rule in a parser; the first is the one the model wrote first."""
+    """One turn, one offer: merging or preferring would put an editorial rule in a parser."""
     raw = (
         "<escalate_to_human>The first draft.</escalate_to_human>\n\n"
         "<escalate_to_human>The second draft.</escalate_to_human>"
@@ -1084,8 +996,7 @@ def test_a_second_escalation_block_is_ignored_and_logged(caplog):
 
 
 def test_the_escalation_block_keeps_its_paragraphs():
-    """A draft is read by a person, so a paragraph break the model wrote is one they see -
-    the same reason <desc> keeps its line breaks, for a body of text rather than a list."""
+    """A draft is read by a person, so a paragraph break the model wrote is one they see."""
     raw = (
         "<escalate_to_human>Hi,\n\nI have tried the advising page and the form.\n\n"
         "Could someone help?</escalate_to_human>"
@@ -1097,8 +1008,7 @@ def test_the_escalation_block_keeps_its_paragraphs():
 
 
 def test_a_dash_in_a_draft_is_normalised_like_every_other_display_string():
-    """The draft is text a member of staff reads, so it obeys the same one display
-    invariant every other string in this app does."""
+    """The draft is text a member of staff reads, so it obeys the same display invariant."""
     parsed = parse_model_response(
         "<escalate_to_human>I am stuck — could someone help?</escalate_to_human>"
     )
@@ -1108,8 +1018,8 @@ def test_a_dash_in_a_draft_is_normalised_like_every_other_display_string():
 
 
 def test_the_fallback_scrub_removes_an_escalation_block_whole():
-    """The zero-card fallback rebuilds the bubble from the COMPLETE reply, so a block left
-    in it would show the student an email they have not sent as though it were the answer."""
+    """The zero-card fallback rebuilds from the COMPLETE reply, so an unscrubbed block
+    would put an unsent email in front of the student."""
     raw = (
         "Sorry, I do not have a page for that.\n"
         "<escalate_to_human>Hi, I am trying to find out about a fee.</escalate_to_human>"

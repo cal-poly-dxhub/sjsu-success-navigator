@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
 """Render an eval transcript against the ground truth as one self-contained HTML page.
 
-Presentation only, no scoring: each question gets the golden expectation on the left
-(straight out of ground-truth.yaml) and the system's real answer on the right (straight out
-of the transcript), so a human - or Claude reading the JSON - decides accuracy. The only
-mechanical annotations are the behavior badge (which response shape actually fired), bolding
-of expected source URLs the response actually cited, and, when a judgments file exists,
-each pair's recorded verdict chip.
-
-Judgments file (optional): eval/judgments/<transcript stem>.yaml, either
-    route-tutor: pass
-or
-    route-tutor: {verdict: fail, note: "gave the 5910 number"}
-
-Usage:
-    python3 render_results.py                       # newest transcript in results/
-    python3 render_results.py --transcript path.json [--judgments path.yaml] [--out page.html]
+Presentation only, no scoring; see docs/eval-harness.md. Judgments, if any, come from
+eval/judgments/<transcript stem>.yaml.
 """
 
 from __future__ import annotations
@@ -153,8 +140,7 @@ def actual_col(result: dict) -> str:
             link = f'<a href="{esc(url)}">{esc(url)}</a>' if url else ""
             parts.append(f'<div class="card"><div class="t">{esc(card.get("title"))}</div>'
                          f'<div>{esc(card.get("body"))}</div>{link}{followups}</div>')
-    # Below the cards, because that is where it renders for the student - a closing question
-    # shown above the grid on this page would misreport the thing the page exists to show.
+    # Below the cards, because that is where it renders for the student.
     if response.get("trailingText"):
         parts.append(f'<div class="prose trailing">{esc(response["trailingText"])}</div>')
     parts.append("</div>")

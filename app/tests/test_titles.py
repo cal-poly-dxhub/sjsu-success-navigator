@@ -1,9 +1,7 @@
 """Conversation titling: the model's reply is a suggestion, and this is what rejects it.
 
-Nothing here reaches Bedrock. What is being pinned is the DISTRUST - which replies become a
-title and which are thrown away - because that is the whole of this feature's behaviour. A
-titling model that answers correctly needs no code; the code exists for the one that says
-"Sure! Here's a title:" and means it helpfully.
+A rejection is never a repair, and titling can never delay or fail a turn; see
+docs/chat-service.md, Conversation titling.
 """
 
 import time
@@ -77,10 +75,7 @@ def test_a_plain_short_reply_is_the_title(bedrock):
     ],
 )
 def test_a_preamble_is_a_failure_not_a_title(bedrock, reply):
-    """THE FAILURE THIS FEATURE IS ACTUALLY ABOUT. A titling model answers about the task as
-    readily as it does the task, and every one of these would put the model's throat-clearing
-    in a student's sidebar as if it were their own words. Rejected whole rather than cut
-    down: a reply that ignored the instruction is not a source to salvage a title from."""
+    """THE FAILURE THIS FEATURE IS ACTUALLY ABOUT: a model that answers about the task."""
     bedrock.reply = reply
     assert _generate() is None
 
@@ -91,23 +86,19 @@ def test_a_preamble_is_a_failure_not_a_title(bedrock, reply):
      "“Financial aid appeal”"],
 )
 def test_a_quoted_reply_is_a_failure(bedrock, reply):
-    """A quoted string is the model PRESENTING a title rather than writing one. Stripping the
-    quotes would be repairing output that has already shown it is not following the
-    instruction, and the fallback is a title the student's own words produced."""
+    """A quoted string is the model PRESENTING a title rather than writing one."""
     bedrock.reply = reply
     assert _generate() is None
 
 
 def test_a_multi_line_reply_is_a_failure(bedrock):
-    """A title and a commentary about the title. Only one of them belongs in a sidebar and
-    nothing here can reliably tell which line the model meant."""
+    """A title and a commentary about the title. Only one of them belongs in a sidebar."""
     bedrock.reply = "Financial aid appeal\n\nThis names the student's question."
     assert _generate() is None
 
 
 def test_a_reply_over_the_configured_cap_is_a_failure(bedrock):
-    """A sentence, not a title. The cap is settings.title_max_chars - config, never a
-    literal - and it is the same number the fallback truncation is held to."""
+    """A sentence, not a title. The cap is config, never a literal."""
     bedrock.reply = "A" * (_SETTINGS.title_max_chars + 1)
     assert _generate() is None
     assert titles.usable_title("A" * _SETTINGS.title_max_chars, _SETTINGS.title_max_chars)
@@ -125,19 +116,14 @@ def test_an_empty_reply_is_a_failure(bedrock):
 
 
 def test_a_title_carrying_a_dash_is_normalised_rather_than_rejected():
-    """The one repair this does make, and it is not a repair of the model's judgement: em and
-    en dashes are rewritten into commas EVERYWHERE a student reads text (cards.normalise_
-    dashes), and a sidebar row is somewhere a student reads text. Done before the cap is
-    measured, exactly as the card path does it, so the length checked is the length shown."""
+    """The one repair this does make, and it is not a repair of the model's judgement."""
     title = titles.usable_title("Financial aid — appeal deadline", 80)
     assert "—" not in title and "–" not in title
     assert title == "Financial aid, appeal deadline"
 
 
 def test_no_title_this_module_can_produce_carries_an_em_or_en_dash():
-    """The constraint stated as one assertion over the whole surface, including the prompt
-    the model is steered by: an example carrying a dash would teach the habit the server
-    then edits."""
+    """The dash constraint as one assertion over the whole surface, prompt included."""
     assert "—" not in titles.TITLE_SYSTEM_PROMPT
     assert "–" not in titles.TITLE_SYSTEM_PROMPT
 
@@ -146,23 +132,19 @@ def test_no_title_this_module_can_produce_carries_an_em_or_en_dash():
 
 
 def test_a_bedrock_failure_returns_none_rather_than_raising(bedrock):
-    """A FORCED TITLING FAILURE STILL LEAVES A GOOD ANSWER. By the time this runs the reply is
-    written and the fallback title is already on the header, so there is no failure mode here
-    worth propagating - only a conversation that keeps the name it already had."""
+    """A forced titling failure still leaves a good answer: the reply is already written."""
     bedrock.raises = RuntimeError("ThrottlingException")
     assert _generate() is None
 
 
 def test_nothing_is_called_once_the_deadline_has_passed(bedrock):
-    """The point of a deadline is that no network call STARTS which cannot finish inside it.
-    Checked before the call, not after, exactly as the Converse loop checks its own."""
+    """The point of a deadline is that no network call STARTS which cannot finish inside it."""
     assert _generate(deadline=time.monotonic() - 1) is None
     assert bedrock.calls == [], "a call was started past the deadline"
 
 
 def test_the_call_is_small_and_deterministic(bedrock):
-    """A four-word output does not need a large budget, and a cap far below a paragraph is
-    what a model that ignores the instruction runs into instead of billing for an essay."""
+    """A four-word output does not need a large budget, and temperature 0 keeps it stable."""
     _generate()
     config = bedrock.calls[0]["inferenceConfig"]
     assert config["maxTokens"] <= 64
@@ -171,9 +153,8 @@ def test_the_call_is_small_and_deterministic(bedrock):
 
 
 def test_the_model_is_shown_the_answer_as_well_as_the_question(bedrock):
-    """The reason this runs AFTER the exchange rather than on the student's message alone: a
-    title drawn from the question names what was asked, and one that has seen the reply can
-    name what the conversation turned out to be about."""
+    """Why this runs AFTER the exchange: a title that has seen the reply names what the
+    conversation turned out to be about."""
     _generate()
     sent = bedrock.calls[0]["messages"][0]["content"][0]["text"]
     assert "how do I appeal my financial aid?" in sent

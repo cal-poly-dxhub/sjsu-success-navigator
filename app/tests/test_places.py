@@ -1,16 +1,7 @@
 """The campus location card: what the model may say, and what it can never say.
 
-The property under test is one sentence. THE MODEL WRITES A CATALOGUE KEY AND NOTHING ELSE,
-so every address, name, map and link the student reads came out of data/places.csv and
-data/buildings.csv, through app/places.py.
-That makes the interesting cases the negative ones - a key nobody put in the table, a place
-named on a turn that also needs the crisis panel - because each of them is a way a wrong
-address could otherwise reach a student who is about to walk somewhere.
-
-Four properties get their own tests here because each is easy to lose silently and expensive
-to lose: NO API KEY appears in anything this module produces, NO LENGTH CAP is applied to an
-address, every building the catalogue points at HAS A COMMITTED IMAGE on disk, and every
-coordinate is ON CAMPUS.
+An unlisted place yields no card and no request leaves for a third party. The tables are
+data/places.csv and data/buildings.csv; see docs/chat-service.md, Campus location cards.
 """
 
 import logging
@@ -29,13 +20,10 @@ from places import (
     resolve_place,
 )
 
-# frontend/public/places, reached from app/tests/. The images are committed rather than
-# built, so this suite can assert they exist.
+# frontend/public/places, from app/tests/. The images are committed rather than built.
 _IMAGE_DIR = Path(__file__).resolve().parents[2] / "frontend" / "public" / "places"
 
-# The SJSU main campus and its immediate edge, generously drawn. Anything outside this is a
-# coordinate that landed in another part of San Jose, which is the failure mode an automated
-# geocode actually produces (an early pass put the Student Services Center in Evergreen).
+# The SJSU main campus and its immediate edge, generously drawn.
 _CAMPUS_BOX = (37.3300, 37.3410, -121.8880, -121.8750)  # south, north, west, east
 
 
@@ -43,22 +31,19 @@ _CAMPUS_BOX = (37.3300, 37.3410, -121.8880, -121.8750)  # south, north, west, ea
 
 
 def test_every_place_names_a_building_that_exists():
-    """The one referential link between the tables. A typo here costs the card its map, and
-    the WARNING in map_image_url is the only other thing that would say so."""
+    """The one referential link between the tables: a typo costs the card its map."""
     for key, place in CAMPUS_PLACES.items():
         assert place.building in CAMPUS_BUILDINGS, f"{key} points at {place.building!r}"
 
 
 def test_every_building_is_pointed_at_by_something():
-    """The other direction: a building nobody uses is an image being served and rendered for
-    nothing, and a sign that a place was deleted without its building."""
+    """The other direction: a building nobody uses is an image rendered for nothing."""
     used = {place.building for place in CAMPUS_PLACES.values()}
     assert used == set(CAMPUS_BUILDINGS), f"unused: {set(CAMPUS_BUILDINGS) - used}"
 
 
 def test_every_entry_has_a_name_an_address_and_a_destination():
-    """A card is the name, the line under it, and a way to walk there, so an entry missing
-    any of them renders as a gap."""
+    """A card is the name, the line under it, and a way to walk there."""
     for key, place in CAMPUS_PLACES.items():
         assert place.name.strip(), key
         assert place.address.strip(), key
@@ -67,25 +52,20 @@ def test_every_entry_has_a_name_an_address_and_a_destination():
 
 
 def test_the_address_is_not_just_the_name_again():
-    """The panel prints the name above the address, so an address repeating it reads as a
-    stutter and tells the student nothing about where to walk."""
+    """The panel prints the name above the address, so repeating it reads as a stutter."""
     for key, place in CAMPUS_PLACES.items():
         assert place.address.strip().lower() != place.name.strip().lower(), key
 
 
 def test_no_entry_carries_a_dash_the_display_path_would_rewrite():
-    """Em and en dashes are banned in everything the student reads (app/cards.py,
-    normalise_dashes) - and nothing normalises THIS text, because it never passes through the
-    card path. So the tables have to be clean at the source."""
+    """Em and en dashes are banned in everything the student reads, this table included."""
     for key, place in CAMPUS_PLACES.items():
         for field in (place.name, place.address, place.when):
             assert "—" not in field and "–" not in field, key
 
 
 def test_the_roster_is_the_resolvers_own_table():
-    """The prompt's key list and the resolver's table are the same dict, the way the safety
-    roster and app/safety.py's table are. That is what makes "a key the model is taught always
-    resolves" a property rather than a promise."""
+    """The prompt's key list and the resolver's table are the same dict."""
     roster_keys = [key for key, _ in place_roster_for_prompt()]
     assert roster_keys == list(CAMPUS_PLACES)
     for key in roster_keys:
@@ -96,8 +76,7 @@ def test_the_roster_is_the_resolvers_own_table():
 
 
 def test_every_building_coordinate_is_on_campus():
-    """The failure an automated geocode actually produces is a plausible building in the wrong
-    part of the city, not a nonsense number. This is the cheap net under that."""
+    """The failure an automated geocode produces is a plausible building in the wrong place."""
     south, north, west, east = _CAMPUS_BOX
     for key, building in CAMPUS_BUILDINGS.items():
         assert south <= building.lat <= north, f"{key} latitude {building.lat}"
@@ -105,8 +84,7 @@ def test_every_building_coordinate_is_on_campus():
 
 
 def test_no_two_buildings_share_a_coordinate():
-    """Two buildings at one point means one of them was copied and not edited, which renders
-    as two offices with the same map and nothing on screen to say so."""
+    """Two buildings at one point means one was copied and not edited."""
     seen: dict[tuple[float, float], str] = {}
     for key, building in CAMPUS_BUILDINGS.items():
         point = (building.lat, building.lon)
@@ -118,9 +96,7 @@ def test_no_two_buildings_share_a_coordinate():
 
 
 def test_every_building_has_a_committed_map_image():
-    """THE IMAGES ARE COMMITTED, NOT BUILT, so nothing at deploy time would notice one
-    missing: the card would simply render a broken image at a student. Adding a building means
-    running scripts/render_place_maps.py, and this is what says so out loud."""
+    """THE IMAGES ARE COMMITTED, NOT BUILT, so nothing at deploy time would notice one missing."""
     for key in CAMPUS_BUILDINGS:
         path = _IMAGE_DIR / f"{key}.webp"
         assert path.exists(), f"{path} is missing; run scripts/render_place_maps.py"
@@ -128,16 +104,13 @@ def test_every_building_has_a_committed_map_image():
 
 
 def test_no_committed_image_is_orphaned():
-    """The other direction: an image with no building is a file being deployed for nothing,
-    left behind when a coordinate was renamed."""
+    """The other direction: an image with no building is a file deployed for nothing."""
     on_disk = {path.stem for path in _IMAGE_DIR.glob("*.webp")}
     assert on_disk == set(CAMPUS_BUILDINGS), f"orphaned: {on_disk - set(CAMPUS_BUILDINGS)}"
 
 
 def test_the_map_url_is_served_from_our_own_origin():
-    """A ROOT-RELATIVE PATH, never a URL. The map coming off the same distribution as the page
-    is what makes "a rendered turn contacts no third party" true, and a hostname appearing here
-    is exactly how that would stop being true."""
+    """A ROOT-RELATIVE PATH, never a URL: the map comes off the same distribution as the page."""
     for key, place in CAMPUS_PLACES.items():
         url = map_image_url(place)
         assert url is not None, key
@@ -147,9 +120,7 @@ def test_the_map_url_is_served_from_our_own_origin():
 
 
 def test_a_place_in_an_unrendered_building_still_makes_a_card(caplog):
-    """A card with no map is the documented, complete state: name, address, directions. This
-    is the state a new catalogue entry lands in before anybody renders its building, and it
-    must be ordinary rather than an exception."""
+    """A card with no map is the documented, complete state: name, address, directions."""
     orphan = CampusPlace(
         name="Somewhere New",
         address="A line the student reads",
@@ -177,8 +148,7 @@ def test_a_listed_place_resolves_to_the_tables_own_strings():
 
 
 def test_offices_in_one_building_share_its_map():
-    """Sixteen entries, five buildings. Four offices are inside Clark Hall, and the map
-    belongs to the building while the room number belongs to the place."""
+    """Sixteen entries, five buildings: offices in one building share its map."""
     clark = {key for key, place in CAMPUS_PLACES.items() if place.building == "clark-hall"}
     assert clark == {"career-center", "title-ix-office", "eop", "guardian-scholars"}
     images = {resolve_place(key).map_image_url for key in clark}
@@ -188,16 +158,14 @@ def test_offices_in_one_building_share_its_map():
 
 
 def test_an_unlisted_place_yields_no_card_and_says_so(caplog):
-    """THE RULE THE WHOLE FEATURE RESTS ON. Not a guessed card, not a card whose location is
-    a search for whatever the model typed: no card, and a WARNING naming the key."""
+    """THE RULE THE WHOLE FEATURE RESTS ON: no guessed card, and the drop is logged."""
     with caplog.at_level(logging.WARNING, logger="places"):
         assert resolve_place("student-union-bowling-alley") is None
     assert "student-union-bowling-alley" in caplog.text
 
 
 def test_no_block_is_the_quiet_case():
-    """None means the model wrote no place block, which is almost every turn. It is the one
-    case that must not log, or the logs stop being a signal."""
+    """None means the model wrote no place block, which is almost every turn."""
     assert resolve_place(None) is None
 
 
@@ -212,16 +180,13 @@ def test_a_key_resolves_regardless_of_case_and_stray_space():
 def test_the_directions_link_is_a_plain_maps_url():
     url = directions_url(CAMPUS_PLACES["spartan-food-pantry"])
     assert url.startswith("https://www.google.com/maps/dir/?api=1&destination=")
-    # The destination is the table's, percent-encoded. The address the student READS is a
-    # different string on purpose - a wayfinding line makes a poor search query.
+    # The destination is the table's, percent-encoded, and never the address on screen.
     assert "Diaz+Compean+Student+Union" in url
 
 
 @pytest.mark.parametrize("key", sorted(CAMPUS_PLACES))
 def test_no_link_anywhere_carries_an_api_key(key):
-    """The acceptance criterion, asserted rather than assumed. There is no key in this repo,
-    no Cloud project and no billing account: the directions link is the form Google serves
-    without one, and this fails the day a parameter says otherwise."""
+    """The acceptance criterion, asserted rather than assumed: no key in this repo."""
     lowered = directions_url(CAMPUS_PLACES[key]).lower()
     assert "key=" not in lowered
     assert not re.search(r"aiza[0-9a-z_-]{10}", lowered)
@@ -229,8 +194,7 @@ def test_no_link_anywhere_carries_an_api_key(key):
 
 
 def test_the_directions_url_is_built_only_from_the_table():
-    """Nothing the model wrote reaches the URL. The key selects a row, the row supplies the
-    destination, and there is no third input."""
+    """Nothing the model wrote reaches the URL: the key selects a row, the row supplies it."""
     fake = CampusPlace(
         name="Somewhere",
         address="A line the student reads",
@@ -247,10 +211,7 @@ def test_the_directions_url_is_built_only_from_the_table():
 
 
 def test_an_address_is_never_shortened_however_long_it_runs(monkeypatch):
-    """LENGTH CAPS MUST NEVER TRUNCATE AN ADDRESS, and this is the shape that guarantees it:
-    the caps live in cards.py and apply to model-authored fields, and there is no
-    model-authored field on this path at all. An address cut at a word boundary is a student
-    sent to a room number that stops halfway."""
+    """LENGTH CAPS MUST NEVER TRUNCATE AN ADDRESS, and no cap is applied on this path."""
     long_address = "Clark Hall, " + "first floor past the stairs, " * 60 + "room 140"
     assert len(long_address) > 1000
     monkeypatch.setitem(
@@ -271,9 +232,8 @@ def test_an_address_is_never_shortened_however_long_it_runs(monkeypatch):
 
 # --- the tables are data/places.csv and data/buildings.csv -------------------------------------
 #
-# Everything above runs against the loaded tables and would pass just as well against two
-# hardcoded dicts. These are the tests that say the FILES are what got loaded, and that a bad
-# row stops the process rather than dropping an office out of the catalogue.
+# Everything above would pass against two hardcoded dicts. These say the FILES are what got
+# loaded, and that a bad row stops the process rather than dropping an office.
 
 
 @pytest.fixture
@@ -285,9 +245,7 @@ def data_dir(tmp_path, monkeypatch):
 
 
 def test_the_catalogue_is_the_committed_csv_row_for_row():
-    """A card's name, address and destination come off data/places.csv, in its order. Anything
-    that made this pass while the file said something else would be the divergence this whole
-    directory exists to remove."""
+    """A card's name, address and destination come off data/places.csv, in its order."""
     from campus_data import load_keyed
 
     rows = load_keyed(
@@ -320,8 +278,7 @@ def test_the_buildings_are_the_committed_csv_coordinates():
 
 
 def test_a_coordinate_that_is_not_a_number_stops_the_import(data_dir):
-    """The map is rendered from these two cells, so a degree sign pasted in from a web page
-    has to be a loud failure and not a building silently missing its point."""
+    """The map is rendered from these two cells, so a bad one has to fail loudly."""
     import places
     from campus_data import CampusDataError
 
@@ -334,8 +291,7 @@ def test_a_coordinate_that_is_not_a_number_stops_the_import(data_dir):
 
 
 def test_a_place_row_missing_its_building_stops_the_import(data_dir):
-    """`building` is the one foreign key between the two files. Empty is not a place with no
-    map - it is a row somebody half filled in."""
+    """`building` is the one foreign key between the two files; empty is a half-filled row."""
     import places
     from campus_data import CampusDataError
 

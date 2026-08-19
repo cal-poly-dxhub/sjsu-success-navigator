@@ -1,20 +1,7 @@
 """The Converse loop: retrieval primed on every turn, the tool as escape hatch, one exit.
 
-WHAT CHANGED FROM v1. The loop used to have two exits and two card builders. The model could
-end by calling `submit_chat_response` with a JSON cards array, or by just talking, and every
-abnormal path - deadline, iteration cap, a model that never submitted - fell through to
-`_fallback_response`, which built cards MECHANICALLY out of retrieved page text. That is why
-a timeout produced cards nobody had written: the fallback answered from the corpus rather
-than from the conversation.
-
-Now the model's text reply is the answer, on every path. When there is text, cards.py parses
-it. When there is no text at all - the deadline landed before the model produced any - the
-student gets one honest sentence rather than machine-assembled referrals. Retrieval no longer
-has a second, card-shaped consumer, so a run that ends early degrades to less, never to
-something invented.
-
-The two caps and their ordering are unchanged, and both still exist for the reason the
-docstring below gives.
+The model's text reply is the answer on every path, under an iteration cap and a
+wall-clock deadline; see docs/chat-service.md, The Converse loop.
 """
 
 from __future__ import annotations
@@ -52,23 +39,16 @@ from usage import TurnUsage
 
 logger = logging.getLogger(__name__)
 
-# The ONLY hardcoded reply left on this path, and it is reachable in exactly one situation:
-# the model produced no text whatsoever before the loop ran out of time or iterations. An
-# empty bubble is the alternative, so this is not a substitute for an answer - it is an
-# admission that there is not one.
+# The only hardcoded reply left on this path: the model produced no text at all before
+# the loop ran out. An admission that there is no answer, not a substitute for one.
 _NO_OUTPUT_TEXT = (
     "I ran out of time putting that together. Ask me again and I'll take another run at it."
 )
 
-# The toolUseId on the primed retrieval exchange. Server-authored and constant: it never
-# reaches the student, and a fixed id keeps the primed turn byte-identical for a given
-# query, which is what makes the followup-parity guarantee testable.
+# Server-authored and constant, so a primed turn stays byte-identical for a given query.
 _PRIMED_TOOL_USE_ID = "tooluse_primed_first_search"
 
-# Module scope: built once per container and reused, where camp built one per request
-# (which on Lambda discards the warm container's connection pool every invocation).
-# read_timeout is 25s, not camp's 120: the function's own budget is 29s, so a socket
-# that outlives it can only turn a diagnosable timeout into a gateway 504.
+# Built once per container. read_timeout is under the function's own 29s budget.
 _BEDROCK_CLIENT = None
 
 
@@ -88,16 +68,7 @@ def _bedrock_client(region: str):
 
 
 class StreamSink(Protocol):
-    """Where a streaming turn's PREVIEW goes. Implemented by app/streaming.py.
-
-    Two methods and neither of them returns anything the loop reads back, which is the
-    point: streaming is an output side effect bolted to the side of this loop, never an
-    input to it. Remove the sink and the turn produces the identical ChatResponse.
-
-    `text` receives the WHOLE accumulated reply so far, every time, rather than the newest
-    fragment - so the sink owns the question of how much of it is safe to show and how much
-    has already been sent, and this module never has to hold a second idea of either.
-    """
+    """Where a streaming turn's PREVIEW goes. Implemented by app/streaming.py."""
 
     def status(self, stage: str) -> None:
         """Something is happening that is not text arriving - a retrieval, say."""
@@ -116,61 +87,13 @@ def run_chat(
     guardrail_config: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> ChatResponse:
-    """Run the Converse tool-use loop under TWO independent caps.
-
-    `history` is the previous turns, READ FROM DYNAMODB BY THE CALLER (app/handler.py) and
-    never taken from the request. It arrives as an argument rather than being fetched here
-    so this function stays a pure function of what it is given - which is what lets the
-    tests drive a dangling user turn, an empty conversation and a full window without a
-    table. The turn's ORDER, including that the user message is written before this runs,
-    is the handler's business.
-
-    `max_converse_iterations` bounds how many model calls happen.
-    `deadline` bounds how long they may take, as a `time.monotonic()` timestamp. The two
-    are not interchangeable: six iterations of a slow model, or one retrieval that stalls,
-    exceeds the function's budget without ever reaching the iteration cap. Passing None
-    derives the deadline from settings.converse_deadline_seconds; the handler passes an
-    explicit one so Lambda's real remaining time can narrow it.
-
-    Both caps exit through _response_from_text with whatever text the model had produced by
-    then. That is the point: the alternative is being killed mid-Converse, where the
-    invocation is billed and the student gets a gateway 504 carrying no response at all.
-
-    `usage` is the turn's billable tally (app/usage.py), MUTATED IN PLACE and never read.
-    It is an argument rather than a return value because every exit here is an exit under a
-    cap: a turn that hits the deadline on its third call still billed three, and a tally
-    riding on the response would be lost on exactly the paths worth counting. Passing None
-    counts nothing, which is what the loop's own tests do.
-
-    `stream` IS THE ONLY DIFFERENCE BETWEEN THE TWO TRANSPORTS, and it is deliberately the
-    smallest one that could work. Passing None runs `Converse` exactly as it always has -
-    POST /chat's path is byte-identical and is under a hard "keeps working unchanged"
-    constraint. Passing a sink runs `ConverseStream` instead and pushes the reply out as it
-    is written; everything after the model call - the tool loop, the deadline, the iteration
-    cap, the exit through _response_from_text and therefore every card, cap, dash and safety
-    decision - is the same code reading the same complete text. There is no second parser
-    and no second exit, which is what makes "the streamed turn renders identically to the
-    buffered one" a property of the structure rather than a thing to keep testing.
-
-    `guardrail_config` attaches this stack's guardrail to the model call. None is the
-    default and the deployed setting; when it is set it is always `sync` mode (the caller
-    cannot spell `async` - see app/streaming.py), because async releases text to the student
-    before it has been scanned, which is not a screen.
-
-    `now` is the instant this turn happens at, stamped into the user message the model is
-    shown (app/campus_time.py). None reads the clock, which is what every caller does; it
-    is an argument at all so a test can pin the moment instead of racing it. ONE instant is
-    read per turn and it is read here, so every Converse call in the loop below - the first
-    one and any the tool escape hatch adds - carries the same time rather than drifting
-    across a long turn.
-    """
+    """Run the Converse tool-use loop under an iteration cap and a wall-clock deadline."""
     client = _bedrock_client(settings.bedrock_region)
 
     if deadline is None:
         deadline = time.monotonic() + settings.converse_deadline_seconds
 
-    # The id-to-URL map for this turn. Built here, never persisted, and the only thing that
-    # can put a URL on a card - which is what makes a model-invented URL unrepresentable.
+    # Built here, never persisted, and the only thing that can put a URL on a card.
     sources = TurnSources()
     messages = _build_converse_messages(request, history, settings, now)
     system_prompt = build_system_prompt(settings)
@@ -180,8 +103,7 @@ def run_chat(
                         settings=settings, deadline=deadline, usage=usage, stream=stream)
 
     for iteration in range(settings.max_converse_iterations):
-        # Checked BEFORE the call, not after: the point is never to start a Converse
-        # request that cannot finish inside the function's remaining time.
+        # Checked BEFORE the call: never start a request that cannot finish in time.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             logger.warning(
@@ -209,19 +131,14 @@ def run_chat(
         if guardrail_config is not None:
             call["guardrailConfig"] = guardrail_config
 
-        # ONE SHAPE OUT OF BOTH CALLS. _converse_streaming reassembles the event stream into
-        # the same {"output": {"message": ...}, "stopReason": ..., "usage": ...} dict that
-        # Converse returns, so nothing below this line knows which transport ran.
+        # One shape out of both calls, so nothing below this line knows which transport ran.
         if stream is None:
             response = client.converse(**call)
         else:
             response = _converse_streaming(client, call, stream)
 
         if usage is not None:
-            # TAKEN FROM THE STREAM'S OWN METADATA rather than recounted, which is what keeps
-            # the cost panel honest across both paths: ConverseStream reports usage in a
-            # `metadata` event carrying the same inputTokens/outputTokens Converse returns,
-            # and _converse_streaming puts it where record_model_call already looks.
+            # Taken from the stream's own metadata rather than recounted.
             usage.record_model_call(response)
 
         assistant_message = response["output"]["message"]
@@ -238,8 +155,7 @@ def run_chat(
         ]
 
         # `end_turn` with no tool call is the answer. A `tool_use` stop reason carrying no
-        # toolUse block is malformed rather than final, but there is nothing further to do
-        # with it either, so it takes the same exit.
+        # toolUse block is malformed, and there is nothing further to do with it either.
         if response.get("stopReason") != "tool_use" or not tool_uses:
             return _response_from_text(text, sources, request.query, settings)
 
@@ -258,10 +174,8 @@ def run_chat(
 
         messages.append({"role": "user", "content": tool_results})
 
-    # The cap was reached without the model ever ending its turn. Camp fell through to a
-    # mechanical card builder here; now the student gets whatever the model actually said,
-    # which may be nothing. Logged as the distinct event it is - the alternative is a run
-    # that looks identical in the logs to a model that answered on its first call.
+    # The cap was reached without the model ever ending its turn. Logged as the distinct
+    # event it is: otherwise it looks like a model that answered on its first call.
     logger.warning(
         "Converse loop hit its %s-iteration cap without a final reply; answering from the "
         "text produced so far (%s chars). query=%r",
@@ -277,32 +191,11 @@ def _converse_streaming(
     call: dict[str, Any],
     stream: StreamSink,
 ) -> dict[str, Any]:
-    """Run ConverseStream and hand back what Converse would have returned.
-
-    THE WHOLE JOB IS TO MAKE STREAMING INVISIBLE UPSTAIRS. The caller gets the same dict
-    shape - output.message, stopReason, usage - so the tool loop, the card parser and the
-    response builder are shared rather than mirrored. The only thing that leaks out is the
-    preview, and it leaves through `stream`, which nothing reads back.
-
-    THE PREVIEW IS PROSE AND ONLY PROSE. Text deltas accumulate and go to the sink; toolUse
-    input deltas do not, and neither would anything else - the sink is handed the accumulated
-    TEXT and decides for itself how much of it is safe to show (cards.preview_safe_prefix).
-    A tool call therefore streams nothing at all, which is right: a search is not an answer,
-    and the status event above it is what tells the student something is happening.
-
-    A SINK FAILURE MUST NOT COST THE ANSWER. Every push is wrapped, because the sink pushes
-    to a socket the student may have closed: the turn is finished and persisted either way
-    (see app/streaming.py's note on GoneException), and a broken pipe is not a reason to
-    abandon a reply that is already paid for.
-
-    Bedrock's event names are the contract here, so an unknown event is ignored rather than
-    treated as an error - a new event type appearing in the stream must not fail a turn.
-    """
+    """Run ConverseStream and hand back what Converse would have returned."""
     response = client.converse_stream(**call)
 
     content: list[dict[str, Any]] = []
-    # contentBlockIndex -> the partial block being assembled. A dict rather than a list
-    # because the indices are the stream's, and nothing promises they arrive in order.
+    # contentBlockIndex -> the partial block. A dict: nothing promises they arrive in order.
     blocks: dict[int, dict[str, Any]] = {}
     accumulated = ""
     stop_reason = None
@@ -325,9 +218,8 @@ def _converse_streaming(
                     "toolUse": {
                         "toolUseId": tool_use.get("toolUseId"),
                         "name": tool_use.get("name"),
-                        # Accumulated as a STRING and parsed at the close: Bedrock streams a
-                        # tool's arguments as partial JSON fragments, so no prefix of it is
-                        # valid JSON until the last one arrives.
+                        # Accumulated as a STRING and parsed at the close: Bedrock streams
+                        # tool arguments as partial JSON, valid only once complete.
                         "_input_json": "",
                     }
                 }
@@ -363,9 +255,7 @@ def _converse_streaming(
             reported_usage = event["metadata"].get("usage")
             continue
 
-    # Any block the stream never closed. Keeping it is the same instinct the zero-card
-    # fallback has: a truncated reply reaches the student as the model's words rather than
-    # vanishing because a stop event went missing.
+    # A block the stream never closed is kept, the same instinct the zero-card fallback has.
     for index in sorted(blocks):
         content.append(_finished_block(blocks[index]))
 
@@ -377,13 +267,7 @@ def _converse_streaming(
 
 
 def _finished_block(block: dict[str, Any]) -> dict[str, Any]:
-    """One assembled content block, in the shape Converse would have returned it.
-
-    A tool block's arguments arrived as partial JSON; they are parsed once, here. UNPARSEABLE
-    ARGUMENTS BECOME AN EMPTY INPUT rather than an exception: _run_tool already defaults a
-    missing query to the student's own message, so the search still happens and the turn
-    still answers, where a raise would lose a reply the model had already written.
-    """
+    """One assembled content block, in the shape Converse would have returned it."""
     if "toolUse" not in block:
         return {"text": block.get("text", "")}
 
@@ -408,31 +292,14 @@ def _prime_first_search(
     usage: TurnUsage | None = None,
     stream: StreamSink | None = None,
 ) -> None:
-    """Run the first retrieval server-side and append it as a completed tool exchange.
-
-    Every substantive question needs retrieval exactly once (the 2026-08-10 eval: of the
-    turns that logged, 20 of 30 made exactly one search, 2 made two, and the one wrong
-    SKIP was a scored failure), so the first search is not the model's decision any more.
-    It runs here, on the student's own words, and lands in the transcript as a synthetic
-    assistant toolUse plus its toolResult - the exact wire shape a real call produces, so
-    the model wakes up holding results and answers in ONE Converse call in the common
-    case. The tool stays declared as the escape hatch: a vague follow-up or a missed
-    phrasing is the model's cue to search again with a sharper query.
-
-    Two deliberate degradations. Past the deadline nothing runs (the deadline exists so
-    no network call starts that cannot finish), and a retrieval failure logs and returns
-    rather than failing the turn - the model then simply searches itself, which is the
-    pre-priming behaviour. An EMPTY result set is appended, not skipped: results that
-    found nothing are the honest-gap signal the prompt teaches from.
-    """
+    """Run the first retrieval server-side and append it as a completed tool exchange."""
     if time.monotonic() >= deadline:
         return
     query = request.query.strip()
     _tell(stream, "retrieving")
     try:
         chunks = retrieve_chunks(query, settings)
-        # Counted only once it returned. A retrieval that raised may or may not have been
-        # billed, and a meter that guesses in its own favour is not a meter.
+        # Counted only once it returned: a retrieval that raised may not have been billed.
         if usage is not None:
             usage.record_retrieval()
         options = sources.add_chunks(chunks, limit=settings.card_max_retrieval_results)
@@ -474,15 +341,7 @@ def _prime_first_search(
 
 
 def _tell(stream: StreamSink | None, stage: str) -> None:
-    """Say what the turn is doing, when anybody is listening.
-
-    Retrieval is the one part of a turn that takes real time and produces no text, so
-    without this the socket goes quiet for a second or two and the UI has to either lie
-    ("thinking...") or say nothing. A status event lets it say the true thing.
-
-    Swallows its own failures for the reason every push does: the student may have closed
-    the tab, and a status event is the least important thing in the turn.
-    """
+    """Say what the turn is doing, when anybody is listening. Swallows its own failures."""
     if stream is None:
         return
     try:
@@ -510,8 +369,7 @@ def _run_tool(
         )
 
     search_query = str(tool_input.get("query", request.query)).strip()
-    # The model decided the primed results missed, so it is searching again. Worth saying:
-    # this is the case where the student waits longest.
+    # The model decided the primed results missed. Worth saying: this is the longest wait.
     _tell(stream, "retrieving")
     chunks = retrieve_chunks(search_query, settings)
     if usage is not None:
@@ -533,39 +391,7 @@ def _build_converse_messages(
     settings: Settings,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Stored history plus this turn's message, in a shape Converse will accept.
-
-    THE NEW MESSAGE IS APPENDED BEFORE THE MERGE, and that ordering is the fix for the reef
-    the doc names (docs/accounts-and-storage.md, Reefs). A turn whose model call failed
-    leaves a user message with no assistant reply, so the next turn reads a history ENDING
-    IN A USER ROLE - and Converse rejects two user messages in a row outright, which would
-    make one failed turn poison every turn after it. Merging afterwards folds the dangling
-    message into this one, so the disclosure that never got an answer is still in front of
-    the model rather than dropped on the floor.
-
-    Trimming here as well as in the query is not a second opinion about the window: it is
-    what makes this function total. A caller that hands over more than the configured window
-    gets it trimmed rather than silently billed for it.
-
-    THE MODEL IS NEVER SHOWN ITS OWN MARKUP. A stored assistant reply is the model's RAW
-    text - that is what makes a reopened conversation re-renderable (see replay_stored_reply)
-    - so the card, safety and escalation tags are still in it, and handing them back would
-    teach the model that a transcript is a place where tags appear. It would start writing
-    them where they do not belong, and a `<safety>` tag copied out of last week's reply is a
-    panel fired by imitation rather than by triage. The tags come off HERE, at the one point
-    where history becomes model input, rather than at the store - the record stays whole and
-    every caller gets the same treatment without having to remember to ask for it.
-
-    A STUDENT'S OWN MESSAGE GOES THROUGH UNTOUCHED. It is their words, and stripping them
-    would quietly edit a disclosure; a student who types an angle bracket typed an angle
-    bracket. Only the assistant's side is markup this server wrote the contract for.
-
-    THE TIME STAMP GOES ON THIS TURN AND NO OTHER. The history loop below never restamps a
-    stored message: the only thing the stored row records is when it was written, and
-    stamping a read-back message with the CURRENT time would tell the model a message from
-    Tuesday arrived just now. What the model gets is one clock reading, attached to the one
-    turn that is actually happening at it.
-    """
+    """Stored history plus this turn's message, in a shape Converse will accept."""
     messages: list[dict[str, Any]] = []
 
     for item in list(history)[-settings.max_history_messages :]:
@@ -582,9 +408,8 @@ def _build_converse_messages(
 
     messages = _merge_consecutive_roles(messages)
 
-    # Converse also requires the FIRST message to be a user turn. A window that begins
-    # mid-conversation can open on an assistant reply; the loop above always ends on a user
-    # message, so this can never empty the list.
+    # Converse also requires the FIRST message to be a user turn, and a window can open on
+    # an assistant reply. The loop above always ends on a user message, so this cannot empty.
     while messages and messages[0]["role"] == "assistant":
         messages.pop(0)
 
@@ -613,37 +438,7 @@ def _merge_consecutive_roles(
 
 
 def _build_user_message(request: ChatRequest, now: datetime | None = None) -> str:
-    """The user turn handed to the model. It does NOT read `request.followup`.
-
-    It opens with the campus-local time (app/campus_time.py), and that line is the whole
-    of this feature's plumbing. It sits HERE rather than in the system prompt because the
-    prompt is a pure function of Settings and stays cacheable and testable that way, and
-    because the time is a fact about this turn rather than a standing instruction.
-
-    IT IS ADDED TO THE MODEL'S COPY AND NOWHERE ELSE. The student's message is written to
-    DynamoDB by the handler before this function is ever called, from `request.query`
-    directly, so nothing built here can reach the stored row or the display read that
-    serves the browser. The student's own words stay exactly that on both.
-
-    The line is above the message rather than below it so the student's text is the last
-    thing before the instruction, and so no prefix of what they wrote is ever run together
-    with server-authored text.
-
-    This used to append a "the student clicked a follow-up, emit no cards" note, which is
-    why clicking Tell me more never produced cards while typing the same question did. A
-    click sends text the model itself authored, down the same route as typed input - same
-    intercept, same guardrail, same history - so the turn it produces has to be the same
-    turn. What an answer needs (a destination, a source, neither) is a property of the
-    question, not of the widget that sent it.
-
-    It also no longer says "retrieve if you need them": the first search is primed
-    server-side after this message (see _prime_first_search), and on the rare priming
-    failure that sentence would be a false promise. The system prompt owns the
-    search-again rule; this turn stays instruction-light so it is true on both paths.
-
-    `followup` stays on the wire contract (models.ChatRequest, and the frontend still sets
-    it) but no longer reaches the prompt from here.
-    """
+    """The user turn handed to the model. It does NOT read `request.followup`."""
     time_line = campus_context_line(now)
     return (
         f"{time_line}\n\n" if time_line else ""
@@ -677,15 +472,7 @@ def _response_from_text(
     query: str,
     settings: Settings,
 ) -> ChatResponse:
-    """Parse one LIVE model reply into the wire response. The only place cards come from.
-
-    The offer is built here and nowhere else in this path. A SAFETY TURN NEVER CARRIES ONE:
-    the panel is the handoff and it owns everything under the message, so an offer to email
-    an office would sit between a student in crisis and the numbers they need. The prompt
-    says so and this says so again, beside the card drop, because both are the same rule
-    about what a safety turn is allowed to contain. apply_safety_handoff_to_response drops it
-    on the other route into a safety turn - prose that names crisis lines without the tag.
-    """
+    """Parse one LIVE model reply into the wire response. The only place cards come from."""
     parsed = parse_model_response(text)
     escalation = (
         None
@@ -710,30 +497,7 @@ def replay_stored_reply(
     query: str,
     settings: Settings,
 ) -> ChatResponse:
-    """One STORED assistant reply, rendered by the code that rendered it live.
-
-    THE SAME PARSER AND THE SAME EXIT, which is the whole reason the record is the model's
-    own text rather than the halves it was rendered into. A reopened reply is not
-    reconstructed from fields that have to be kept in step with the live path; it is the same
-    function fed the same string, so the two cannot drift. That is the argument the streaming
-    path already makes about its final payload, applied to the one other place a turn gets
-    built.
-
-    `urls_by_ref` is what this reply cited, off the record (app/cards.py, cited_source_urls).
-    The refs resolve against those pairs and nothing else - no retrieval runs here, so
-    reopening a conversation costs one query and never a model call.
-
-    `escalation` IS PASSED IN RATHER THAN REBUILT, and it is the one field this function
-    does not derive. build_email_draft reads the recipient and subject out of today's
-    deploy config and the turn's own token, so re-deriving would render where a message
-    would go NOW instead of where the student was told it was going. The stored bytes are
-    the answer; a safety turn drops them below exactly as a live one does.
-
-    Re-parsing means a stored reply is rendered under TODAY'S rules - today's caps, today's
-    dash normalisation, today's contact roster. That is deliberate and it cuts both ways: a
-    fixed rendering bug fixes every conversation already on the table, and a changed card
-    contract re-renders history along with it.
-    """
+    """Render one STORED assistant reply through the code that rendered it live."""
     return _assemble_response(
         parse_model_response(text),
         text=text,
@@ -753,32 +517,9 @@ def _assemble_response(
     settings: Settings,
     escalation: Any | None,
 ) -> ChatResponse:
-    """One parsed reply as the wire response, live or replayed. THE ONE EXIT.
-
-    The reply reaches the student in the order it was written: `conversationalText` is the
-    prose above the card group and `trailingText` the prose below it, so a closing question
-    lands under the cards it refers to. Both fall back to one bubble - the safety branch and
-    the zero-card branch below each have a reason there is nothing left to split around.
-
-    The zero-card branch is the contract's fallback, and it is why a parse failure cannot
-    lose anything: when no card survives, the bubble is rebuilt from the COMPLETE reply with
-    the tags scrubbed, rather than from the text that happened to sit outside the blocks. So
-    a malformed card - an unclosed tag, a block with no title - reaches the student as the
-    model's words instead of vanishing.
-    """
-    # The location card, resolved once, here. It sits at the shared exit rather than beside
-    # the offer in _response_from_text because the key it reads is IN THE REPLY: a replayed
-    # turn parses the same `<place>` block the live one did, so this needs no argument and
-    # cannot be forgotten by a caller. The display read hands back the card it recorded
-    # instead of this one (app/handler.py, _rendered_reply) - the catalogue is a directory
-    # that gets edited - so on that path this resolves a card nobody reads. It stays here
-    # anyway: the alternative is a parameter two callers have to keep in step, for a dict
-    # lookup against a table already in memory.
-    #
-    # A SAFETY TURN NEVER CARRIES ONE, for the reason it carries no cards and no offer: the
-    # panel is the answer and it owns everything under the message. A map between a student
-    # in crisis and the numbers they need is the same mistake as a card there, in a taller
-    # box.
+    """One parsed reply as the wire response, live or replayed. THE ONE EXIT."""
+    # Resolved here rather than beside the offer, because the key is IN THE REPLY, so a
+    # replayed turn needs no argument. The display read hands back its own recorded card.
     place = None if parsed.needs_safety else resolve_place(parsed.place_key)
 
     if parsed.needs_safety:
@@ -790,14 +531,8 @@ def _assemble_response(
             logger.info(
                 "chat route=safety place=dropped (a safety turn carries no location card)"
             )
-        # A safety turn carries no cards by contract. Any the model emitted anyway are
-        # dropped deliberately, so this must NOT take the zero-card fallback below - that
-        # would fold the card text back into the bubble. An empty prose falls back to the
-        # server's one authored sentence: the panel needs an introduction, not silence.
-        #
-        # The reply is also un-split here: with the cards gone there is nothing for trailing
-        # prose to sit under, and the panel's placement - directly under the whole message,
-        # never buried between two halves of it - is a safety property, not a layout one.
+        # A safety turn carries no cards by contract, so this must NOT take the zero-card
+        # fallback below, which would fold the card text back into the bubble.
         cards = []
         prose = join_prose(parsed.prose, parsed.trailing_prose) or strip_card_tags(text)
         prose = prose or SAFETY_FALLBACK_TEXT
@@ -810,16 +545,13 @@ def _assemble_response(
             prose, trailing = parsed.prose, parsed.trailing_prose
         else:
             # The zero-card fallback rebuilds the bubble from the COMPLETE reply, so there
-            # is no position left to preserve: with no grid on screen, prose that was
-            # written under the cards is just the end of the message.
+            # is no position left to preserve.
             prose, trailing = strip_card_tags(text), ""
 
     if not prose and not trailing:
         if escalation is not None:
-            # A reply that was NOTHING BUT an escalation block. The block's content is an
-            # email and is removed from the bubble, so there is no prose left to introduce
-            # the draft - and the loop's "I ran out of time" line below would be a false
-            # account of a turn that wrote the message it was asked for.
+            # A reply that was NOTHING BUT an escalation block: its content is an email and
+            # is removed from the bubble, so there is no prose left to introduce the draft.
             logger.warning(
                 "The model wrote an escalation block and no prose for query=%r; "
                 "introducing the draft with the server's own line.",
@@ -838,15 +570,12 @@ def _assemble_response(
         place=place,
         escalation=escalation,
         talkToPersonAvailable=True,
-        # THE RECORD, and it is the model's own text rather than the halves above. `text` is
-        # empty in exactly one situation - the loop produced nothing before it ran out - and
-        # there the assembled prose IS what the student was shown, so falling back to it
-        # keeps the record from being an empty message the display read would skip.
+        # The record is the model's own text. Empty only when the loop produced nothing,
+        # where the assembled prose IS what the student was shown.
         raw_text=text or join_prose(prose, trailing),
         sources=cited_source_urls(cards, sources),
     )
-    # The whole message is screened, both sides of the split: a hotline named under the
-    # cards has to attach the panel exactly as one named above them.
+    # The whole message is screened, both sides of the split.
     return apply_safety_handoff_to_response(
         response,
         conversational_text=join_prose(prose, trailing),
