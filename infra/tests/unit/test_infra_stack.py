@@ -3323,7 +3323,15 @@ def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
     one model, which was right when the only thing it did was stream a bare ConverseStream.
     Serving the turn means the turn's grants, and the assertion moved with it: the list is
     compared against the WORKER's, which is the other function running the same turn out of
-    the same `_chat_turn_statements`."""
+    the same `_chat_turn_statements`.
+
+    NARROWED WHEN THE APP LEARNED WHO ITS CALLER IS, and narrowed by ONE statement that is
+    named and asserted rather than waved past. This function has no authorizer in front of
+    it, so it reads its client allowlist from Parameter Store at cold start - that is the
+    DOOR, not the turn, which is why it is written beside `_chat_turn_statements` in the
+    stack instead of into it. The equality below still holds over everything else, so the
+    property it was written for is intact: this function may reach exactly what the turn
+    reaches, plus the one parameter that decides whose turns they are."""
     template = _template()
     role_id = next(
         lid
@@ -3367,11 +3375,30 @@ def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
     assert len(worker_without_socket) == len(worker) - 1, (
         "the worker should hold exactly one execute-api grant"
     )
+
+    # THE ONE STATEMENT THAT IS THE DOOR AND NOT THE TURN, lifted out and asserted on its
+    # own rather than allowed to blur the comparison below. It reads the client allowlist
+    # (see test_the_streaming_app_is_told_which_pool_and_which_clients_to_trust); the
+    # worker has an authorizer in front of it and needs nothing like it.
+    allowlist_grants = [
+        statement for statement in probe if "ssm:" in json.dumps(statement)
+    ]
+    assert len(allowlist_grants) == 1, allowlist_grants
+    assert _actions(allowlist_grants[0]) == ["ssm:GetParameter"], allowlist_grants[0]
+    # Scoped to the one parameter, by an ARN assembled from pseudo-parameters - a Ref to
+    # the parameter would put the dependency cycle back through IAM.
+    scoped_to = json.dumps(_resources(allowlist_grants[0]))
+    assert ":ssm:" in scoped_to and "streaming/allowed-client-ids" in scoped_to, scoped_to
+    assert "*" not in scoped_to, scoped_to
+    probe_turn_grants = [
+        statement for statement in probe if statement not in allowlist_grants
+    ]
+
     # Compared as rendered JSON so a changed resource ARN or a widened action shows up
     # rather than being counted equal. Sorted because the two roles are built by different
     # constructs and nothing promises the order.
-    assert _rendered(probe, drop_socket=False) == worker_without_socket, json.dumps(
-        {"probe": probe, "worker": worker}, indent=2, sort_keys=True
+    assert _rendered(probe_turn_grants, drop_socket=False) == worker_without_socket, (
+        json.dumps({"probe": probe, "worker": worker}, indent=2, sort_keys=True)
     )
 
     document = json.dumps(probe)
@@ -3451,6 +3478,346 @@ def test_the_stream_probe_ships_every_module_it_imports():
     assert "handler.py" not in staged, staged
 
 
+def _token_auth_source() -> str:
+    return (Path(__file__).resolve().parents[3] / "app" / "token_auth.py").read_text()
+
+
+def test_the_streaming_app_is_told_which_pool_and_which_clients_to_trust():
+    """THE THREE VALUES THAT DECIDE WHO GETS SERVED, and none of them may be a literal.
+
+    A Lambda Function URL accepts no authorizer, so app/token_auth.py verifies the Cognito
+    access token in this function's own process. What it accepts is entirely these three:
+    the region and pool that make the issuer and the JWKS URL, and the app clients whose
+    tokens count. Hardcode any of them and a fresh install in another account trusts the
+    pool of the account it was copied from - which does not fail, it serves the wrong
+    people.
+
+    THE ALLOWLIST ARRIVES BY NAME BECAUSE THE VALUE IS A DEPENDENCY CYCLE, and the shape is
+    asserted here so nobody "simplifies" it back: the browser's app client carries this
+    distribution's domain as its OAuth callback, the distribution serves this function's
+    URL on /api/*, and a client id in this function's environment closes the loop. CDK
+    refuses to synth it. So the ids go in a Parameter Store parameter and the function
+    carries the parameter's NAME, which references nothing.
+
+    THE SAME PAIR THE $connect AUTHORIZER CARRIES, asserted by comparing the two rather
+    than by restating either. Two doors into one pool with two different answers to "whose
+    tokens?" is how one of them ends up wrong, and the eval harness reaching one transport
+    and being 401'd by the other is the exact shape that costs a night."""
+    template = _template()
+    variables = _stream_probe(template)["Environment"]["Variables"]
+
+    # The region as a stack token, never the string this laptop happens to be configured
+    # for.
+    assert variables["COGNITO_REGION"] == {"Ref": "AWS::Region"}, variables[
+        "COGNITO_REGION"
+    ]
+
+    # The pool by reference to the one this stack creates.
+    pool_id = _logical_id(template, "AWS::Cognito::UserPool")
+    assert variables["USER_POOL_ID"] == {"Ref": pool_id}, variables["USER_POOL_ID"]
+
+    # The allowlist by NAME, and the name is the stack's own so two installs in one account
+    # do not share one parameter.
+    parameter = _resource_named(
+        template, "AWS::SSM::Parameter", "StreamingAllowedClientIds"
+    )["Properties"]
+    assert variables["ALLOWED_CLIENT_IDS_PARAMETER"] == parameter["Name"], {
+        "function": variables["ALLOWED_CLIENT_IDS_PARAMETER"],
+        "parameter": parameter["Name"],
+    }
+    # The name references NO RESOURCE - only pseudo-parameters and literals. That is the
+    # whole mechanism: a name is a string, and a string is not a dependency edge.
+    name = json.dumps(parameter["Name"])
+    assert "Fn::GetAtt" not in name, name
+    assert not [
+        ref
+        for ref in re.findall(r'"Ref":\s*"([^"]+)"', name)
+        if not ref.startswith("AWS::")
+    ], name
+    # And it is scoped to this install, so two stacks in one account do not share it.
+    assert "streaming/allowed-client-ids" in name, name
+
+    # BOTH clients are in the parameter's VALUE, and the eval runner's is the one a
+    # "tightening" would drop.
+    value = json.dumps(parameter["Value"])
+    web_client = _client_logical_id(template, "ChatWebClient")
+    eval_client = _client_logical_id(template, "ChatEvalClient")
+    assert json.dumps({"Ref": web_client}) in value, value
+    assert json.dumps({"Ref": eval_client}) in value, value
+
+    # And it is the SAME pair the WebSocket handshake's authorizer verifies against. That
+    # function only exists when the streaming gate is on, so this reads the gated template.
+    streaming = _streaming_template()
+    authorizer_allowed = _resource_named(
+        streaming, "AWS::Lambda::Function", "ConnectAuthorizerFunction"
+    )["Properties"]["Environment"]["Variables"]["ALLOWED_CLIENT_IDS"]
+    parameter_value = _resource_named(
+        streaming, "AWS::SSM::Parameter", "StreamingAllowedClientIds"
+    )["Properties"]["Value"]
+    assert parameter_value == authorizer_allowed, {
+        "streaming app": parameter_value,
+        "authorizer": authorizer_allowed,
+    }
+
+
+def test_nothing_the_site_distribution_reaches_names_an_app_client():
+    """THE CYCLE THIS STACK MUST NOT GROW BACK, stated as the property rather than as the
+    workaround.
+
+    ChatWebClient carries the distribution's domain as its OAuth callback URL, so it
+    depends on SiteDistribution. SiteDistribution depends on the streaming app's Function
+    URL, which depends on the streaming app. Anything on that function that names an app
+    client therefore closes a four-resource dependency cycle - and CDK refuses to synth it,
+    which is the good case. The bad case is somebody splitting the difference and putting
+    the reference somewhere CDK's check does not look.
+
+    WHICH CLIENTS CYCLE IS COMPUTED, NOT LISTED. The eval runner's machine client has no
+    callback URLs, so it does not reach the distribution, and the streaming app names it
+    directly for the daily cap's exemption list. Writing down "the web client is the
+    dangerous one" would be a fact that goes stale the day a second redirect client is
+    added, so this reads the template: any client whose own properties reach
+    SiteDistribution is one this function may not name."""
+    template = _template()
+    distribution_id = _logical_id(template, "AWS::CloudFront::Distribution")
+    clients = template.find_resources("AWS::Cognito::UserPoolClient")
+    assert len(clients) == 2, sorted(clients)
+
+    cycling = {
+        logical_id
+        for logical_id, client in clients.items()
+        if distribution_id in json.dumps(client["Properties"])
+    }
+    assert cycling, (
+        "no app client references the distribution any more, which would mean the cycle "
+        "this test guards is gone - check whether the indirection is still needed before "
+        "deleting this"
+    )
+
+    environment = json.dumps(_stream_probe(template)["Environment"])
+    named = sorted(client for client in cycling if client in environment)
+    assert named == [], (
+        f"the streaming app's environment names {named}, which closes the dependency "
+        f"cycle through the site distribution. Those client ids belong in the Parameter "
+        f"Store parameter this function reads by name."
+    )
+
+    role_id = next(
+        lid
+        for lid in template.find_resources("AWS::IAM::Role")
+        if lid.startswith("StreamProbeFunctionServiceRole")
+    )
+    for logical_id, policy in template.find_resources("AWS::IAM::Policy").items():
+        if role_id not in json.dumps(policy["Properties"].get("Roles", [])):
+            continue
+        document = json.dumps(policy["Properties"]["PolicyDocument"])
+        named = sorted(client for client in cycling if client in document)
+        assert named == [], (
+            f"{logical_id} names {named}. `parameter.grant_read(fn)` is how this comes "
+            f"back: the policy refs the parameter, the parameter refs the client, and the "
+            f"cycle arrives through IAM instead of through the environment. The ARN is "
+            f"assembled from pseudo-parameters for exactly that reason."
+        )
+        # And the parameter itself is not Ref'd either - same edge, same cycle.
+        assert "StreamingAllowedClientIds" not in document, document
+
+
+def test_the_streaming_apps_layer_carries_the_library_its_verifier_needs():
+    """AN IMPORT THAT IS NOT IN THE LAYER IS A COLD START THAT DIES, after a clean synth and
+    a clean deploy - the failure mode the include-list tests exist for, one level down at
+    the dependency.
+
+    app/token_auth.py imports `jwt` and `jwt.PyJWKClient`, and the `crypto` EXTRA is not
+    optional: without it PyJWT cannot verify RS256 at all, which is the only algorithm
+    Cognito signs with. That failure is a runtime one on a student's first request, and it
+    looks like a bad token rather than a missing wheel.
+
+    Read off disk rather than restated, and pinned to the SAME requirement the $connect
+    authorizer's layer carries: two doors into one pool verifying with two versions of one
+    library is a difference nobody would choose."""
+    app_dir = Path(__file__).resolve().parents[3] / "app"
+
+    def _pyjwt_line(name):
+        lines = [
+            line.strip()
+            for line in (app_dir / name).read_text().splitlines()
+            if line.strip().lower().startswith("pyjwt")
+        ]
+        assert len(lines) == 1, f"{name}: {lines}"
+        return lines[0]
+
+    probe_pin = _pyjwt_line("requirements-stream-probe.txt")
+    authorizer_pin = _pyjwt_line("requirements-authorizer.txt")
+
+    assert "crypto" in probe_pin, (
+        f"the streaming app pins PyJWT without the crypto extra ({probe_pin}), so it "
+        "cannot verify RS256 - the only algorithm Cognito signs with"
+    )
+    assert probe_pin == authorizer_pin, {
+        "stream-probe": probe_pin,
+        "authorizer": authorizer_pin,
+    }
+
+    # The layer's asset hash covers the file, so a changed pin rebuilds rather than leaving
+    # the previous build staged. Asserted because the hash is computed in the stack and a
+    # dropped argument there is invisible everywhere else.
+    stack_source = (Path(__file__).resolve().parents[2] / "infra" / "infra_stack.py").read_text()
+    assert 'requirements-stream-probe.txt"' in stack_source
+
+
+def test_the_auth_header_is_spelled_in_exactly_one_place():
+    """ONE NAME, ONE FILE - the treatment EDGE_PATH_PREFIX gets, for the same reason.
+
+    The token rides a header of the app's own because origin access control's SigV4
+    signature owns `Authorization`. A second spelling of that header - in the route, in a
+    log line, in the stack - is a 401 that synthesizes clean, deploys clean and belongs to
+    nobody, because the two halves each look correct on their own. So AUTH_HEADER_NAME in
+    app/token_auth.py is the only place the string exists, and everything else imports it.
+
+    Scanned across app/ and infra/ as TEXT rather than through an import, because the one
+    module that would have to be imported to check it (app/stream_probe.py) needs fastapi,
+    which is in the streaming app's own layer and in no environment this suite builds."""
+    import ast
+
+    root = Path(__file__).resolve().parents[3]
+    tree = ast.parse(_token_auth_source())
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    header = constants.get("AUTH_HEADER_NAME")
+    assert isinstance(header, str) and header, constants
+
+    # Lower case, because every layer between the browser and this process lower-cases
+    # header names and one canonical spelling is a lookup that never has to guess.
+    assert header == header.lower(), header
+
+    spelled_in = []
+    for path in sorted(
+        list((root / "app").rglob("*.py"))
+        + list((root / "infra").rglob("*.py"))
+        + list((root / "app").glob("*.txt"))
+        + [root / "app" / "run.sh"]
+    ):
+        if header in path.read_text():
+            spelled_in.append(str(path.relative_to(root)))
+
+    # token_auth.py declares it; its own suite reads the constant to build a request, which
+    # is the one other place the string may appear - and it appears there as an import, not
+    # as a literal, so this list is the assertion.
+    assert spelled_in == ["app/token_auth.py"], (
+        f"the auth header name is written in more than one place: {spelled_in}. It is "
+        f"AUTH_HEADER_NAME in app/token_auth.py and nowhere else - a second spelling is a "
+        f"401 that no test and no synth can see."
+    )
+
+
+def test_the_streaming_app_takes_its_caller_from_the_verified_token_and_never_from_the_body():
+    """THE CLAIM THAT MAKES THE PARTITION KEY A SECURITY BOUNDARY. Every DynamoDB key in
+    this app is built from the Cognito `sub` (docs/accounts-and-storage.md), and that only
+    means anything while `sub` is something the server derived rather than something the
+    caller said. A user id read off a request body would be the same value with nothing
+    behind it, and the convenience and the vulnerability would be the same line of code.
+
+    THREE THINGS ARE PINNED, all by reading app/stream_probe.py off disk - fastapi is in
+    that function's own layer and in no environment this suite builds, so an import here
+    raises and the AST is what is left.
+
+    1. The route's user_id comes from identity_from's result and from nothing else.
+    2. identity_from reads the token through app/token_auth.py's verifier, and touches no
+       request body.
+    3. The only key the route pulls out of the parsed body by hand is the query. Everything
+       else a client sends goes through ChatRequest, which drops unknown keys - the same
+       screen POST /chat's body goes through, and the reason there is no `history` field
+       and no user id to fill in."""
+    import ast
+
+    tree = ast.parse(_stream_probe_source())
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    chat = functions["chat"]
+
+    # 1. THE ROUTE. `user_id=` is passed exactly once out of the route, and its value is an
+    # attribute of the object identity_from returned. (The other `user_id=` in the module
+    # is _turn_frames handing its own parameter down to run_turn.)
+    user_id_args = [
+        keyword
+        for node in ast.walk(chat)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "user_id"
+    ]
+    assert len(user_id_args) == 1, [ast.dump(k) for k in user_id_args]
+    value = user_id_args[0].value
+    assert isinstance(value, ast.Attribute) and value.attr == "sub", ast.dump(value)
+    assert isinstance(value.value, ast.Name), ast.dump(value)
+    identity_name = value.value.id
+
+    bound_from = [
+        node.value
+        for node in ast.walk(chat)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == identity_name for t in node.targets)
+    ]
+    assert len(bound_from) == 1, [ast.dump(n) for n in bound_from]
+    assert (
+        isinstance(bound_from[0], ast.Call)
+        and isinstance(bound_from[0].func, ast.Name)
+        and bound_from[0].func.id == "identity_from"
+    ), ast.dump(bound_from[0])
+
+    # 2. THE VERIFIER, and no body. identity_from calls token_auth's verifier() and reads
+    # request.headers; a reference to the body anywhere inside it would be a second
+    # identity source on a transport that must have exactly one.
+    identity_from = functions["identity_from"]
+    called = {
+        node.func.id
+        for node in ast.walk(identity_from)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "verifier" in called, sorted(called)
+    attributes = {
+        node.attr for node in ast.walk(identity_from) if isinstance(node, ast.Attribute)
+    }
+    assert "headers" in attributes, sorted(attributes)
+    assert not {"json", "body", "form", "query_params"} & attributes, sorted(attributes)
+
+    # And the names it imports are token_auth's, so the checks are that module's rather
+    # than a second copy inside the transport.
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "token_auth"
+        for alias in node.names
+    }
+    assert {"verifier", "Unauthorized"} <= imported, sorted(imported)
+
+    # 3. THE BODY. Exactly one key is read out of it by hand; everything else goes through
+    # ChatRequest and is dropped if it is not a field.
+    body_keys = {
+        node.args[0].value
+        for node in ast.walk(chat)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "body"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+    }
+    assert body_keys == {"query"}, (
+        f"the streaming chat route reads {sorted(body_keys)} out of the request body by "
+        f"hand. Only the query belongs there - anything else a client sends must go "
+        f"through ChatRequest, and an id read off the body is not an identity."
+    )
+
+
 def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
     """THE POINT OF LANDING IT ALONE. This commit proves a mechanism; it moves no logic. If
     the probe is reachable through the HTTP API or the socket, or if the browser can find
@@ -3458,9 +3825,20 @@ def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
 
     Its environment is the assertion with teeth, and it is derived rather than listed: the
     probe carries the CHAT function's variables (app/settings.py has no defaults for the
-    identity set, so anything less would not load) plus exactly the three the adapter
-    needs. A STREAM_CALLBACK_URL or a STREAM_WORKER_FUNCTION_NAME appearing in here would
-    mean the probe had been wired into the socket's plumbing, which is not this feature."""
+    identity set, so anything less would not load) plus the adapter's own and the pool it
+    verifies tokens against. A STREAM_CALLBACK_URL or a STREAM_WORKER_FUNCTION_NAME
+    appearing in here would mean the probe had been wired into the socket's plumbing,
+    which is not this feature.
+
+    NARROWED WHEN THE APP LEARNED WHO ITS CALLER IS, and narrowed rather than deleted. It
+    used to read "the chat function's variables plus exactly the three the adapter needs",
+    which was right while the route answered 401 to everybody and needed to know nothing
+    about the pool. Verifying a Cognito token in process needs three more - which pool,
+    which region, which app clients - and there is no version of this feature that does
+    not. What the test is FOR is unchanged and is now stated as its own assertion below:
+    the socket's variables must never appear here. Those three are named explicitly rather
+    than left to a wildcard, so a fourth arriving still fails.
+    """
     template = _template()
 
     chat_env = set(
@@ -3469,16 +3847,25 @@ def test_the_stream_probe_is_wired_to_nothing_else_in_the_stack():
         ]["Variables"]
     )
     # EXACTLY the chat function's variables - the exemption list included, now that this
-    # function applies the daily cap too - plus the three the adapter needs and nothing
-    # else. The socket's own variables (STREAM_CALLBACK_URL, STREAM_WORKER_FUNCTION_NAME,
-    # STREAM_DELTA_*) are the ones this must never grow: they would mean the streaming app
-    # had been wired into the plumbing it exists to replace.
+    # function applies the daily cap too - plus the three the adapter needs, plus the three
+    # app/token_auth.py verifies against, and nothing else.
     expected = chat_env | {
         "AWS_LAMBDA_EXEC_WRAPPER",
         "AWS_LWA_INVOKE_MODE",
         "PORT",
+        "COGNITO_REGION",
+        "USER_POOL_ID",
+        "ALLOWED_CLIENT_IDS_PARAMETER",
     }
-    assert set(_stream_probe(template)["Environment"]["Variables"]) == expected
+    probe_env = set(_stream_probe(template)["Environment"]["Variables"])
+    assert probe_env == expected
+
+    # THE PROPERTY THIS TEST EXISTS FOR, said out loud now that the equality above is no
+    # longer only about the adapter. The socket's own variables are the ones that would
+    # mean the streaming app had been wired into the plumbing it exists to replace.
+    assert not [name for name in probe_env if name.startswith("STREAM_")], sorted(
+        probe_env
+    )
 
     # No API Gateway integration on either API points at it.
     for logical_id, integration in template.find_resources(

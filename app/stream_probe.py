@@ -40,6 +40,18 @@ identical ChatResponse the API Gateway handler would have returned. That propert
 structural rather than tested-for, and the acceptance check is still to send one question
 down both paths and diff the payloads.
 
+WHO THE CALLER IS, AND WHY IT IS DECIDED IN HERE. Every other transport in this repo is
+handed an identity by something in front of it - API Gateway's native JWT authorizer for
+POST /chat, app/ws_authorizer.py at the socket's handshake. A Lambda Function URL takes
+neither, and behind IAM auth with origin access control the request context carries the
+EDGE's principal rather than a student's claims. So POST /api/chat verifies the token
+itself: app/token_auth.py checks a Cognito ACCESS token's signature against the pool's
+JWKS, its issuer, its expiry, its `token_use` and its `client_id` against the two app
+clients the stack configures, and the `sub` that comes out is the only identity on this
+path. The token rides its own request header because origin access control's SigV4
+signature owns `Authorization`. Anything that does not present a verifiable token is the
+same 401 this route has always answered.
+
 THE MODULE NAME IS NOW A LIE and is left alone deliberately. run.sh names `stream_probe:app`
 and the stack's bundle names the file; renaming is a rename commit, and deleting or renaming
 anything is a later step and the captain's call.
@@ -83,6 +95,7 @@ from history import ConversationStore
 from models import ChatRequest
 from preview import PreviewSink
 from settings import SettingsError, load_settings
+from token_auth import Identity, Unauthorized, verifier, verifier_error
 from turn import TurnRefused, run_turn
 
 logger = logging.getLogger()
@@ -295,44 +308,50 @@ def store():
     return _STORE
 
 
-def identity_from(request: Request):
-    """The caller's `sub` and `client_id`, out of the Lambda request context. Or (None, None).
+def identity_from(request: Request) -> Identity | None:
+    """The caller, out of the Cognito access token on their own request header. Or None.
 
-    THE HEADER IS THE ADAPTER'S, NOT THE CLIENT'S, and that is the whole reason this is
-    allowed to be an identity at all. The Lambda Web Adapter serialises the invocation's
-    request context into `x-amzn-request-context` with an `insert`, which REPLACES whatever
-    the caller sent (aws-lambda-web-adapter src/lib.rs, and its changelog entry "Override
-    user-set x-amzn-{lambda,request}-context headers to prevent spoofing"). So a browser
-    cannot put a `sub` in here any more than it can put one in an API Gateway event.
+    THIS ENDPOINT HAS NO AUTHORIZER IN FRONT OF IT, and that is why the verification is
+    here rather than a claim read off an event. `POST /chat` is gated by API Gateway's
+    native JWT authorizer and the socket by app/ws_authorizer.py at the handshake; a Lambda
+    Function URL takes neither. Behind IAM auth and origin access control the request
+    context carries `authorizer.iam` - the EDGE's principal, a CloudFront service principal
+    shared by every AWS customer - and no `jwt` block at all, so there has never been
+    anything on this transport that could identify a student. app/token_auth.py is that
+    thing: signature against the pool's JWKS, issuer, expiry, `token_use` and `client_id`
+    against the two app clients the stack configures.
 
-    IT READS THE SAME CLAIMS APP/HANDLER.PY READS, from the same place: an HTTP API payload
-    2.0 request context puts them at `authorizer.jwt.claims`, and that is what arrives here
-    when this function sits behind the JWT authorizer POST /chat already uses.
+    WHAT THIS USED TO READ, and why it does not any more. It read `sub` out of
+    `x-amzn-request-context`, the header the Lambda Web Adapter fills in with the
+    invocation's request context. That was a sound thing to trust - the adapter INSERTS it,
+    replacing whatever the caller sent - and it was also always empty here, for the reason
+    above, so the route answered 401 to everybody. Keeping it beside the verifier would
+    leave two ways to become a `sub` on one transport, one of which is only reachable
+    behind a front door nobody has built; a second identity source is exactly the thing
+    that is right until the day it is not.
 
-    IT FAILS CLOSED TODAY, ON PURPOSE. Behind the IAM-authenticated Function URL this stack
-    creates, the request context carries `authorizer.iam` - the signing principal - and no
-    `jwt` block at all, so this returns None and the route answers 401 to everybody. That is
-    the honest state of things: WHICH front door this endpoint gets, and what authenticates
-    a browser to it, is undecided and out of scope. Inventing a header to trust in the
-    meantime would be deciding it by accident, in the direction nobody would choose.
+    NOTHING ELSE IS AN IDENTITY. Not a body field, not a query parameter, not a header
+    asserting a user id - there is no such header and no flag that makes one work. A
+    caller who does not present a verifiable token is refused, which is the same answer
+    `POST /chat` gives for the same reason: every DynamoDB partition key is built from this
+    claim, so a request without one has nowhere to put the turn and nobody to attribute it
+    to.
     """
-    raw = request.headers.get("x-amzn-request-context")
-    if not raw:
-        return None, None
+    resolved = verifier()
+    if resolved is None:
+        # A half-configured deploy, not a caller's mistake - but the answer is the same 401,
+        # because a function that does not know which pool to trust must not decide who
+        # anybody is. Logged as ERROR because it names a variable somebody has to fix.
+        logger.error("The streaming chat route cannot verify tokens: %s", verifier_error())
+        return None
+
     try:
-        context = json.loads(raw)
-    except ValueError:
-        logger.warning("x-amzn-request-context was not JSON; refusing the request")
-        return None, None
-    if not isinstance(context, dict):
-        return None, None
-    claims = (((context.get("authorizer") or {}).get("jwt") or {}).get("claims")) or {}
-
-    def claim(name):
-        value = claims.get(name)
-        return value.strip() if isinstance(value, str) and value.strip() else None
-
-    return claim("sub"), claim("client_id")
+        return resolved.identity_from_headers(request.headers)
+    except Unauthorized as refused:
+        # The exception's OWN message and nothing else: not the chain, not the header, not
+        # any part of the token. See app/token_auth.py on what may reach a log line.
+        logger.warning("Refusing a streamed chat request: %s", refused)
+        return None
 
 
 class _ResponseSink(PreviewSink):
@@ -500,16 +519,19 @@ async def chat(request: Request):
         logger.exception("Invalid streaming chat request body")
         return JSONResponse({"error": "Invalid request body."}, status_code=400)
 
-    # Identity, and failing closed. Every partition key is built from this claim, so a
-    # request without one has nowhere to put the turn and nobody to attribute it to - the
-    # same 401 POST /chat gives, for the same reason.
-    user_id, client_id = identity_from(request)
-    if user_id is None:
-        logger.error("A streamed chat request carried no JWT sub claim; refusing it")
+    # Identity, and failing closed. Every partition key is built from the `sub` claim, so a
+    # request without a verifiable token has nowhere to put the turn and nobody to
+    # attribute it to - the same 401 POST /chat gives, for the same reason. One status for
+    # every way a token can fail to verify, and no detail on the wire: identity_from has
+    # already logged which check said no.
+    identity = identity_from(request)
+    if identity is None:
         return JSONResponse({"error": "Unauthenticated."}, status_code=401)
 
     return StreamingResponse(
-        _turn_frames(chat_request, user_id=user_id, client_id=client_id),
+        _turn_frames(
+            chat_request, user_id=identity.sub, client_id=identity.client_id
+        ),
         media_type="application/x-ndjson",
     )
 

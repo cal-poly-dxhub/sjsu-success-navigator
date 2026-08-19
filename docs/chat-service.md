@@ -756,10 +756,11 @@ hand, scoped by `SourceArn` to its own distribution - `cloudfront.amazonaws.com`
 principal every AWS customer shares, so an unconditioned grant is one any distribution in any
 account could use.
 
-**Nothing about auth changed.** `POST /api/chat` answers 401 to every caller, through the edge
-exactly as directly: the Function URL's request context carries `authorizer.iam`, not a `jwt`
-block, and `identity_from` reads only the latter. The edge is a transport in front of an
-endpoint that still refuses everyone, which is the honest state until a front door is chosen.
+**Auth is decided in the app, because there is nowhere else to put it.** `POST /api/chat`
+used to answer 401 to every caller: behind IAM auth with origin access control the Function
+URL's request context carries `authorizer.iam` - the edge's principal - and no `jwt` block at
+all, and a Function URL accepts no authorizer. So the app verifies the token itself
+(`app/token_auth.py`), and the section below is what that costs and what it buys.
 
 **Why a WebSocket and not response streaming.** Two constraints meet and leave one door. API
 Gateway response streaming is REST-API only and this is an HTTP API; Lambda response streaming
@@ -877,6 +878,59 @@ collects are the ones `$disconnect` failed to remove. `$disconnect` is best effo
 because API Gateway does not guarantee it fires at all. `expiresAt` is wall clock rather than
 `time.monotonic()`, because TTL is an absolute epoch second DynamoDB compares against its own
 clock.
+
+### Verifying the token in the streaming app
+
+`app/token_auth.py`. The third implementation of the same decision, and the reason there are
+three is that each transport is handed its identity by something different: `POST /chat` by
+API Gateway's native JWT authorizer, the socket by `app/ws_authorizer.py` at the handshake,
+and the streaming app by nothing at all.
+
+**The token rides its own header, and that is forced rather than preferred.** Origin access
+control signs each origin request with SigV4 and the signature lives in `Authorization`, so a
+token in that header is a token CloudFront overwrites on its way past. The `/api/*` behaviour
+forwards every other viewer header (`AllViewerExceptHostHeader`), so a header of the app's own
+arrives intact. `AUTH_HEADER_NAME` is the only place its name is written - the treatment
+`EDGE_PATH_PREFIX` gets, for the same reason, and an infra test scans `app/` and `infra/` to
+keep it that way. The two credentials are one per layer and neither substitutes for the other:
+SigV4 says the request may reach the function, the token says who it is for.
+
+**The checks are the `$connect` authorizer's, for the same Cognito reasons.** Signature
+against the pool's JWKS, issuer, expiry, `token_use`, and `client_id` against an allowlist -
+`verify_aud` off, because a Cognito access token carries no `aud`; `token_use` checked,
+because an ID token does carry one and would otherwise sail past a `client_id` check that
+never ran. RS256 is pinned rather than read off the token, which is what refuses `alg: none`
+and the HS256-signed-with-the-public-key confusion. It is a separate module rather than an
+import of `ws_authorizer.py` because that function's bundle is exactly one file and a test
+pins it that way; what must not drift is the decision, and both read the same pool and the
+same two clients out of the same stack.
+
+**Two clients pass.** The browser's and the eval harness's machine client both send turns
+here, so pinning a single audience would serve every student and 401 every eval run.
+
+**The allowlist arrives as a Parameter Store name, and that is a dependency cycle rather
+than a preference.** The obvious spelling - both client ids in the function's environment,
+the way the `$connect` authorizer gets them - is a cycle CDK refuses to synth, and a real
+one: the browser's app client carries the CloudFront domain as its OAuth callback, the
+distribution serves this function's URL on `/api/*`, the URL belongs to the function, and the
+function would name the client. Three of those four edges are load-bearing and none is ours
+to remove. The ids are the only value in the loop read by *code* rather than by
+CloudFormation, so they are the only one that can be deferred past deploy: the stack writes
+them into a parameter named after itself, the function carries the name, and a name assembled
+from pseudo-parameters references nothing. The IAM grant is written by hand for the same
+reason - `parameter.grant_read(fn)` would put the cycle back through the policy.
+
+**Nothing is fetched per request.** The JWKS client is built once per container and caches
+signing keys by `kid`; the allowlist is read once on the same cold start. A *failed*
+parameter read is deliberately not cached, because a warm container lives for hours and one
+throttled call would otherwise 401 every student until it recycled.
+
+**Identity is `sub` and nothing else,** and no route reads a caller-supplied id. The body goes
+through the same `ChatRequest` `POST /chat` validates, which drops unknown keys; the only key
+the route pulls out by hand is the query. There is no bypass flag and no header that asserts
+a `sub` without a token behind it, so every way a token can fail to verify is the same 401
+with no detail on the wire - a 401 that distinguished "expired" from "not one of our clients"
+would be an oracle, and a browser does the same thing either way.
 
 ### The $connect authorizer
 
@@ -1233,3 +1287,9 @@ Some assertions are load-bearing in ways the test name cannot carry:
   time would notice one missing.
 - **The safety suite's roster test** is what makes "a key the model is taught always resolves"
   structural rather than aspirational.
+- **`test_token_auth.py` verifies against real signatures,** which is why `pyjwt[crypto]` is in
+  `requirements-dev.txt` and not only in the two layers that ship it. The suite generates an RSA
+  keypair, mints Cognito-shaped tokens with it and hands the verifier a JWKS client returning the
+  matching public key; a stubbed library would pass every one of those tests while verifying
+  nothing. It is also the one place in `app/tests/` that reaches a module the FastAPI app
+  imports - `token_auth.py` needs no fastapi, which is what keeps it importable here at all.

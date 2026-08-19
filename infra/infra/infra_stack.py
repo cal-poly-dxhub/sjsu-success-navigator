@@ -61,6 +61,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_s3_deployment as s3deploy,
     aws_s3vectors as s3vectors,
+    aws_ssm as ssm,
     triggers,
 )
 from constructs import Construct
@@ -2463,9 +2464,17 @@ class NavigatorStack(Stack):
         # NOTHING ABOVE CHANGES, WHICH IS THE POINT OF THIS BEING A SEPARATE FUNCTION. The
         # socket keeps its three functions, its authorizer, its connection table, its grants
         # and its config.json key, and stays the live path the frontend opens. Removing any
-        # of it is a later step and not this one: until a front door is chosen, this
-        # endpoint answers 401 to everybody (see app/stream_probe.py, identity_from), so it
-        # cannot be what a student reaches.
+        # of it is a later step and not this one.
+        #
+        # IT KNOWS WHO ITS CALLER IS NOW. It used to answer 401 to everybody, because a
+        # Function URL behind IAM auth carries the SIGNER's identity - the edge's - and no
+        # student's claims, and there is no authorizer to attach to one. So the app verifies
+        # the Cognito access token itself (app/token_auth.py), off a request header of its
+        # own because origin access control's SigV4 signature owns `Authorization`. The
+        # three variables that decide which tokens it accepts are in the environment below.
+        # Anything without a verifiable token is still the 401 it always was, and the
+        # frontend still opens the socket - what changed is that this endpoint can now be
+        # driven by a real token, not that anything was pointed at it.
         #
         # ZIP PLUS THE LAYER, NEVER A CONTAINER IMAGE, and that is where the two upstream
         # examples get spliced. fastapi-backend-only-response-streaming is the one that
@@ -2553,6 +2562,65 @@ class NavigatorStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # THE CLIENT ALLOWLIST, AND WHY IT IS A PARAMETER RATHER THAN A VARIABLE.
+        #
+        # app/token_auth.py has to know which app clients' tokens count, and the obvious
+        # spelling - `Fn.join` of the two client ids into the function's environment, the
+        # way the $connect authorizer gets its list - IS A DEPENDENCY CYCLE. CDK refuses to
+        # synth it, and it is a real one rather than a construct's opinion:
+        #
+        #     ChatWebClient -> SiteDistribution    (its deployed callback URL is the
+        #                                           CloudFront domain, appended at the end
+        #                                           of section 6)
+        #     SiteDistribution -> StreamProbeFunctionUrl   (the /api/* behaviour's origin)
+        #     StreamProbeFunctionUrl -> StreamProbeFunction
+        #     StreamProbeFunction -> ChatWebClient          (the id, if it were here)
+        #
+        # Three of those four edges are load-bearing and none is ours to remove: Cognito
+        # only redirects to a REGISTERED callback URL, the site and the stream share one
+        # distribution so there is no CORS story, and a Function URL is an attribute of its
+        # function. The EVAL client alone would not cycle - it has no callback URLs, which
+        # is why RATE_LIMIT_EXEMPT_CLIENT_IDS below can name it directly - but an allowlist
+        # of one is exactly the narrowing that 401s every student.
+        #
+        # So the fourth edge is the one that goes. The value the function needs is the only
+        # one in that loop that is read by CODE rather than by CloudFormation, which means
+        # it is the only one that can be deferred past deploy: the parameter carries the
+        # ids, the function carries the parameter's NAME, and a name assembled from
+        # pseudo-parameters is a string rather than a reference. Nothing in the template
+        # points from the function at a client, and the cycle is gone.
+        #
+        # THE NAME IS THE STACK'S OWN, so two installs in one account do not share a
+        # parameter and neither has to be told about the other.
+        streaming_client_allowlist_name = (
+            f"/{self.stack_name}/streaming/allowed-client-ids"
+        )
+        ssm.StringParameter(
+            self,
+            "StreamingAllowedClientIds",
+            parameter_name=streaming_client_allowlist_name,
+            # BOTH CLIENTS, deliberately, and this is the value that would be easy to get
+            # wrong by narrowing. The browser client sends students' turns and the machine
+            # client sends the eval harness's, and both arrive at POST /api/chat; pinning a
+            # single audience would pass the students and 401 every eval run. It is the
+            # same pair the HTTP API's authorizer carries as its audience and the same pair
+            # the $connect authorizer verifies against - one pool, one answer to "whose
+            # tokens?".
+            string_value=Fn.join(
+                ",",
+                [
+                    web_client.user_pool_client_id,
+                    eval_client.user_pool_client_id,
+                ],
+            ),
+            description=(
+                "App clients whose Cognito access tokens the streaming chat app accepts. "
+                "Read once per container by app/token_auth.py; it is a parameter rather "
+                "than a Lambda environment variable because the direct reference is a "
+                "CloudFormation dependency cycle through the site distribution."
+            ),
+        )
+
         stream_probe_lambda = _lambda.Function(
             self,
             "StreamProbeFunction",
@@ -2578,9 +2646,11 @@ class NavigatorStack(Stack):
             # test_the_stream_probe_ships_every_module_it_imports, which walks
             # stream_probe.py's import graph rather than trusting this list to be re-read.
             #
-            # It is the chat function's list plus three: run.sh (the adapter's entry point),
-            # stream_probe.py (the app) and preview.py (the sink's bookkeeping, which the
-            # buffered handler has no use for). handler.py is deliberately NOT here: it is
+            # It is the chat function's list plus four: run.sh (the adapter's entry point),
+            # stream_probe.py (the app), preview.py (the sink's bookkeeping, which the
+            # buffered handler has no use for) and token_auth.py (the token verifier, which
+            # the buffered handler has no use for either - API Gateway's own authorizer
+            # does that job in front of it). handler.py is deliberately NOT here: it is
             # the API Gateway transport, and this function is a different one.
             code=_lambda.Code.from_asset(
                 str(_APP_DIR),
@@ -2590,6 +2660,9 @@ class NavigatorStack(Stack):
                     "!run.sh",
                     "!stream_probe.py",
                     "!preview.py",
+                    # The token verifier. This function has no authorizer in front of it,
+                    # so the module that decides who a caller is rides in its bundle.
+                    "!token_auth.py",
                     "!turn.py",
                     "!settings.py",
                     "!models.py",
@@ -2665,6 +2738,27 @@ class NavigatorStack(Stack):
                 # Read twice: by uvicorn in run.sh, and by the adapter as the traffic port
                 # it forwards to and readiness-checks.
                 "PORT": str(_LWA_PROBE_PORT),
+                # WHICH POOL THIS FUNCTION TRUSTS, and the reason it needs telling at all:
+                # a Lambda Function URL accepts no authorizer, so there is nothing in front
+                # of this endpoint that could validate a student's token. app/token_auth.py
+                # does it in process - signature against this pool's JWKS, issuer, expiry,
+                # `token_use` and `client_id` - and these are the three values that decide
+                # what it accepts. THE SAME THREE NAMES THE $connect AUTHORIZER READS, from
+                # the same pool and the same two clients, because two doors into one pool
+                # with two different answers to "whose tokens?" is how one of them ends up
+                # wrong.
+                #
+                # NOT HARDCODED, and not a config.yaml key either: the pool and both clients
+                # are created by this stack a few hundred lines up, so these are references
+                # CloudFormation resolves at deploy time. A fresh install trusts its own
+                # pool without anybody editing a file.
+                "COGNITO_REGION": self.region,
+                "USER_POOL_ID": auth_pool.user_pool_id,
+                # THE CLIENT ALLOWLIST ARRIVES BY NAME, NOT BY VALUE, and that is the one
+                # thing in this block that looks like indirection for its own sake and is
+                # not. See the parameter above: putting the web client's id in here is a
+                # CloudFormation dependency cycle, and this is the value that breaks it.
+                "ALLOWED_CLIENT_IDS_PARAMETER": streaming_client_allowlist_name,
             },
         )
         # THE SAME EXEMPTION LIST THE OTHER TWO TRANSPORTS CARRY, and by reference to the
@@ -2704,6 +2798,27 @@ class NavigatorStack(Stack):
         for statement in _chat_turn_statements:
             stream_probe_lambda.add_to_role_policy(statement)
 
+        # AND ONE GRANT THAT IS NOT THE TURN'S: reading the client allowlist above. It is
+        # the door rather than the turn, which is why it is written here on its own rather
+        # than folded into `_chat_turn_statements` - the worker and the chat function run
+        # the same turn and must not grow this.
+        #
+        # THE ARN IS ASSEMBLED BY HAND rather than taken from the parameter construct, and
+        # that is the whole point of the exercise above: `parameter.grant_read(fn)` would
+        # put a Ref to the parameter in this policy, the parameter references the web
+        # client, and the cycle would come straight back through the policy instead of
+        # through the environment. Every piece of this ARN is a pseudo-parameter or the
+        # name string itself, so it references no resource.
+        stream_probe_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:{self.partition}:ssm:{self.region}:{self.account}"
+                    f":parameter{streaming_client_allowlist_name}"
+                ],
+            )
+        )
+
         # THE OTHER HALF OF THE STREAMING SWITCH. InvokeMode is a property of the URL, not
         # of the function, and Lambda buffers the whole body without it no matter what the
         # adapter is configured to do.
@@ -2718,11 +2833,15 @@ class NavigatorStack(Stack):
         # all, and test_the_stream_probe_url_is_iam_signed_and_open_to_nobody_but_the_edge
         # pins that.
         #
-        # WHAT AUTHENTICATES A BROWSER TO THIS IS STILL UNDECIDED and still out of scope.
-        # A student's browser holds a Cognito token, not SigV4 credentials, so nothing here
-        # turns this into a front door: POST /api/chat answers 401 to every caller, through
-        # the edge exactly as directly (app/stream_probe.py, identity_from), and this commit
-        # changes neither side of that.
+        # WHAT AUTHENTICATES A CALLER IS NOW TWO THINGS, ONE PER LAYER, and keeping them
+        # apart is the whole design. SigV4 says the REQUEST may reach this function - the
+        # edge holds those credentials, and a student's browser never does. The Cognito
+        # access token on the app's own header says WHO the request is for, and the app
+        # verifies it in process (app/token_auth.py) because a Function URL takes no
+        # authorizer. Neither substitutes for the other: a signed request with no token is a
+        # 401, and a token with no signature never arrives. Through the edge exactly as
+        # directly - CloudFront forwards every viewer header except Host, so the token
+        # survives the hop and the signature is applied over it.
         #
         # WHAT DID CHANGE is that section 6 now puts this URL behind the site's CloudFront
         # distribution, on the /api/* behaviour, with origin access control. THIS URL STAYS
@@ -2745,10 +2864,12 @@ class NavigatorStack(Stack):
                 "compare time_starttransfer against time_total. POST /api/chat streams a "
                 "full turn as NDJSON frames; GET /api/stream and GET /api/model are the "
                 "transport and Bedrock probes. Every request must be SigV4-signed for "
-                "service 'lambda', and POST /api/chat additionally needs a validated JWT "
-                "sub in the request context - which an IAM Function URL does not carry, so "
-                "it answers 401 until a front door is chosen. The only other thing in this "
-                "stack that references it is the site distribution's /api/* behaviour."
+                "service 'lambda', and POST /api/chat additionally needs a Cognito ACCESS "
+                "token from this pool on the app's own auth header - the one name in "
+                "app/token_auth.py's AUTH_HEADER_NAME, which is the only place it is "
+                "spelled - and the app verifies it in process; without one it answers 401. "
+                "The only other thing in this stack that references it is the site "
+                "distribution's /api/* behaviour."
             ),
         )
 
