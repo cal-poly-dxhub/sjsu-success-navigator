@@ -37,10 +37,11 @@ scraper:
   # Single DAILY schedule, no tiers (decision; cost-checked in docs/build-plan.md).
   # 11:30 UTC is ~3:30am Pacific, a low-traffic window.
   schedule_cron: "cron(30 11 * * ? *)"
-  # The curated crawl list. Stays at the repo root (decision); columns
-  # url,section,title,static_html,body_text_chars. `section` must reach the metadata
-  # sidecars or cards.py deprioritization degrades silently.
-  url_list_file: url-list.csv
+  # The curated crawl list, BY FILENAME INSIDE the repo-root data/ directory (decision - it
+  # is content, and it sits beside every other SJSU fact this repo states; see
+  # data/README.md). Columns url,section,title,static_html,body_text_chars. `section` must
+  # reach the metadata sidecars or cards.py deprioritization degrades silently.
+  url_list_file: urls.csv
   timeout_seconds: 20
   user_agent: "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
 
@@ -137,11 +138,13 @@ cards:
 # config.json carries no recipient - which is what keeps the component out of the browser
 # rather than rendering an offer that goes nowhere.
 escalation:
-  # Where the draft is addressed. SJSU Cares is the destination the app already offers as
-  # "Talk to a person" (frontend/src/lib/sjsuCares.ts, verified 2026-08-06), so it is the
-  # same human handoff by another route. Change this line to point the drafts elsewhere;
-  # blank it to take the whole feature off.
-  recipient: sjsucares@sjsu.edu
+  # Where the draft is addressed, AS THE ID OF A ROW in data/contacts.csv rather than an
+  # address typed here. SJSU Cares is the destination the app already offers as "Talk to a
+  # person", so it is the same human handoff by another route - and that is exactly why the
+  # address is not written out twice: the mailbox this names is the same one the SJSU Cares
+  # panel emails, and it has one row (kind `escalation`). Point this at a different row to
+  # send the drafts elsewhere; blank it to take the whole feature off.
+  contact: sjsu-cares
   # The subject line, fixed here rather than model-authored. A subject is the one part of
   # the message staff triage on before reading it, so it says the same thing every time -
   # and a model-written subject is a second place a hallucinated specific could land.

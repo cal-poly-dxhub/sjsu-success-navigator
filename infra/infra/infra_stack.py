@@ -39,6 +39,7 @@ from aws_cdk import (
     BundlingOptions,
     CfnOutput,
     DockerImage,
+    DockerVolume,
     Duration,
     Fn,
     ILocalBundling,
@@ -101,6 +102,17 @@ _APP_DIR = _REPO_ROOT / "app"
 # The Astro app. Built in a container at synth (see _astro_bundling); dist/ is gitignored
 # and produced by the build, never committed.
 _FRONTEND_DIR = _REPO_ROOT / "frontend"
+# EVERY SJSU FACT THE APP STATES, as CSV a non-engineer can open in Excel: the crawl list, the
+# campus places and their buildings, the safety/cares/escalation contacts, and the campus
+# shorthand glossary. It sits OUTSIDE app/ and outside frontend/ on purpose - both read it, and
+# a fact spelled once in Python and again in TypeScript has no test that can see both copies.
+#
+# It therefore reaches the deployment TWICE, by two different routes, because `Code.from_asset`
+# and `Source.asset` each take exactly one directory: as the Lambda layer built below (extracted
+# to /opt, where app/campus_data.py and scraper/lambda_function.py look), and as a read-only
+# mount into the Astro build container (see _astro_bundling). data/README.md is the file
+# somebody editing a phone number is meant to open.
+_DATA_DIR = _REPO_ROOT / "data"
 
 # The Node image the site is built in. Pinned to a MAJOR version rather than `latest` so a
 # synth six months from now builds the same way, and matched to the Node this repo develops
@@ -159,6 +171,24 @@ def _astro_bundling() -> BundlingOptions:
     """
     return BundlingOptions(
         image=DockerImage.from_registry(_NODE_BUILD_IMAGE),
+        # THE REPO-ROOT data/ DIRECTORY, MOUNTED READ-ONLY. The site's facts - the SJSU Cares
+        # address, its phone number, its mailbox - are CSV rows there, and the frontend build
+        # compiles them into the bundle (frontend/scripts/generate-campus-data.mjs). They
+        # cannot come in through /asset-input: bundling bind-mounts ONE directory, this
+        # asset's is frontend/, and data/ is deliberately outside it because Python reads the
+        # same rows. So it arrives as a second mount.
+        #
+        # READ-ONLY is not decoration. CDK mounts /asset-input read-WRITE and that has already
+        # cost this repo a broken local node_modules (see the copy below); data/ is the one
+        # copy of these facts, so nothing in a container gets to write to it.
+        #
+        # The asset hash is unaffected by this mount and does not need to be: bundling hashes
+        # the OUTPUT, so a changed CSV changes the built site and therefore the hash.
+        volumes=[
+            DockerVolume(
+                host_path=str(_DATA_DIR), container_path="/asset-data"
+            )
+        ],
         # PINNED, like the Lambda layers: without it the image resolves to the host's
         # architecture, so an arm64 Mac and an x64 CI runner build the site with different
         # native toolchains. The committed lockfile carries every platform's rolldown
@@ -190,7 +220,13 @@ def _astro_bundling() -> BundlingOptions:
             # and the lockfile.
             "mkdir -p /tmp/build && cd /asset-input && "
             "cp -R package.json package-lock.json astro.config.mjs tsconfig.json "
-            "src public /tmp/build/ && "
+            "scripts src public /tmp/build/ && "
+            # THE FACTS, from the READ-ONLY MOUNT below, into the place the generator looks
+            # for them: `npm run build` runs frontend/scripts/generate-campus-data.mjs first,
+            # and that script resolves data/ as a sibling of the frontend directory - which is
+            # true in a checkout, in CI, and here. Copied rather than read from the mount so
+            # the build depends on nothing outside /tmp/build once it starts.
+            "cp -R /asset-data /tmp/data && "
             # DROP THE DEVELOPER'S LOCAL config.json. To run `astro dev` against a deployed
             # API you hand-write frontend/public/config.json with the four runtime keys, and
             # public/ ships verbatim - so without this line that file is built into dist/ and
@@ -544,41 +580,65 @@ class NavigatorStack(Stack):
             ),
         )
 
-        # THE CRAWL LIST AS A SECOND LAYER, and the one place this stack diverges from gav.
+        # THE FACTS AS A LAYER, and the one place this stack diverges from gav.
         #
         # Gav ships its 19 seed URLs to the Lambda inside the SCRAPER_TIERS environment variable.
         # That does not survive the scale-up: Lambda caps all environment variables at 4 KB in
         # AGGREGATE (a hard limit, not a soft default, and not raisable by a quota request), and
-        # this crawl list is 19 KB as compact JSON of url/section pairs - 2.9 KB even gzipped and
-        # base64'd, which is most of the budget for one variable and leaves the list unreadable.
+        # the crawl list alone is 19 KB as compact JSON of url/section pairs - 2.9 KB even gzipped
+        # and base64'd, which is most of the budget for one variable and leaves the list
+        # unreadable.
         #
-        # So the file travels as content and only its FILENAME goes in the environment. A layer
-        # rather than the function bundle because the list lives at the REPO ROOT (a decision: it
-        # is content, not infra) while the function's asset is scraper/ - from_asset takes one
-        # directory, and pointing it at the root would bundle the entire repo.
+        # So the files travel as content and only a FILENAME goes in the environment. A layer
+        # rather than a function bundle because data/ lives at the REPO ROOT (a decision: it is
+        # content, and BOTH languages read it) while each function's asset is its own source
+        # directory - from_asset takes one directory, and pointing it at the root would bundle
+        # the entire repo.
         #
-        # Both the asset include and the URL_LIST_FILE env below read the SAME config value, so the
-        # file the layer carries and the file the handler opens cannot drift apart.
+        # ONE LAYER FOR THE WHOLE DIRECTORY, carried by the scraper AND by the two functions that
+        # run the agent loop: the crawl list is what the scraper opens, and places.csv,
+        # buildings.csv, contacts.csv and abbreviations.csv are what app/campus_data.py opens at
+        # import to build the location cards, the crisis panel and the prompt's rosters. Two
+        # layers would be two things to remember to attach.
+        #
+        # THE ASSET ROOT IS data/ ITSELF, so its contents extract to /opt directly and
+        # URL_LIST_FILE stays a bare filename, exactly as before the move. Both the asset include
+        # and the URL_LIST_FILE env below read the SAME config value, so the file the layer
+        # carries and the file the handler opens cannot drift apart.
         url_list_file = scraper_cfg["url_list_file"]
-        seed_list_layer = _lambda.LayerVersion(
+        campus_data_layer = _lambda.LayerVersion(
             self,
-            "ScraperSeedListLayer",
+            "CampusDataLayer",
             description=(
-                f"The curated crawl list ({len(seed_pages)} pages) as a bundled asset - too "
-                "large for Lambda's 4 KB environment-variable budget."
+                f"The repo-root data/ directory - the curated crawl list ({len(seed_pages)} "
+                "pages), campus places and buildings, contacts, and the shorthand glossary - as "
+                "a bundled asset, too large for Lambda's 4 KB environment-variable budget."
             ),
             compatible_runtimes=[_LAMBDA_PYTHON],
             compatible_architectures=[_LAMBDA_ARCH],
-            # Layer content extracts to /opt at runtime, which is where seed_list_path looks.
+            # Layer content extracts to /opt at runtime, which is where seed_list_path and
+            # app/campus_data.py both look first.
+            #
+            # LISTED FILE BY FILE, like the function bundles below, so README.md stays out of a
+            # deployed layer and a new file in data/ is a deliberate addition here rather than
+            # something that rides along.
             #
             # ".*" is NOT redundant with "*", and leaving it out is a real leak. CDK's exclude
             # globbing does not match hidden entries with a leading-wildcard pattern, so "*" alone
-            # ships .git/, .gitignore and .DS_Store from the repo root inside a deployed layer.
-            # Verified by listing the staged asset; test_seed_list_layer_ships_only_the_crawl_list
-            # pins it, and the function asset below needs the same treatment.
+            # ships .DS_Store from the directory inside a deployed layer. Verified by listing the
+            # staged asset; test_campus_data_layer_ships_only_the_data_files pins it, and the
+            # function assets below need the same treatment.
             code=_lambda.Code.from_asset(
-                str(_REPO_ROOT),
-                exclude=["*", ".*", f"!{url_list_file}"],
+                str(_DATA_DIR),
+                exclude=[
+                    "*",
+                    ".*",
+                    f"!{url_list_file}",
+                    "!places.csv",
+                    "!buildings.csv",
+                    "!contacts.csv",
+                    "!abbreviations.csv",
+                ],
             ),
         )
 
@@ -656,7 +716,7 @@ class NavigatorStack(Stack):
                 str(_SCRAPER_DIR),
                 exclude=["*", ".*", "!scraper.py", "!lambda_function.py"],
             ),
-            layers=[scraper_deps_layer, seed_list_layer],
+            layers=[scraper_deps_layer, campus_data_layer],
             role=scraper_lambda_role,
             # 15 minutes, the Lambda maximum, against a run estimated at 4.5-12 minutes: scaling
             # gav's measured 19-pages-in-25-67s to this corpus. Gav's 5 minutes would time out at
@@ -1247,6 +1307,10 @@ class NavigatorStack(Stack):
                     "!safety.py",
                     "!escalation.py",
                     "!places.py",
+                    # The reader of the repo-root data/ directory. places.py, safety.py and
+                    # prompts.py all import it at module scope, so a bundle without it is a
+                    # cold start that dies on the import line.
+                    "!campus_data.py",
                     "!orchestrator.py",
                     "!campus_time.py",
                     "!history.py",
@@ -1255,7 +1319,9 @@ class NavigatorStack(Stack):
                     "!ratelimit.py",
                 ],
             ),
-            layers=[chat_deps_layer],
+            # The data layer as well as the deps: places.py, safety.py and prompts.py read
+            # the repo-root data/ CSVs at import, and Lambda extracts this layer to /opt.
+            layers=[chat_deps_layer, campus_data_layer],
             role=chat_lambda_role,
             # 29 seconds against camp's 30, and this is a CEILING rather than a choice: an HTTP
             # API integration's timeoutInMillis maxes out at 30,000 ms (verified against the
@@ -2083,6 +2149,7 @@ class NavigatorStack(Stack):
                         "!safety.py",
                         "!escalation.py",
                         "!places.py",
+                        "!campus_data.py",
                         "!orchestrator.py",
                         "!campus_time.py",
                         "!history.py",
@@ -2091,7 +2158,9 @@ class NavigatorStack(Stack):
                         "!ratelimit.py",
                     ],
                 ),
-                layers=[chat_deps_layer],
+                # Same pair as the chat function, and for the same reason: this one runs
+                # the agent loop too, so it imports places.py, safety.py and prompts.py.
+                layers=[chat_deps_layer, campus_data_layer],
                 role=streaming_worker_role,
                 # Longer than the chat function's 29 seconds because nothing is waiting on
                 # an HTTP response here - but the LOOP's budget is unchanged

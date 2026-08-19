@@ -73,7 +73,8 @@ def test_real_config_path_is_the_repo_root_file():
     assert DEFAULT_CONFIG_PATH.parent == repo_root
     assert DEFAULT_CONFIG_PATH.exists()
     # The root is the root because these live there too, not because of what it is called.
-    assert (DEFAULT_CONFIG_PATH.parent / "url-list.csv").exists()
+    # data/ is the whole SJSU fact base, crawl list included (data/README.md).
+    assert (DEFAULT_CONFIG_PATH.parent / "data" / "urls.csv").exists()
     assert (DEFAULT_CONFIG_PATH.parent / "infra").is_dir()
 
 
@@ -125,13 +126,13 @@ def test_scraper_resolves_to_one_daily_schedule(config):
     """Single daily schedule, no tiers (docs/synthesis.md)."""
     scraper = resolve_scraper(config)
     assert scraper["schedule_cron"] == "cron(30 11 * * ? *)"
-    assert scraper["url_list_file"] == "url-list.csv"
+    assert scraper["url_list_file"] == "urls.csv"
     assert scraper["timeout_seconds"] == 20
     assert scraper["user_agent"].startswith("SJSUNavigatorScraper/")
 
 
 def test_seed_pages_match_the_authoritative_crawl_list(config):
-    """url-list.csv is authoritative over the brief: 238 pages, three hosts."""
+    """data/urls.csv is authoritative over the brief: 238 pages, three hosts."""
     pages = resolve_seed_pages(config)
     assert len(pages) == 238
     assert len({p["url"] for p in pages}) == 238
@@ -144,10 +145,10 @@ def test_seed_pages_match_the_authoritative_crawl_list(config):
 
 
 def test_seed_list_path_is_repo_root_relative(config):
-    """Resolved against the repo root, not the cwd - synth runs from infra/."""
+    """Resolved against the repo root's data/ directory, not the cwd - synth runs from infra/."""
     path = seed_list_path(config)
     assert path.exists()
-    assert path.parent == DEFAULT_CONFIG_PATH.parent
+    assert path.parent == DEFAULT_CONFIG_PATH.parent / "data"
 
 
 def test_cors_allow_origins_resolves_to_a_list(config):
@@ -1234,7 +1235,7 @@ def test_the_committed_config_carries_an_escalation_recipient(config):
     assert escalation["max_chars"] >= 300
 
 
-def test_no_recipient_means_no_escalation_path(config):
+def test_no_contact_means_no_escalation_path(config):
     """THE ABSENCE IS THE GATE, the shape resolve_cost_model and resolve_okta already use,
     and here it reaches furthest: with no address the chat function gets no ESCALATION_*
     variables, config.json gets no recipient, and the system prompt never mentions the tag.
@@ -1243,16 +1244,38 @@ def test_no_recipient_means_no_escalation_path(config):
 
     for mutate in (
         lambda c: c.pop("escalation"),
-        lambda c: c["escalation"].pop("recipient"),
-        lambda c: c["escalation"].update(recipient=""),
-        lambda c: c["escalation"].update(recipient="   "),
-        lambda c: c["escalation"].update(recipient=None),
+        lambda c: c["escalation"].pop("contact"),
+        lambda c: c["escalation"].update(contact=""),
+        lambda c: c["escalation"].update(contact="   "),
+        lambda c: c["escalation"].update(contact=None),
     ):
         candidate = copy.deepcopy(config)
         mutate(candidate)
         assert resolve_escalation(candidate) is None, candidate.get("escalation")
         # And the whole synth-time gate still passes: off is not a half-configured stack.
         validate_config(candidate)
+
+
+def test_the_committed_config_names_a_row_rather_than_spelling_an_address(config):
+    """The address is NOT in config.yaml any more, and that is the point of the change: the
+    same mailbox is the SJSU Cares panel's email link, and a value spelled in two languages
+    has no test that can see both copies. config.yaml names the row; data/contacts.csv holds
+    the mailbox."""
+    from infra.config import resolve_escalation
+
+    assert config["escalation"]["contact"] == "sjsu-cares"
+    assert "@" not in config["escalation"]["contact"]
+    assert resolve_escalation(config)["recipient"] == "sjsucares@sjsu.edu"
+
+
+def _contacts_dir(tmp_path, rows, monkeypatch):
+    """A stand-in data/ directory holding one contacts.csv, pointed at by infra.config."""
+    import infra.config as config_module
+
+    lines = ["kind,id,label,detail,href,when,in_default_panel,note", *rows]
+    (tmp_path / "contacts.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "_DATA_DIR", tmp_path)
+    return tmp_path
 
 
 @pytest.mark.parametrize(
@@ -1265,15 +1288,72 @@ def test_no_recipient_means_no_escalation_path(config):
         "sjsucares@sjsu.edu;dean@sjsu.edu",
     ],
 )
-def test_an_address_a_mail_client_could_not_open_fails_at_synth(config, recipient):
+def test_an_address_a_mail_client_could_not_open_fails_at_synth(
+    config, tmp_path, monkeypatch, recipient
+):
     """This value goes straight into a mailto the STUDENT's mail client has to open, so a
     malformed one does not fail a deploy - it fails silently in front of a student, on the
     one turn that was meant to reach a person. Two mailboxes are their own kind of wrong:
-    every student's message would go to everybody on the list."""
+    every student's message would go to everybody on the list.
+
+    It is checked at SYNTH even though the cell now lives in data/, because a spreadsheet is
+    exactly where a display name gets pasted in with an address."""
     from infra.config import resolve_escalation
 
-    config["escalation"]["recipient"] = recipient
-    with pytest.raises(ValueError, match="escalation.recipient"):
+    _contacts_dir(
+        tmp_path,
+        [f'escalation,sjsu-cares,SJSU Cares,"{recipient}",,,no,'],
+        monkeypatch,
+    )
+    with pytest.raises(ValueError, match=r"contacts\.csv row 'sjsu-cares'"):
+        resolve_escalation(config)
+
+
+def test_a_contact_id_that_names_no_row_fails_at_synth(config, tmp_path, monkeypatch):
+    """A renamed or deleted row. Loud at synth rather than an escalation offer addressed to
+    nothing - and loud rather than silently off, because "off" already has a spelling."""
+    from infra.config import resolve_escalation
+
+    _contacts_dir(tmp_path, ["escalation,someone-else,Someone,x@sjsu.edu,,,no,"], monkeypatch)
+    with pytest.raises(ValueError, match="no row in contacts.csv has that id"):
+        resolve_escalation(config)
+
+
+def test_a_contact_of_the_wrong_kind_fails_at_synth(config, tmp_path, monkeypatch):
+    """The `kind` column is what says an address is a place to send a student's own words. A
+    safety row is a crisis line and a cares row may be a link, so neither is addressable -
+    and pointing the drafts at a crisis hotline is the mistake worth failing the build for."""
+    from infra.config import resolve_escalation
+
+    _contacts_dir(tmp_path, ["safety,sjsu-cares,Crisis,x@sjsu.edu,,,no,"], monkeypatch)
+    with pytest.raises(ValueError, match="rather than 'escalation'"):
+        resolve_escalation(config)
+
+
+def test_two_rows_with_one_id_fail_at_synth(config, tmp_path, monkeypatch):
+    """A duplicated row is a copy somebody never finished editing, and the second one would
+    quietly win - so a student's message would go wherever the later line said."""
+    from infra.config import resolve_escalation
+
+    _contacts_dir(
+        tmp_path,
+        [
+            "escalation,sjsu-cares,SJSU Cares,a@sjsu.edu,,,no,",
+            "escalation,sjsu-cares,SJSU Cares,b@sjsu.edu,,,no,",
+        ],
+        monkeypatch,
+    )
+    with pytest.raises(ValueError, match="2 rows with id"):
+        resolve_escalation(config)
+
+
+def test_a_row_with_no_mailbox_fails_at_synth(config, tmp_path, monkeypatch):
+    """`detail` is the address on an escalation row. Empty is a spreadsheet edit that took
+    the feature off the air without saying so."""
+    from infra.config import resolve_escalation
+
+    _contacts_dir(tmp_path, ["escalation,sjsu-cares,SJSU Cares,,,,no,"], monkeypatch)
+    with pytest.raises(ValueError, match="empty `detail`"):
         resolve_escalation(config)
 
 

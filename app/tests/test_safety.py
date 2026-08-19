@@ -180,3 +180,133 @@ def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch,
     assert loop_queries == ["I want to kill myself"], "the loop answers crisis messages"
     assert body["safetyHandoff"] is not None
     assert [c["id"] for c in body["safetyHandoff"]["contacts"]] == ["crisis-988"]
+
+
+# --- the table is data/contacts.csv, and a bad row stops the process ------------------------
+#
+# The resolver tests above run against the committed file. These run against a written-out one,
+# because what needs pinning is the failure: this table is where a crisis phone number lives,
+# and every one of these malformations would otherwise produce a panel that renders, looks
+# right, and is missing a number.
+
+
+@pytest.fixture
+def contacts(tmp_path, monkeypatch):
+    """Write a contacts.csv and make it the only file safety.py can find."""
+    import campus_data
+
+    monkeypatch.setattr(campus_data, "_DATA_DIRS", (tmp_path,))
+
+    def _write(*rows):
+        (tmp_path / "contacts.csv").write_text(
+            "kind,id,label,detail,href,when,in_default_panel,note\n" + "".join(f"{r}\n" for r in rows),
+            encoding="utf-8",
+        )
+
+    return _write
+
+
+def test_the_committed_table_is_the_one_the_module_loaded():
+    """The tables are read from data/contacts.csv at import, not written out in the module.
+    This is the assertion that the FILE is what the resolver answers from - the rest of this
+    suite would pass just as well against a hardcoded dict."""
+    from campus_data import load_rows
+
+    rows = [
+        row
+        for row in load_rows(
+            "contacts.csv", ("kind", "id"), optional=("label", "detail", "href", "when", "in_default_panel", "note")
+        )
+        if row["kind"] == "safety"
+    ]
+    assert [row["id"] for row in rows] == list(safety.SAFETY_RESOURCES)
+    for row in rows:
+        contact = safety.SAFETY_RESOURCES[row["id"]].contact
+        assert (contact.label, contact.detail, contact.href) == (
+            row["label"],
+            row["detail"],
+            row["href"],
+        )
+
+
+def test_the_default_panel_is_the_files_own_order():
+    """DEFAULT_SAFETY_KEYS is `in_default_panel` read down the file, not a second list. A
+    second list is the thing that drifts, and the drift would be a panel whose order nobody
+    chose."""
+    from campus_data import load_rows
+
+    expected = tuple(
+        row["id"]
+        for row in load_rows(
+            "contacts.csv", ("kind", "id"), optional=("label", "detail", "href", "when", "in_default_panel", "note")
+        )
+        if row["kind"] == "safety" and row["in_default_panel"] == "yes"
+    )
+    assert safety.DEFAULT_SAFETY_KEYS == expected
+    assert expected, "the committed file must mark a default panel"
+
+
+def test_a_file_with_no_safety_rows_raises(contacts):
+    """A file that loaded quietly with its safety rows gone is a crisis panel with nothing on
+    it. Cares rows alone are not a table."""
+    from campus_data import CampusDataError
+
+    contacts("cares,sjsu-cares-phone,Phone,408.924.1234,,,no,")
+    with pytest.raises(CampusDataError, match="carries no `safety` rows"):
+        safety._load_safety_table()
+
+
+def test_safety_rows_with_nothing_marked_for_the_default_panel_raise(contacts):
+    """The default panel is what a student gets when the model tags an emergency and names no
+    resource. Empty is a handoff with no numbers on it, so it is fatal rather than a fallback
+    to the first row."""
+    from campus_data import CampusDataError
+
+    contacts("safety,caps,CAPS,Counseling,https://example.org/,soon,no,")
+    with pytest.raises(CampusDataError, match="in_default_panel"):
+        safety._load_safety_table()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "safety,caps,,Counseling,https://example.org/,soon,yes,",  # no label
+        "safety,caps,CAPS,,https://example.org/,soon,yes,",  # no detail
+        "safety,caps,CAPS,Counseling,,soon,yes,",  # nowhere to go
+    ],
+)
+def test_a_safety_row_missing_any_of_its_three_cells_raises(contacts, row):
+    """Every safety row becomes a button on the crisis panel. A blank label is a button with
+    no words on it and a blank href is one that goes nowhere - and the OTHER kinds in this
+    file leave these cells empty legitimately, so the check belongs here rather than in the
+    file reader."""
+    from campus_data import CampusDataError
+
+    contacts(row)
+    with pytest.raises(CampusDataError, match="crisis panel"):
+        safety._load_safety_table()
+
+
+def test_two_safety_rows_with_one_id_raise(contacts):
+    """The second would quietly win, and the panel would show whichever came last."""
+    from campus_data import CampusDataError
+
+    contacts(
+        "safety,caps,CAPS,Counseling,https://example.org/a,soon,yes,",
+        "safety,caps,CAPS,Counseling,https://example.org/b,soon,no,",
+    )
+    with pytest.raises(CampusDataError, match="share the id"):
+        safety._load_safety_table()
+
+
+def test_an_empty_when_keeps_a_row_resolvable_without_offering_it(contacts):
+    """The shape crisis-page uses: in the default set, never a triage choice the model makes.
+    An empty cell has to mean that rather than failing or becoming an empty roster line."""
+    contacts(
+        "safety,crisis-988,Call 988,Lifeline,https://988lifeline.org/,thoughts of self-harm,yes,",
+        "safety,crisis-page,Crisis page,Guidance,https://example.org/,,yes,",
+    )
+    resources, defaults = safety._load_safety_table()
+    assert resources["crisis-page"].when is None
+    assert defaults == ("crisis-988", "crisis-page")
+    assert [key for key, _ in [(k, r) for k, r in resources.items() if r.when]] == ["crisis-988"]

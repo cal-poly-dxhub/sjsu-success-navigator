@@ -81,12 +81,13 @@ CONTENT_HASH_METADATA_KEY = "content-sha256"
 # FAILED, STOPPING, STOPPED.)
 ACTIVE_INGESTION_STATUSES = ("STARTING", "IN_PROGRESS", "STOPPING")
 
-DEFAULT_URL_LIST_FILE = "url-list.csv"
+DEFAULT_URL_LIST_FILE = "urls.csv"
 
 # Where the bundled crawl list is looked for, in order. /opt is where Lambda extracts layer
-# content, which is how the list gets in (see the module docstring). The function's own directory
-# is second so a local test run - or a future commit that moves the list into the function
-# bundle - keeps working without touching this file.
+# content, which is how the list gets in (see the module docstring) - the layer stages the
+# repo-root data/ directory itself, so its files land at /opt directly and URL_LIST_FILE stays a
+# bare filename. The function's own directory is second so a local test run - or a future commit
+# that moves the list into the function bundle - keeps working without touching this file.
 SEED_LIST_DIRS = (Path("/opt"), Path(__file__).resolve().parent)
 
 

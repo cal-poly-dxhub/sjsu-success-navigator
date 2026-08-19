@@ -125,7 +125,7 @@ what a rule costs. The honest-gap behaviour joins them because it is what the ru
 model to do.
 
 The escalation section is INTERPOLATED OR ABSENT, never present-but-off. A deployment with
-no `escalation.recipient` has nowhere to send a draft, so the model is not told the tag
+no `escalation.contact` has nowhere to send a draft, so the model is not told the tag
 exists: the alternative is paying for those tokens on every turn to produce a block the
 server then drops, and teaching a contract whose output nobody can act on. One value gates
 the section and the assembler (app/escalation.py), so the two cannot disagree about whether
@@ -201,6 +201,7 @@ themselves, not just banned in the Never list.
 
 from __future__ import annotations
 
+from campus_data import load_rows
 from escalation import escalation_available
 from places import place_roster_for_prompt
 from safety import safety_roster_for_prompt
@@ -222,6 +223,7 @@ def build_system_prompt(settings: Settings) -> str:
     roster = "\n".join(f"- {key}: when {when}" for key, when in safety_roster_for_prompt())
     places = "\n".join(f"- {key}: {when}" for key, when in place_roster_for_prompt())
     return _TEMPLATE.format(
+        abbreviations=_ABBREVIATIONS,
         max_cards=settings.card_max_cards,
         title_max=settings.card_title_max_chars,
         desc_max=settings.card_desc_max_chars,
@@ -234,6 +236,31 @@ def build_system_prompt(settings: Settings) -> str:
             else ""
         ),
     )
+
+
+# The campus shorthand glossary, from data/abbreviations.csv. It is a FLAT LIST OF FACTS about
+# what SJSU calls things - which is what makes it data rather than prose, and what makes it
+# editable by somebody at Student Affairs who knows that a new building code is in use before
+# any of us do. Read at import through app/campus_data.py, so a malformed row is a cold start
+# that fails rather than a prompt quietly missing a line.
+_ABBREVIATIONS_FILE = "abbreviations.csv"
+
+
+def abbreviation_glossary() -> str:
+    """The shorthand list as the prompt's own lines, in file order.
+
+    Interpolated rather than written into the template for the same reason the two rosters
+    are: one table, read once, in the one place that shows it to the model.
+    """
+    return "\n".join(
+        f"- {row['abbreviation']}: {row['expansion']}"
+        for row in load_rows(_ABBREVIATIONS_FILE, ("abbreviation", "expansion"))
+    )
+
+
+# Built AT IMPORT, like places.py's and safety.py's tables, so a damaged glossary is a cold
+# start that fails rather than a first request that does.
+_ABBREVIATIONS = abbreviation_glossary()
 
 
 # Interpolated into the template above, always. Its own block rather than a paragraph in the
@@ -413,40 +440,7 @@ Reach for one where it saves the student a second read, not by habit: a reply wh
 
 Campus shorthand:
 Students write campus places and offices the way they say them out loud. Read each of these as the full name, and search on the full name rather than the letters:
-- AEC: Accessible Education Center
-- A.S. or AS: Associated Students
-- BBC: Boccardo Business Complex
-- BIT: Behavioral Intervention Team
-- BT: Business Tower
-- CAPS: Counseling and Psychological Services
-- CL: Clark Hall
-- CVA, CVB, CVC, CV2: Campus Village housing buildings A, B, C and 2
-- DBH: Dwight Bentel Hall
-- DH: Duncan Hall
-- DMH: Dudley Moorhead Hall
-- EOP: Educational Opportunity Program
-- FASO: Financial Aid and Scholarship Office
-- GE: General Education
-- HGH: Hugh Gillis Hall
-- IRC: Instructional Resource Center
-- ISSS: International Student and Scholar Services
-- JWH: Joe West Hall
-- MH: MacQuarrie Hall
-- MLK: Dr. Martin Luther King, Jr. Library
-- MOSAIC: MOSAIC Cross Cultural Center
-- SH: Sweeney Hall
-- SPXC, SPXE: Spartan Complex Central and Spartan Complex East
-- SRAC: Spartan Recreation and Aquatic Center
-- SSC: Student Services Center
-- SU: Student Union
-- SVP: Spartan Village on the Paseo
-- SWC: Student Wellness Center
-- TH: Tower Hall
-- Tower Card: the SJSU student ID card
-- UPD: University Police Department
-- WSH: Washburn Hall
-- WSQ: Washington Square Hall
-- YUH: Yoshihiro Uchida Hall
+{abbreviations}
 
 An abbreviation that is not on this list and is not clear from the rest of the message is a question, never a guess. Ask the student what they meant, because a confident wrong expansion sends them to the wrong office.
 

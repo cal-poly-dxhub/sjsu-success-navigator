@@ -409,18 +409,20 @@ def test_scraper_env_wires_the_bucket_kb_and_data_source_by_reference():
     assert env["DATA_SOURCE_ID"] == {"Fn::GetAtt": ["S3DataSource", "DataSourceId"]}
 
 
-def test_scraper_carries_both_layers_deps_and_crawl_list():
+def test_scraper_carries_both_layers_deps_and_the_data():
     """Two layers, and the function is useless without either: the deps layer supplies
-    trafilatura/httpx (not in the runtime) and the seed-list layer supplies the corpus. A
-    missing seed-list layer is the nastier one - the handler raises SeedListError and the run
-    fails, which is by design, but it fails every single day until someone reads the logs."""
+    trafilatura/httpx (not in the runtime) and the data layer supplies the corpus. A missing
+    data layer is the nastier one - the handler raises SeedListError and the run fails, which
+    is by design, but it fails every single day until someone reads the logs."""
     template = _template()
     layers = _resource_named(template, "AWS::Lambda::Function", "ScraperFunction")["Properties"][
         "Layers"
     ]
+    deps = next(iter(_layer_ids(template, "ScraperDepsLayer")))
+    data = next(iter(_layer_ids(template, "CampusDataLayer")))
     assert {json.dumps(layer, sort_keys=True) for layer in layers} == {
-        json.dumps({"Ref": "ScraperDepsLayer10ED40CB"}, sort_keys=True),
-        json.dumps({"Ref": "ScraperSeedListLayer2F2BB950"}, sort_keys=True),
+        json.dumps({"Ref": deps}, sort_keys=True),
+        json.dumps({"Ref": data}, sort_keys=True),
     }
 
 
@@ -429,7 +431,7 @@ def test_both_layers_are_built_for_the_functions_runtime_and_architecture():
     # UpdateFunctionConfiguration - a deploy-time failure, and the deps layer's wheels are
     # manylinux x86_64 regardless of the machine that ran synth.
     template = _template()
-    for prefix in ("ScraperDepsLayer", "ScraperSeedListLayer"):
+    for prefix in ("ScraperDepsLayer", "CampusDataLayer"):
         props = _resource_named(template, "AWS::Lambda::LayerVersion", prefix)["Properties"]
         assert props["CompatibleRuntimes"] == ["python3.13"], prefix
         assert props["CompatibleArchitectures"] == ["x86_64"], prefix
@@ -506,17 +508,27 @@ def _staged_listing(logical_id_prefix: str) -> list:
     return next(iter(matches.values()))
 
 
-def test_seed_list_layer_ships_only_the_crawl_list():
+def test_campus_data_layer_ships_only_the_data_files():
     """Synths for real and lists the staged asset, because CDK's exclude globbing is not
-    intuitive: `exclude=["*", "!url-list.csv"]` alone leaves .git/, .gitignore and .DS_Store in
-    the asset - a leading-wildcard pattern does not match hidden entries - so this layer shipped
-    repo metadata into a deployed function. ".*" is what fixes it, and only a directory listing
-    proves it, since the template records just an asset hash."""
+    intuitive: `exclude=["*", "!urls.csv"]` alone leaves .DS_Store in the asset - a
+    leading-wildcard pattern does not match hidden entries - so this layer shipped stray files
+    into a deployed function. ".*" is what fixes it, and only a directory listing proves it,
+    since the template records just an asset hash.
+
+    The listing is pinned rather than globbed for the same reason the function bundles below
+    are: data/README.md is 200 lines written for a person with a spreadsheet, and it has no
+    business inside a Lambda."""
     from infra.config import resolve_scraper
 
-    assert _staged_listing("ScraperSeedListLayer") == [
-        resolve_scraper(load_config())["url_list_file"]
-    ]
+    assert _staged_listing("CampusDataLayer") == sorted(
+        [
+            "abbreviations.csv",
+            "buildings.csv",
+            "contacts.csv",
+            "places.csv",
+            resolve_scraper(load_config())["url_list_file"],
+        ]
+    )
 
 
 def test_scraper_function_ships_only_its_two_source_files():
@@ -1042,8 +1054,11 @@ def test_chat_function_carries_the_deps_layer_built_for_its_runtime():
     layers = _resource_named(template, "AWS::Lambda::Function", "ChatFunction")["Properties"][
         "Layers"
     ]
-    layer_id = next(iter(_layer_ids(template, "ChatDepsLayer")))
-    assert layers == [{"Ref": layer_id}]
+    # The data layer rides beside it: places.py, safety.py and prompts.py read the
+    # repo-root data/ CSVs at import, and Lambda extracts that layer to /opt.
+    deps_id = next(iter(_layer_ids(template, "ChatDepsLayer")))
+    data_id = next(iter(_layer_ids(template, "CampusDataLayer")))
+    assert layers == [{"Ref": deps_id}, {"Ref": data_id}]
 
     props = _resource_named(template, "AWS::Lambda::LayerVersion", "ChatDepsLayer")[
         "Properties"
@@ -1076,6 +1091,7 @@ def test_chat_function_ships_the_handler_and_its_service_modules_only():
     twice would be a second copy to drift."""
     listing = _staged_listing("ChatFunction")
     assert listing == [
+        "campus_data.py",
         "campus_time.py",
         "cards.py",
         "escalation.py",
@@ -2763,9 +2779,10 @@ def test_the_inherited_gav_pieces_that_are_load_bearing_are_still_here():
     ]
     assert len(jwt_authorizers) == 1, jwt_authorizers
     assert _http_api_resource(template, "AWS::ApiGatewayV2::Authorizer")
-    # The seed-list layer: the crawl list cannot travel in an env var (Lambda's 4 KB
-    # aggregate cap), so this is the mechanism, not a gav leftover.
-    _resource_named(template, "AWS::Lambda::LayerVersion", "ScraperSeedListLayer")
+    # The data layer: the crawl list cannot travel in an env var (Lambda's 4 KB aggregate
+    # cap), so this is the mechanism, not a gav leftover. It carries the rest of data/ now
+    # as well, for the same reason and by the same route.
+    _resource_named(template, "AWS::Lambda::LayerVersion", "CampusDataLayer")
 
 
 def test_the_two_deps_layers_are_distinct_assets():
@@ -2989,8 +3006,8 @@ def test_the_escalation_module_is_in_the_functions_that_import_it():
 
 
 def test_the_escalation_path_is_gated_by_config_and_leaves_no_trace_when_off():
-    """A blank recipient must remove the whole path: no variables on the function, no key in
-    config.json.
+    """A blank `escalation.contact` must remove the whole path: no variables on the function,
+    no key in config.json.
 
     THE OMISSION IS THE GATE, and it reaches further here than for the cost panel. With no
     variables the function's own prompt builder leaves the tag out of the system prompt
@@ -2998,7 +3015,7 @@ def test_the_escalation_path_is_gated_by_config_and_leaves_no_trace_when_off():
     which is a stronger guarantee than a component checking a flag.
     """
     config = copy.deepcopy(load_config())
-    config["escalation"]["recipient"] = ""
+    config["escalation"]["contact"] = ""
 
     outdir = tempfile.mkdtemp()
     app = cdk.App(outdir=outdir)

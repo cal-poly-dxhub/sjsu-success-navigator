@@ -29,7 +29,7 @@ from scraper import ScrapeResult, SeedListError  # noqa: E402
 # its FILENAME is an env var (Lambda's 4 KB aggregate env cap; see the handler docstring). So the
 # fixture below stubs load_seed_pages/seed_list_path rather than setting a URLs variable.
 BASE_ENV = {
-    "URL_LIST_FILE": "url-list.csv",
+    "URL_LIST_FILE": "urls.csv",
     "SCRAPE_TIMEOUT_SECONDS": "15",
     "SCRAPER_USER_AGENT": "TestAgent/1.0",
     "SOURCE_BUCKET": "kb-bucket",
@@ -70,7 +70,7 @@ def _fail():
 def _wire(monkeypatch, results, pages=None):
     for k, v in BASE_ENV.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.setattr(lf, "seed_list_path", lambda *a, **kw: Path("/opt/url-list.csv"))
+    monkeypatch.setattr(lf, "seed_list_path", lambda *a, **kw: Path("/opt/urls.csv"))
     monkeypatch.setattr(lf, "load_seed_pages", lambda path: list(SEED_PAGES if pages is None else pages))
     monkeypatch.setattr(lf, "scrape_pages", lambda pages, **kw: results)
     s3, bedrock_agent = MagicMock(), MagicMock()
@@ -183,7 +183,7 @@ def test_passes_the_whole_crawl_list_and_the_config_to_scrape_pages(monkeypatch)
         captured["kw"] = kw
         return []
 
-    monkeypatch.setattr(lf, "seed_list_path", lambda *a, **kw: Path("/opt/url-list.csv"))
+    monkeypatch.setattr(lf, "seed_list_path", lambda *a, **kw: Path("/opt/urls.csv"))
     monkeypatch.setattr(lf, "load_seed_pages", lambda path: list(SEED_PAGES))
     monkeypatch.setattr(lf, "scrape_pages", fake_scrape)
     monkeypatch.setattr(lf, "_s3_client", lambda: MagicMock())
@@ -232,21 +232,21 @@ def test_seed_list_path_prefers_the_layer_mount(monkeypatch, tmp_path):
     opt, local = tmp_path / "opt", tmp_path / "local"
     opt.mkdir()
     local.mkdir()
-    (opt / "url-list.csv").write_text("x", encoding="utf-8")
-    (local / "url-list.csv").write_text("y", encoding="utf-8")
+    (opt / "urls.csv").write_text("x", encoding="utf-8")
+    (local / "urls.csv").write_text("y", encoding="utf-8")
     monkeypatch.setattr(lf, "SEED_LIST_DIRS", (opt, local))
 
-    assert lf.seed_list_path("url-list.csv") == opt / "url-list.csv"
+    assert lf.seed_list_path("urls.csv") == opt / "urls.csv"
 
 
 def test_seed_list_path_falls_back_to_the_function_bundle(monkeypatch, tmp_path):
     opt, local = tmp_path / "opt", tmp_path / "local"
     opt.mkdir()
     local.mkdir()
-    (local / "url-list.csv").write_text("y", encoding="utf-8")
+    (local / "urls.csv").write_text("y", encoding="utf-8")
     monkeypatch.setattr(lf, "SEED_LIST_DIRS", (opt, local))
 
-    assert lf.seed_list_path("url-list.csv") == local / "url-list.csv"
+    assert lf.seed_list_path("urls.csv") == local / "urls.csv"
 
 
 def test_seed_list_path_reads_the_filename_from_the_environment(monkeypatch, tmp_path):
@@ -264,7 +264,7 @@ def test_seed_list_path_reads_the_filename_from_the_environment(monkeypatch, tmp
 def test_a_missing_bundled_list_raises_naming_where_it_looked(monkeypatch, tmp_path):
     monkeypatch.setattr(lf, "SEED_LIST_DIRS", (tmp_path,))
     with pytest.raises(SeedListError) as exc:
-        lf.seed_list_path("url-list.csv")
+        lf.seed_list_path("urls.csv")
     assert str(tmp_path) in str(exc.value)
 
 
@@ -275,7 +275,7 @@ def test_a_bad_crawl_list_fails_the_invocation_before_anything_is_deleted(monkey
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
 
     def boom(path):
-        raise SeedListError("url-list.csv has a valid header but no pages")
+        raise SeedListError("urls.csv has a valid header but no pages")
 
     monkeypatch.setattr(lf, "load_seed_pages", boom)
 
@@ -291,7 +291,7 @@ def test_a_missing_layer_asset_fails_the_invocation_too(monkeypatch):
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
 
     def boom(*a, **kw):
-        raise SeedListError("bundled crawl list 'url-list.csv' not found")
+        raise SeedListError("bundled crawl list 'urls.csv' not found")
 
     monkeypatch.setattr(lf, "seed_list_path", boom)
 

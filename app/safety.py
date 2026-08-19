@@ -13,6 +13,13 @@ a safety tag whose keys all fail to resolve gets the DEFAULT crisis set, and a r
 prose cites crisis lines without the tag has the panel attached anyway (see
 apply_safety_handoff_to_response). No path renders an empty panel.
 
+THE TABLE IS data/contacts.csv, the `safety` rows of it, read at import through
+app/campus_data.py. The facts left this file for the reason the whole `data/` directory
+exists: a contact spelled once in Python and again in TypeScript has no test that can see
+both copies. Here it also buys something narrower - a crisis number is now a spreadsheet row
+a person at Student Affairs can correct without a code change, and `in_default_panel` marks
+the standard set on the same rows rather than in a second list beside them.
+
 Contact facts are drawn from the live SJSU pages, verified 2026-08-10 against
 eval/ground-truth.yaml - never LLM-generated.
 """
@@ -22,6 +29,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from campus_data import CampusDataError, load_rows, parse_flag
 from models import ChatResponse, SafetyContact, SafetyHandoff
 
 logger = logging.getLogger(__name__)
@@ -37,75 +45,81 @@ class SafetyResource:
     when: str | None
 
 
-SAFETY_RESOURCES: dict[str, SafetyResource] = {
-    "emergency-911": SafetyResource(
-        contact=SafetyContact(
-            id="emergency-911",
-            label="Call 911",
-            detail="Immediate danger to life or safety, right now",
-            href="tel:911",
-        ),
-        when="someone is in immediate physical danger or a life-threatening situation is happening now",
-    ),
-    "crisis-988": SafetyResource(
-        contact=SafetyContact(
-            id="crisis-988",
-            label="Call or text 988",
-            detail="Suicide & Crisis Lifeline, 24/7",
-            href="https://988lifeline.org/",
-        ),
-        when="thoughts of suicide or self-harm, or an emotional crisis they cannot cope with",
-    ),
-    "after-hours": SafetyResource(
-        contact=SafetyContact(
-            id="after-hours",
-            label="Call 408-924-5678",
-            detail="Urgent medical or mental health support after hours",
-            href="tel:4089245678",
-        ),
-        when="an urgent medical or mental health need outside business hours",
-    ),
-    "caps": SafetyResource(
-        contact=SafetyContact(
-            id="caps",
-            label="CAPS same-day support",
-            detail="Counseling & Psychological Services at SJSU",
-            href="https://www.sjsu.edu/wellness/access-services/counseling/index.php",
-        ),
-        when="needs to talk to a counselor soon, during business hours",
-    ),
-    "sas": SafetyResource(
-        contact=SafetyContact(
-            id="sas",
-            label="Survivor Advocacy Services (confidential)",
-            detail="Campus survivor advocate: 408-924-7300, survivoradvocate@sjsu.edu",
-            href="https://www.sjsu.edu/wellness/access-services/survivor-advocacy-services.php",
-        ),
-        when="sexual violence, relationship abuse, or stalking, and confidential support that does not trigger a report",
-    ),
-    "upd": SafetyResource(
-        contact=SafetyContact(
-            id="upd",
-            label="University Police Department",
-            detail="Campus emergencies: 911, or 408-924-2222 around the clock",
-            href="https://www.sjsu.edu/police/",
-        ),
-        when="a crime or an unsafe situation on campus",
-    ),
-    "crisis-page": SafetyResource(
-        contact=SafetyContact(
-            id="crisis-page",
-            label="Emergency & crisis page",
-            detail="Official SJSU wellness guidance",
-            href="https://www.sjsu.edu/wellness/access-services/emergency-crisis.php",
-        ),
-        when=None,  # default-set filler, not a triage choice the model needs
-    ),
-}
+# The handoff table, from the `safety` rows of data/contacts.csv, in file order. Read at
+# import: a malformed row is a cold start that fails with a line number, never a panel that
+# comes up one crisis number short.
+_CONTACTS_FILE = "contacts.csv"
+_SAFETY_KIND = "safety"
 
-# The panel when the model emits a bare <safety/> or none of its keys resolve: today's
-# standard crisis set, unchanged from the fixed panel this module used to hardcode.
-DEFAULT_SAFETY_KEYS: tuple[str, ...] = ("crisis-988", "after-hours", "caps", "crisis-page")
+
+def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
+    """The resources and the default panel, from ONE pass over the same rows.
+
+    Both come back together because they are the same table read two ways, and the default
+    set's ORDER IS THE FILE'S. A second list holding that order would be one more thing to
+    keep in step with the rows it names, which is the shape this whole directory exists to
+    stop.
+    """
+    resources: dict[str, SafetyResource] = {}
+    default_keys: list[str] = []
+    for row in load_rows(
+        _CONTACTS_FILE,
+        ("kind", "id"),
+        optional=("label", "detail", "href", "when", "in_default_panel", "note"),
+    ):
+        if row["kind"] != _SAFETY_KIND:
+            continue
+        key = row["id"]
+        # THE THREE CELLS THE PANEL RENDERS, checked here rather than by the file reader,
+        # because the OTHER kinds in this file legitimately leave some of them blank - a
+        # cares row is a link with no phone number, or a number with no link. A safety row is
+        # a button on a crisis panel, so all three are load-bearing and a blank one is fatal.
+        for column in ("label", "detail", "href"):
+            if not row[column]:
+                raise CampusDataError(
+                    f"{_CONTACTS_FILE}: the {_SAFETY_KIND} row {key!r} has an empty "
+                    f"`{column}`. Every safety row becomes a button on the crisis panel, so "
+                    "it needs the words on it, the line under them, and somewhere to go."
+                )
+        if key in resources:
+            raise CampusDataError(
+                f"{_CONTACTS_FILE}: two {_SAFETY_KIND} rows share the id {key!r}. One key, "
+                "one row - a second one would quietly win, and the panel would show "
+                "whichever came last."
+            )
+        resources[key] = SafetyResource(
+            contact=SafetyContact(
+                id=key, label=row["label"], detail=row["detail"], href=row["href"]
+            ),
+            # An empty `when` keeps a resource resolvable without offering it to the model.
+            when=row["when"] or None,
+        )
+        if parse_flag(
+            row["in_default_panel"],
+            name=_CONTACTS_FILE,
+            key=key,
+            column="in_default_panel",
+        ):
+            default_keys.append(key)
+
+    if not resources:
+        raise CampusDataError(
+            f"{_CONTACTS_FILE} carries no `{_SAFETY_KIND}` rows. Every crisis contact a "
+            "student can be shown comes from those rows, so a file without one is a safety "
+            "panel with nothing on it."
+        )
+    if not default_keys:
+        raise CampusDataError(
+            f"no `{_SAFETY_KIND}` row in {_CONTACTS_FILE} has in_default_panel set. That "
+            "column is the panel a student gets when the model tags an emergency and names "
+            "no resources, and an empty one is a handoff with no numbers on it."
+        )
+    return resources, tuple(default_keys)
+
+
+# The panel when the model emits a bare <safety/> or none of its keys resolve is today's
+# standard crisis set, marked row by row in data/contacts.csv rather than listed here.
+SAFETY_RESOURCES, DEFAULT_SAFETY_KEYS = _load_safety_table()
 
 # Shown when a safety turn arrives with no usable prose: the panel needs an introduction,
 # and this is the one sentence the server is allowed to author.

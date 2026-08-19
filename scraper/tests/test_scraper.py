@@ -93,7 +93,7 @@ SEED_ROWS = (
 )
 
 
-def _seed_file(tmp_path, body, name="url-list.csv") -> Path:
+def _seed_file(tmp_path, body, name="urls.csv") -> Path:
     path = tmp_path / name
     path.write_text(body, encoding="utf-8")
     return path
@@ -196,19 +196,19 @@ def test_a_duplicate_url_raises(tmp_path):
 def test_an_unreadable_crawl_list_raises_as_a_seed_list_error(tmp_path):
     # Invalid UTF-8 (a truncated multi-byte sequence) is what a corrupted asset looks like. It must
     # surface as SeedListError so the handler's fatal path catches the same class either way.
-    path = tmp_path / "url-list.csv"
+    path = tmp_path / "urls.csv"
     path.write_bytes(b"url,section,title\nhttps://x/a,sec,\xff\xfe title\n")
     with pytest.raises(scraper.SeedListError, match="could not be read"):
         scraper.load_seed_pages(path)
 
 
 def test_the_real_crawl_list_is_valid_and_complete():
-    """The committed url-list.csv itself, not a fixture. This is the file that ships as the
+    """The committed data/urls.csv itself, not a fixture. This is the file that ships as the
     Lambda layer, so a truncated or half-edited commit should fail here rather than at 11:30 UTC.
 
     The expected count is derived from the file rather than hardcoded, so adding pages is a
     one-file edit - but a truncated file still fails, because the rows it kept would not match."""
-    path = Path(__file__).resolve().parents[2] / "url-list.csv"
+    path = Path(__file__).resolve().parents[2] / "data" / "urls.csv"
     pages = scraper.load_seed_pages(path)
 
     with open(path, newline="", encoding="utf-8") as fh:
