@@ -74,6 +74,24 @@ class PreviewSink:
         """Put one frame on the wire. True if it left. The one thing a transport owes."""
         raise NotImplementedError
 
+    def accepted(self, conversation_id):
+        """The server has taken this turn on, and this is the id it lives under.
+
+        THE FIRST FRAME OF A TURN, ahead of the retrieval status and every delta. The
+        server mints the id and an absent one means a new conversation
+        (docs/accounts-and-storage.md), so on a fresh conversation the stream is the only
+        place a browser can learn it. Learning it from the final payload would be too late
+        twice over: there would be nowhere to put the sidebar row until the reply finished,
+        and a student who sent their next message first would open a SECOND conversation
+        and orphan this one.
+
+        SENT ON A CONTINUING CONVERSATION TOO, echoing the id the client sent. A frame
+        whose presence depended on newness would make the client's own state decide whether
+        it gets told, and a client that has to know which case it is in cannot use the
+        answer to find out.
+        """
+        self._post({"type": "accepted", "conversationId": conversation_id})
+
     def status(self, stage):
         """Something is happening that produces no text. The UI can say a true thing."""
         self._post({"type": "status", "stage": stage})

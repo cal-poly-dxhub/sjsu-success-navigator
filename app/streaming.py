@@ -348,13 +348,11 @@ def handle_message(event, store):
         logger.exception("Could not record the student's message; answering anyway")
 
     # Told BEFORE the worker is invoked: the student's message is already stored under this
-    # id, and a client that never learned it would orphan the conversation.
-    sink._post(
-        {
-            "type": "accepted",
-            "conversationId": conversation_id,
-        }
-    )
+    # id, and a client that never learned it would orphan the conversation. The frame is
+    # PreviewSink's (app/preview.py), the same one app/turn.py sends at the same point of
+    # the same order - this transport sends it from here only because it splits the turn
+    # across two functions and the worker is the second half.
+    sink.accepted(conversation_id)
 
     _invoke_worker(
         {

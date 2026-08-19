@@ -18,7 +18,8 @@ THE ORDER IS THE WHOLE FILE, and each position was argued for:
      the screen that just caught it.
   3. write the student's message - BEFORE the model call, so a disclosure that then times
      out is still on record. That ordering is the whole reason this is not one write at the
-     end.
+     end. A STREAMED turn announces the conversation id here, the instant the message is on
+     record under it and before the loop can emit a byte.
   4. read the previous N back  - one descending, limited, strongly consistent query,
      excluding the message just written (the orchestrator appends the current turn in
      memory, so reading it back would say it twice).
@@ -244,6 +245,11 @@ def run_turn(
     an injected callable, and the handler's suite injects stand-ins with the signature
     run_chat had before streaming existed; handing them a keyword they never accepted would
     fail every one of those tests for a feature POST /chat does not use.
+
+    A sink is also the only thing STEP 3B needs. A client that is watching is told the
+    conversation id the moment the student's message is on record under it; a caller with no
+    sink is told the same thing by the response it is already waiting for, which is why that
+    step is the one position in the order a buffered turn passes straight through.
     """
     # STEP 1 - the per-user daily cap, before the guardrail screen and before the loop.
     #
@@ -298,6 +304,22 @@ def run_turn(
         # orchestrator's consecutive-role merge folds it into the copy it appends, so the
         # worst case is one sentence said twice rather than a rejected Converse call.
         logger.exception("Could not record the student's message; answering anyway")
+
+    # STEP 3b - the id, told to a client that is watching. AHEAD OF EVERY BYTE OF THE
+    # REPLY, because the server mints it and an absent one means a new conversation, so a
+    # browser on a fresh conversation has no other way to learn it in time to place the
+    # sidebar row or to address its next turn. It is sent on a continuing conversation too,
+    # echoing the id that arrived, so the client never has to know which case it is in.
+    #
+    # THE SAME FRAME THE SOCKET SENDS, from the same method (app/preview.py) - which is why
+    # this is one line rather than a second wire format. The socket sends it from
+    # app/streaming.py instead, at the same point in the same order, because that transport
+    # splits the turn across two functions and this module is only the second half of it.
+    #
+    # A BUFFERED TURN HAS NO SINK and sends nothing: POST /chat carries the id in the
+    # response, which for a caller that waits for the whole reply is the same instant.
+    if stream is not None:
+        stream.accepted(conversation_id)
 
     # STEP 4 - the context read.
     try:

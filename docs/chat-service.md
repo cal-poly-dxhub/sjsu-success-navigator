@@ -714,6 +714,10 @@ and the copy path is measured after the conversion rather than on the text.
 ## Streaming
 
 `app/streaming.py` (the WebSocket routes) and `app/stream_worker.py` (the generation half).
+There is a second streaming transport in the tree, the FastAPI app under the Lambda Web
+Adapter (`app/stream_probe.py`), which runs the same turn as `POST /chat` in one function and
+streams it as NDJSON. The frames both transports send, and the rules for what is safe to show
+of a half-written reply, live once in `app/preview.py`.
 
 **Why a WebSocket and not response streaming.** Two constraints meet and leave one door. API
 Gateway response streaming is REST-API only and this is an HTTP API; Lambda response streaming
@@ -795,9 +799,27 @@ most of this feature's benefit on a screen today's guardrail cannot fire.
 
 **A turn id is minted per turn and carried on every frame,** so a reply arriving after the
 student has moved on, or two turns racing on one connection, lands on the right bubble or is
-discarded. The conversation id is sent to the client **before** the worker is invoked: the
-student's message is already stored under it, and a client that never learned it would open a
-fresh conversation on the next turn and orphan this one.
+discarded.
+
+**The `accepted` frame announces the conversation id, and it leads the turn on both
+streaming transports.** The server mints the id and an absent one means a new conversation
+(`docs/accounts-and-storage.md`), so on a conversation the client could not name, the stream
+is the only place a browser learns it - and it needs it to place the sidebar row and to
+address its next turn, both of which happen long before a reply finishes. It goes out the
+instant the student's message is on record under that id, ahead of the retrieval status and
+every delta, and it is sent on a **continuing** conversation too, echoing the id that
+arrived: a frame whose presence depended on newness would make the client's own state decide
+whether it gets told. On a query the input guardrail blocks there is no frame, because the
+screen runs before the write and no id was ever minted.
+
+The frame itself is one method on `PreviewSink` (`app/preview.py`), which is what stops the
+two transports growing two spellings of it. The socket sends it from `app/streaming.py`
+rather than from the turn, and that is not a second copy of the decision: that path splits a
+turn across two functions, so the half that mints the id is the route function and the frame
+has to leave before the worker is invoked. The HTTP stream runs the whole turn in one place,
+so `app/turn.py` sends it at the same point of the same order. A buffered `POST /chat` has no
+sink and sends nothing - it carries the id in the response the caller is already waiting for,
+which for a caller that waits is the same instant.
 
 **`$default` is not the message route.** The named `sendMessage` route carries turns;
 `$default` catches a frame whose `action` names no route, which is a malformed client rather

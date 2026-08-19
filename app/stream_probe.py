@@ -30,7 +30,7 @@ incrementally through this transport.
 AND THE ROUTE THAT IS NOT A PROBE.
 
     POST /chat    the real turn - guardrail, retrieval, tools, cards, safety, storage,
-                  titling - streamed as it is written
+                  titling - streamed as it is written, the conversation id announced first
 
 It is the SAME turn POST /chat runs, because it is literally the same function: app/turn.py
 holds the sequence and this route hands it a sink. There is no second loop here, no second
@@ -338,13 +338,20 @@ _DONE = object()
 
 
 def _turn_frames(chat_request: ChatRequest, *, user_id: str, client_id: str | None):
-    """NDJSON frames for one streamed turn: status, delta, then exactly one final or error.
+    """NDJSON frames for one streamed turn: accepted, status, delta, then one final or error.
 
     NDJSON RATHER THAN SSE, and it is not a front-door decision - it is the smallest framing
-    that carries the socket's existing frame types unchanged (`status`, `delta`, `final`,
-    `error`), so whatever ends up in front of this can translate one line into one message.
-    SSE's `event:`/`data:` framing would be a second spelling of the same thing, chosen for
-    a browser API nobody has committed to.
+    that carries the socket's existing frame types unchanged (`accepted`, `status`, `delta`,
+    `final`, `error`), so whatever ends up in front of this can translate one line into one
+    message. SSE's `event:`/`data:` framing would be a second spelling of the same thing,
+    chosen for a browser API nobody has committed to.
+
+    `accepted` COMES FIRST AND CARRIES THE CONVERSATION ID, and on this transport it is
+    app/turn.py that sends it, the instant the student's message is on record under that id
+    and before the loop can produce a byte. Nothing in this file arranges that or could:
+    the id is minted inside the turn, and a frame assembled out here would either precede
+    the write it claims or trail the first delta. What the queue below guarantees is only
+    that the order the sink posted in is the order the body is written in.
 
     THE DEADLINE IS THE CONFIGURED ONE, unchanged: chat.converse_deadline_seconds, 22
     seconds, the same number app/handler.py and app/stream_worker.py both use. It is not
