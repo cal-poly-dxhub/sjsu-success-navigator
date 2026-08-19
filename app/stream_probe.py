@@ -12,8 +12,8 @@ that moves real logic onto the mechanism is a move rather than a bring-up.
 
 TWO ROUTES THAT STREAM, AND KEEPING BOTH IS THE POINT.
 
-    GET /stream   ten timed chunks, no AWS call at all - pure transport
-    GET /model    one ConverseStream turn against the configured generation model
+    GET /api/stream   ten timed chunks, no AWS call at all - pure transport
+    GET /api/model    one ConverseStream turn against the configured generation model
 
 They are a DIFFERENTIAL. When a stream arrives in one lump, the question is always
 "transport or Bedrock?", and the only way to answer it without a deploy-and-guess cycle is
@@ -29,8 +29,9 @@ incrementally through this transport.
 
 AND THE ROUTE THAT IS NOT A PROBE.
 
-    POST /chat    the real turn - guardrail, retrieval, tools, cards, safety, storage,
-                  titling - streamed as it is written, the conversation id announced first
+    POST /api/chat    the real turn - guardrail, retrieval, tools, cards, safety, storage,
+                      titling - streamed as it is written, the conversation id announced
+                      first
 
 It is the SAME turn POST /chat runs, because it is literally the same function: app/turn.py
 holds the sequence and this route hands it a sink. There is no second loop here, no second
@@ -48,6 +49,18 @@ the adapter polls AWS_LWA_READINESS_CHECK_PATH (default "/") before forwarding t
 request, and the upstream example puts its stream there, paying for the whole stream at
 every cold start.
 
+WHY EVERY REAL ROUTE SITS UNDER A PREFIX AND THE READINESS ROUTE DOES NOT. This app is
+reached two ways: directly on its Function URL, and through the CloudFront distribution
+that already serves the site, on a path-pattern behaviour (infra_stack.py section 6).
+CloudFront matches a behaviour on the viewer's path and forwards that path to the origin
+UNCHANGED - there is no prefix-stripping short of a rewrite function - so the pattern at
+the edge and the paths in here have to be the same string, and EDGE_PATH_PREFIX below is
+this side of it. `/` stays outside the router because the two things that reach it are the
+adapter's own readiness poll on 127.0.0.1 and a direct curl at the Function URL's root;
+moving it under the prefix would mean a readiness check answering 404 at every cold start
+and a function that never starts. It is also the reason the site keeps `/`: the edge
+behaviour claims one prefix and nothing else, so the Astro app still owns the root.
+
 NOTHING HERE PROVES THE FUNCTION URL. Uvicorn plus curl proves the app emits chunks
 incrementally, which is the half that can be checked without an account. Whether Lambda
 forwards them incrementally is a property of the deployed InvokeMode and the adapter, and
@@ -63,7 +76,7 @@ import time
 
 import boto3
 from botocore.config import Config
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from history import ConversationStore
@@ -96,6 +109,23 @@ STREAM_MIN_CHARS = 1
 STREAM_MAX_DELAY_MS = 0
 
 app = FastAPI()
+
+# THE PREFIX THE EDGE MATCHES ON, and the reason it is a constant rather than typed into
+# three decorators: it has to equal the CloudFront behaviour's path pattern
+# (infra_stack.py's _STREAM_EDGE_PATH_PREFIX) letter for letter, and the infra suite's
+# test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string reads BOTH off disk
+# and compares them. A mismatch is not a synth error or a test failure anywhere else - it
+# is a deployed 404 from FastAPI, served through a distribution working as configured.
+#
+# "/api" rather than something this repo made up: it is the prefix the upstream example
+# this app is morphed from uses (aws/aws-lambda-web-adapter,
+# examples/fastapi-backend-only-response-streaming, GET /api/stream), and the site it now
+# shares a domain with has no page under it.
+EDGE_PATH_PREFIX = "/api"
+
+# Every route the outside world calls hangs off this; `/` does not (see the module
+# docstring). include_router is at the BOTTOM of the file, after the last route is defined.
+router = APIRouter(prefix=EDGE_PATH_PREFIX)
 
 _SETTINGS = None
 _SETTINGS_ERROR = None
@@ -168,7 +198,7 @@ async def _timed_chunks():
         await asyncio.sleep(CHUNK_INTERVAL_SECONDS)
 
 
-@app.get("/stream")
+@router.get("/stream")
 async def stream() -> StreamingResponse:
     """The transport control.
 
@@ -239,7 +269,7 @@ def _model_deltas(question: str):
     yield f"\n[deltas={deltas} elapsed={elapsed:.3f}s]\n"
 
 
-@app.get("/model")
+@router.get("/model")
 async def model(q: str = "Say hello and name one thing SJSU students ask about.") -> StreamingResponse:
     """One real Bedrock turn, streamed. The default question exists so the route can be
     curled with no arguments at all - the first thing anyone does to a probe."""
@@ -426,7 +456,7 @@ def _turn_frames(chat_request: ChatRequest, *, user_id: str, client_id: str | No
         yield json.dumps(frame) + "\n"
 
 
-@app.post("/chat")
+@router.post("/chat")
 async def chat(request: Request):
     """One turn, streamed. The same order, the same loop and the same payload as POST /chat.
 
@@ -482,3 +512,9 @@ async def chat(request: Request):
         _turn_frames(chat_request, user_id=user_id, client_id=client_id),
         media_type="application/x-ndjson",
     )
+
+
+# The routes above are declared on the router, so nothing is served until this line runs.
+# It is last because include_router copies the routes it finds AT CALL TIME - called any
+# earlier and the ones defined below it would be silently absent from the app.
+app.include_router(router)

@@ -30,6 +30,8 @@ from infra.infra_stack import (
     _LAMBDA_PYTHON,
     _LWA_LAYER_ACCOUNT,
     _LWA_LAYER_VERSION,
+    _STREAM_EDGE_PATH_PATTERN,
+    _STREAM_EDGE_PATH_PREFIX,
     NavigatorStack,
 )
 
@@ -1660,16 +1662,32 @@ def test_the_site_bucket_is_private_and_reachable_only_through_cloudfront():
 
 
 def test_the_distribution_uses_origin_access_control_not_legacy_oai():
+    """WIDENED from "there is exactly one OAC" when the streaming endpoint joined this
+    distribution. An OAC carries an ORIGIN TYPE and one control cannot serve two of them,
+    so the bucket's `s3` control and the Function URL's `lambda` control are necessarily
+    two resources - and a count of one stopped being the invariant the day the second
+    origin arrived. What is asserted instead is the thing the count was standing in for:
+    one control per origin type, no type twice, and no OriginAccessIdentity anywhere."""
     template = _template()
-    assert len(template.find_resources("AWS::CloudFront::OriginAccessControl")) == 1
+    controls = [
+        r["Properties"]["OriginAccessControlConfig"]
+        for r in template.find_resources("AWS::CloudFront::OriginAccessControl").values()
+    ]
+    assert sorted(c["OriginAccessControlOriginType"] for c in controls) == [
+        "lambda",
+        "s3",
+    ], controls
     dist = _resource(template, "AWS::CloudFront::Distribution")["Properties"][
         "DistributionConfig"
     ]
     assert dist["DefaultRootObject"] == "index.html"
-    assert dist["Origins"][0].get("S3OriginConfig", {}).get("OriginAccessIdentity") in (
-        None,
-        "",
-    ), "an OriginAccessIdentity would mean the deprecated OAI path"
+    # EVERY origin, not just the first: the deprecated path is what this test is named for,
+    # and a second origin arriving with an OAI would have slipped past an index of 0.
+    for origin in dist["Origins"]:
+        assert origin.get("S3OriginConfig", {}).get("OriginAccessIdentity") in (
+            None,
+            "",
+        ), "an OriginAccessIdentity would mean the deprecated OAI path"
 
 
 def test_a_directory_index_function_runs_on_viewer_request():
@@ -2776,6 +2794,34 @@ def _stream_probe_url(template: Template) -> dict:
     return _resource(template, "AWS::Lambda::Url")["Properties"]
 
 
+def _distribution_config(template: Template) -> dict:
+    return _resource(template, "AWS::CloudFront::Distribution")["Properties"][
+        "DistributionConfig"
+    ]
+
+
+def _stream_edge_behavior(template: Template) -> dict:
+    """The streaming endpoint's cache behaviour.
+
+    Addressed as THE one entry in CacheBehaviors rather than by its path pattern, so a
+    second behaviour appearing on this distribution fails here rather than being skipped
+    over - the site is one origin plus this one, and a third would be a routing decision
+    nobody made in this file."""
+    behaviors = _distribution_config(template).get("CacheBehaviors", [])
+    assert len(behaviors) == 1, behaviors
+    return behaviors[0]
+
+
+def _origin_by_id(template: Template, origin_id: str) -> dict:
+    origins = {o["Id"]: o for o in _distribution_config(template)["Origins"]}
+    assert origin_id in origins, sorted(origins)
+    return origins[origin_id]
+
+
+def _stream_probe_source() -> str:
+    return (Path(__file__).resolve().parents[3] / "app" / "stream_probe.py").read_text()
+
+
 def test_the_stream_probe_boots_through_the_adapter_wrapper_not_a_python_handler():
     """THE HANDLER IS A FILE PATH, NOT A DOTTED CALLABLE, and that is the whole shape of
     the adapter. /opt/bootstrap out of the LWA layer is `exec -- "$LAMBDA_TASK_ROOT/$_HANDLER"`,
@@ -2955,7 +3001,7 @@ def test_the_stream_probe_streams_on_both_the_url_and_the_adapter():
     assert "StreamProbeFunction" in target, target
 
 
-def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody():
+def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody_but_the_edge():
     """THE BILLING HOLE THIS STACK MUST NOT HAVE. The upstream examples set AuthType: NONE,
     which is an endpoint any stranger on the internet can invoke - behind none of the four
     fences POST /chat sits behind, and on a Function URL there is no Cognito gate and no
@@ -2965,7 +3011,18 @@ def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody():
     attaches an anonymous lambda:InvokeFunctionUrl permission to AnyPrincipal ONLY when the
     auth type is NONE. So the assertion that no such permission exists anywhere is a real
     check on the auth type rather than a restatement of it - flip AuthType to NONE and this
-    test fails twice."""
+    test fails twice.
+
+    NARROWED, DELIBERATELY, and this is the one pre-existing assertion the CloudFront work
+    could not keep. It used to read "no AWS::Lambda::Permission in this stack names the
+    probe at all", which was exactly right while SigV4 was the only way in. Origin access
+    control IS a resource-based policy - there is no version of OAC that does not put one
+    on the function - so "nobody" became unreachable the moment the edge was allowed to
+    call it. What replaces it is not weaker: every grant on the probe must name the
+    CloudFront service principal AND carry a SourceArn condition naming this stack's own
+    distribution, so an unconditioned grant, a wildcard principal, or a grant to any other
+    caller still fails here. The two actions themselves are pinned next door, in
+    test_the_edge_holds_both_invoke_actions_scoped_to_this_distribution."""
     template = _template()
 
     assert _stream_probe_url(template)["AuthType"] == "AWS_IAM"
@@ -2981,10 +3038,278 @@ def test_the_stream_probe_url_is_iam_signed_and_open_to_nobody():
             f"{logical_id} is a Function URL permission, which only exists for "
             f"AuthType NONE: {props}"
         )
-        assert "StreamProbeFunction" not in json.dumps(props.get("FunctionName", "")), (
-            f"{logical_id} grants an invoke on the probe, which is reachable by SigV4 "
-            f"alone: {props}"
+        if "StreamProbeFunction" not in json.dumps(props.get("FunctionName", "")):
+            continue
+        assert props["Principal"] == "cloudfront.amazonaws.com", (
+            f"{logical_id} grants an invoke on the probe to something that is not the "
+            f"edge; everything else reaches it by SigV4 alone: {props}"
         )
+        assert "SiteDistribution" in json.dumps(props.get("SourceArn", "")), (
+            f"{logical_id} grants the CloudFront service principal an invoke on the probe "
+            f"with no condition naming this distribution, which is every distribution in "
+            f"every account: {props}"
+        )
+
+
+def test_the_streaming_endpoint_rides_the_sites_distribution_on_one_path_pattern():
+    """ONE ORIGIN FOR THE BROWSER. The stream is a behaviour on the distribution that
+    already serves the site, not a distribution of its own, which is what makes the whole
+    app one domain - no CORS story to write later, no second allowlist entry, no preflight
+    in front of a request whose only value is time to first byte.
+
+    THE SITE STILL OWNS EVERYTHING ELSE, and that is asserted rather than assumed: the
+    default behaviour must still point at the S3 origin, because a pattern that captured
+    "/" would take the home page down and leave the adapter's readiness route answering in
+    its place.
+
+    THE DIRECTORY-INDEX FUNCTION MUST NOT RUN HERE. It appends /index.html to any path
+    without a dot, which turns /api/stream into /api/stream/index.html and every route on
+    this behaviour into a 404. It is attached to the default behaviour only."""
+    template = _template()
+    behavior = _stream_edge_behavior(template)
+    config = _distribution_config(template)
+
+    assert behavior["PathPattern"] == _STREAM_EDGE_PATH_PATTERN
+
+    # The behaviour points at the Function URL, and the default one does not.
+    stream_origin = _origin_by_id(template, behavior["TargetOriginId"])
+    assert "StreamProbeFunctionFunctionUrl" in json.dumps(stream_origin["DomainName"]), (
+        stream_origin
+    )
+    # A Function URL is HTTPS-only and has no S3 config; a CustomOriginConfig that lost its
+    # https-only would be an edge talking to Lambda in the clear.
+    assert stream_origin["CustomOriginConfig"]["OriginProtocolPolicy"] == "https-only"
+    assert "S3OriginConfig" not in stream_origin
+
+    site_origin = _origin_by_id(template, config["DefaultCacheBehavior"]["TargetOriginId"])
+    assert "S3OriginConfig" in site_origin, (
+        "the default behaviour stopped pointing at the bucket, so the site is being served "
+        f"by something else: {site_origin}"
+    )
+
+    assert "FunctionAssociations" not in behavior, behavior
+
+
+def test_the_streaming_behaviour_caches_nothing_and_keeps_the_origins_own_host():
+    """THREE SETTINGS, EACH OF WHICH BREAKS SOMETHING DIFFERENT WHEN WRONG, and none of
+    which is visible at synth.
+
+    CACHING DISABLED: every route under this prefix is a stream. A cached turn is one
+    student's answer served to another; a cached probe answers the question this endpoint
+    exists to ask with a copy of the last run's timings.
+
+    ALL_VIEWER **EXCEPT HOST HEADER**: origin access control signs each origin request with
+    SigV4 over the ORIGIN's host - the lambda-url domain - so forwarding the viewer's Host,
+    which is the distribution's domain, makes every signature fail to validate at Lambda.
+    AWS publishes this policy for exactly this case ("intended for use with Amazon API
+    Gateway and AWS Lambda function URL origins"). The rest of what it forwards is needed:
+    the query string /api/model reads its question from, and content-type plus the
+    x-amz-content-sha256 body hash a POST has to carry.
+
+    COMPRESS OFF, against a CDK default of ON: compressing is holding bytes in order to
+    compress them, and this endpoint's whole job is to measure whether the edge holds
+    bytes.
+
+    The two policy ids are AWS's published constants, written out here rather than read
+    back off the construct - a second copy of a published fact is a check, and
+    `CachePolicy.CACHING_DISABLED.cache_policy_id` would only restate whatever the source
+    already said."""
+    behavior = _stream_edge_behavior(_template())
+
+    assert behavior["CachePolicyId"] == "4135ea2d-6df8-44a3-9df3-4b5a84be39ad", (
+        "not the managed CachingDisabled policy"
+    )
+    assert behavior["OriginRequestPolicyId"] == "b689b0a8-53d0-40ab-baf2-68738e2966ac", (
+        "not the managed AllViewerExceptHostHeader policy"
+    )
+    assert behavior["Compress"] is False
+    # POST carries /api/chat. ALLOW_ALL is the only AllowedMethods value that includes it -
+    # CloudFront has no POST-without-DELETE option - so the whole verb list is asserted
+    # rather than just the one that matters, to make the breadth deliberate.
+    assert behavior["AllowedMethods"] == [
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PUT",
+        "PATCH",
+        "POST",
+        "DELETE",
+    ], behavior["AllowedMethods"]
+    assert behavior["ViewerProtocolPolicy"] == "redirect-to-https"
+
+
+def test_the_edge_signs_every_origin_request_and_the_function_url_demands_it():
+    """THE PAIR THAT HAS TO AGREE, and neither half means anything alone.
+
+    SigningBehavior `always` with SigningProtocol `sigv4` is what makes the edge the only
+    caller that can reach an AWS_IAM Function URL without credentials of its own; AWS_IAM
+    is what stops anyone else reaching it at all. Set signing to `never` and the URL has to
+    be public for the edge to work, which is the AuthType: NONE billing hole this stack
+    refuses, arrived at from the other direction.
+
+    ORIGIN TYPE `lambda`, not `s3`: they are different controls and the bucket's is the
+    other one. A distribution serving a Function URL through an `s3` control signs a
+    request Lambda will not accept."""
+    template = _template()
+    behavior = _stream_edge_behavior(template)
+
+    controls = {
+        lid: r["Properties"]["OriginAccessControlConfig"]
+        for lid, r in template.find_resources(
+            "AWS::CloudFront::OriginAccessControl"
+        ).items()
+    }
+    lambda_controls = {
+        lid: c
+        for lid, c in controls.items()
+        if c["OriginAccessControlOriginType"] == "lambda"
+    }
+    assert len(lambda_controls) == 1, controls
+    lambda_oac_id, lambda_oac = next(iter(lambda_controls.items()))
+
+    assert lambda_oac["SigningBehavior"] == "always"
+    assert lambda_oac["SigningProtocol"] == "sigv4"
+
+    # And it is the control THIS behaviour's origin actually carries, rather than one that
+    # merely exists in the template.
+    stream_origin = _origin_by_id(template, behavior["TargetOriginId"])
+    assert stream_origin["OriginAccessControlId"] == {
+        "Fn::GetAtt": [lambda_oac_id, "Id"]
+    }, stream_origin
+
+    assert _stream_probe_url(template)["AuthType"] == "AWS_IAM"
+
+
+def test_the_edge_holds_both_invoke_actions_scoped_to_this_distribution():
+    """BOTH ACTIONS, AND CDK ONLY WRITES ONE OF THEM.
+
+    `FunctionUrlOrigin.withOriginAccessControl` emits a single AWS::Lambda::Permission for
+    `lambda:InvokeFunctionUrl`. Invoking a Function URL has required BOTH that and
+    `lambda:InvokeFunction` since October 2025, and the CloudFront developer guide's OAC
+    setup is two `aws lambda add-permission` calls for that reason. With one of them the
+    edge answers 403 AccessDenied, which reads like a signing mistake and is not - so the
+    stack writes the second permission by hand and this pins that it is still there
+    (aws/aws-cdk#35872; Lambda's grace period for the single-action form ends 2026-11-01,
+    which means a template that synthesizes clean today breaks on a DATE).
+
+    THE CONDITION IS THE OTHER HALF. `cloudfront.amazonaws.com` is a service principal
+    every AWS customer shares, so an unconditioned grant reads "any distribution in any
+    account may invoke this function". Both statements must carry the same SourceArn, and
+    it must name this stack's own distribution - as a token, so a fresh install scopes to
+    its own."""
+    template = _template()
+
+    edge_grants = {
+        lid: r["Properties"]
+        for lid, r in template.find_resources("AWS::Lambda::Permission").items()
+        if r["Properties"].get("Principal") == "cloudfront.amazonaws.com"
+    }
+    assert len(edge_grants) == 2, sorted(edge_grants)
+    assert sorted(p["Action"] for p in edge_grants.values()) == [
+        "lambda:InvokeFunction",
+        "lambda:InvokeFunctionUrl",
+    ], edge_grants
+
+    distribution_id = next(iter(template.find_resources("AWS::CloudFront::Distribution")))
+    for logical_id, props in edge_grants.items():
+        # Both name the probe, and nothing else in the stack.
+        assert "StreamProbeFunction" in json.dumps(props["FunctionName"]), (
+            f"{logical_id} grants the edge an invoke on a function that is not the "
+            f"streaming app: {props}"
+        )
+        # Scoped: partition and account from stack tokens, the distribution by Ref.
+        source_arn = json.dumps(props.get("SourceArn"))
+        assert ":cloudfront::" in source_arn, (
+            f"{logical_id} has no CloudFront SourceArn condition: {props}"
+        )
+        assert json.dumps({"Ref": distribution_id}) in source_arn, (
+            f"{logical_id} is not scoped to this stack's distribution: {props}"
+        )
+
+
+def test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string():
+    """THE CONTRACT NO SYNTH AND NO OTHER TEST CAN SEE. CloudFront matches a behaviour on
+    the viewer's path and forwards that path to the origin UNCHANGED - there is no
+    prefix-stripping short of a rewrite function - so the pattern in infra_stack.py and the
+    router prefix in app/stream_probe.py have to be the same string. Disagree and the
+    template is valid, the deploy is clean, and every request is a 404 from FastAPI served
+    through a distribution behaving exactly as configured.
+
+    READ OFF DISK, BOTH SIDES, and the app's side through the AST rather than an import:
+    fastapi is in the probe's own layer and in no venv this suite installs, so
+    `import stream_probe` raises here. Reading the tree is also what makes the SHAPE
+    assertable - which decorator each route hangs off.
+
+    `/` STAYS ON THE APP, NOT THE ROUTER, and that is the second half. It is the adapter's
+    readiness target: the LWA polls AWS_LWA_READINESS_CHECK_PATH (default "/") on
+    127.0.0.1 before it forwards anything, so a "/" that moved under the prefix is a
+    readiness check answering 404 at every cold start and a function that never serves a
+    request. Keeping it off the prefix is also what leaves the site owning the root."""
+    import ast
+
+    tree = ast.parse(_stream_probe_source())
+
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert constants.get("EDGE_PATH_PREFIX") == _STREAM_EDGE_PATH_PREFIX, (
+        f"app/stream_probe.py serves {constants.get('EDGE_PATH_PREFIX')!r} and the edge "
+        f"routes {_STREAM_EDGE_PATH_PREFIX!r} at it"
+    )
+    assert _STREAM_EDGE_PATH_PATTERN == f"{_STREAM_EDGE_PATH_PREFIX}/*"
+
+    # The router is built from that constant rather than from a second literal.
+    router = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "router" for t in node.targets)
+    )
+    assert isinstance(router, ast.Call) and router.func.id == "APIRouter", ast.dump(router)
+    prefix_arg = {kw.arg: kw.value for kw in router.keywords}["prefix"]
+    assert isinstance(prefix_arg, ast.Name) and prefix_arg.id == "EDGE_PATH_PREFIX", (
+        ast.dump(prefix_arg)
+    )
+
+    routes = {"app": [], "router": []}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and isinstance(decorator.func.value, ast.Name)
+                and decorator.func.value.id in routes
+                and decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+            ):
+                routes[decorator.func.value.id].append(
+                    (decorator.func.attr, decorator.args[0].value)
+                )
+
+    assert routes["app"] == [("get", "/")], (
+        f"the only route hung off the app itself must be the adapter's readiness target; "
+        f"found {routes['app']}"
+    )
+    assert sorted(routes["router"]) == [
+        ("get", "/model"),
+        ("get", "/stream"),
+        ("post", "/chat"),
+    ], routes["router"]
+
+    # And the router is actually mounted. Every route above is dead code without this.
+    assert any(
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "include_router"
+        for node in tree.body
+    ), "app/stream_probe.py builds a router and never includes it"
 
 
 def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():

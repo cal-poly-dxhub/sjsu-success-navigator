@@ -719,6 +719,48 @@ Adapter (`app/stream_probe.py`), which runs the same turn as `POST /chat` in one
 streams it as NDJSON. The frames both transports send, and the rules for what is safe to show
 of a half-written reply, live once in `app/preview.py`.
 
+**The HTTP stream is reachable two ways, and that is a measurement rather than a fallback.**
+Its Function URL stays IAM-signed and open; the site's CloudFront distribution now also
+serves it on a `/api/*` behaviour with origin access control. The open question is whether a
+streamed body survives the edge or is buffered there - it is not stated in the CloudFront
+developer guide, we could not find it stated anywhere, and it decides both the browser client
+and where the auth header can live. It cannot be answered locally: uvicorn streams (checked
+with `curl -N`), Lambda's `InvokeMode` is a deploy-time property of the URL, and the edge is a
+third hop again. So the pair exists to be curled against each other on one route -
+`time_starttransfer` against `time_total`, direct and through the edge - and the direct URL is
+the control that must not be taken away.
+
+**The edge behaviour and the app's routes are one string, spelled twice.** CloudFront matches
+a behaviour on the viewer's path and forwards that path to the origin unchanged; there is no
+prefix-stripping short of a rewrite function. So every route the outside world calls moved
+under `/api` (`EDGE_PATH_PREFIX` in `stream_probe.py`, `_STREAM_EDGE_PATH_PREFIX` in the
+stack) and a test reads both off disk, because a mismatch synthesizes clean, deploys clean,
+and is a 404 from FastAPI served through a distribution behaving exactly as configured. `/`
+is the exception and stays at the app's root: it is the adapter's readiness target, polled on
+127.0.0.1 before anything is forwarded, and a readiness check answering 404 is a function that
+never starts. Leaving the root to the app is also what leaves it to the site at the edge.
+
+**Three settings on that behaviour are load-bearing and none of them fails at synth.** Caching
+is disabled, because a cached turn is one student's answer served to another. The origin
+request policy is AWS's `AllViewerExceptHostHeader`, because OAC signs each origin request
+over the *origin's* host - forwarding the viewer's would make every signature fail to validate
+at Lambda. Compression is off against a CDK default of on, because compressing is holding
+bytes to compress them and this endpoint exists to measure whether the edge holds bytes.
+
+**OAC needs two invoke actions and CDK writes one.** `FunctionUrlOrigin.withOriginAccessControl`
+emits a single `lambda:InvokeFunctionUrl` permission; invoking a Function URL has needed
+`lambda:InvokeFunction` alongside it since October 2025, which is why the CloudFront developer
+guide's own setup is two `add-permission` calls. With one of them the edge answers 403
+AccessDenied, which reads like a signing mistake and is not. The stack writes the second by
+hand, scoped by `SourceArn` to its own distribution - `cloudfront.amazonaws.com` is a service
+principal every AWS customer shares, so an unconditioned grant is one any distribution in any
+account could use.
+
+**Nothing about auth changed.** `POST /api/chat` answers 401 to every caller, through the edge
+exactly as directly: the Function URL's request context carries `authorizer.iam`, not a `jwt`
+block, and `identity_from` reads only the latter. The edge is a transport in front of an
+endpoint that still refuses everyone, which is the honest state until a front door is chosen.
+
 **Why a WebSocket and not response streaming.** Two constraints meet and leave one door. API
 Gateway response streaming is REST-API only and this is an HTTP API; Lambda response streaming
 supports Node.js and custom runtimes only and this agent loop is Python. In-band streaming

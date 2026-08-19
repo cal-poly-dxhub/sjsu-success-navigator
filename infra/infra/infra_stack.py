@@ -164,6 +164,20 @@ _LWA_LAYER_VERSION = 28
 # up timing out against a readiness check on a port nothing is listening to.
 _LWA_PROBE_PORT = 8000
 
+# THE PATH THE EDGE CLAIMS, and the same string app/stream_probe.py binds its router to
+# (EDGE_PATH_PREFIX there). CloudFront matches a behaviour on the viewer's path and
+# forwards that path to the origin UNCHANGED - there is no prefix-stripping short of a
+# rewrite function - so the two are one spelling on each side of a boundary neither file
+# can see across, and test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string
+# reads both off disk rather than trusting this comment. A mismatch synthesizes clean,
+# deploys clean, and is a 404 from FastAPI through a distribution behaving as configured.
+#
+# It is NOT in config.yaml: it names nothing this deployment owns and there is no install
+# that wants a different one - it is a contract between two files in this repo, and a knob
+# would be a way for them to disagree.
+_STREAM_EDGE_PATH_PREFIX = "/api"
+_STREAM_EDGE_PATH_PATTERN = f"{_STREAM_EDGE_PATH_PREFIX}/*"
+
 # The eval harness's MACHINE account username, spelled into the setup commands the stack
 # prints so they are copy-paste runnable. It is a NAME, not a credential - the password is
 # chosen by the deployer and never appears here or anywhere in the repo.
@@ -2701,12 +2715,21 @@ class NavigatorStack(Stack):
         # lambda:InvokeFunctionUrl for this ARN. It also decides what is NOT in the
         # template: CDK attaches the anonymous lambda:InvokeFunctionUrl permission only
         # when AuthType is NONE, so no AWS::Lambda::Permission is emitted for this URL at
-        # all, and test_the_stream_probe_url_is_iam_signed_and_open_to_nobody pins that.
+        # all, and test_the_stream_probe_url_is_iam_signed_and_open_to_nobody_but_the_edge
+        # pins that.
         #
-        # WHAT THE BROWSER EVENTUALLY TALKS TO IS UNDECIDED and out of scope. A student's
-        # browser holds a Cognito token, not SigV4 credentials, so this URL is not yet a
-        # front door - it is a thing the deployer and the eval harness can sign a request
-        # to, which is all a probe needs.
+        # WHAT AUTHENTICATES A BROWSER TO THIS IS STILL UNDECIDED and still out of scope.
+        # A student's browser holds a Cognito token, not SigV4 credentials, so nothing here
+        # turns this into a front door: POST /api/chat answers 401 to every caller, through
+        # the edge exactly as directly (app/stream_probe.py, identity_from), and this commit
+        # changes neither side of that.
+        #
+        # WHAT DID CHANGE is that section 6 now puts this URL behind the site's CloudFront
+        # distribution, on the /api/* behaviour, with origin access control. THIS URL STAYS
+        # OPEN AND STAYS THE CONTROL: the whole question is whether a body that streams out
+        # of here still streams after the edge, and a measurement with nothing to compare
+        # against answers nothing. Taking the direct URL away - or fencing it behind the
+        # distribution with an OAC signing rule - would remove the only baseline.
         stream_probe_url = stream_probe_lambda.add_function_url(
             auth_type=_lambda.FunctionUrlAuthType.AWS_IAM,
             invoke_mode=_lambda.InvokeMode.RESPONSE_STREAM,
@@ -2717,16 +2740,22 @@ class NavigatorStack(Stack):
             "StreamProbeFunctionUrl",
             value=stream_probe_url.url,
             description=(
-                "IAM-signed Function URL for the streaming chat app. POST /chat streams a "
-                "full turn as NDJSON frames; GET /stream and GET /model are the transport "
-                "and Bedrock probes. Every request must be SigV4-signed for service "
-                "'lambda', and POST /chat additionally needs a validated JWT sub in the "
-                "request context - which an IAM Function URL does not carry, so it answers "
-                "401 until a front door is chosen. Nothing else in this stack references it."
+                "IAM-signed Function URL for the streaming chat app, and the CONTROL for "
+                "the edge measurement - curl this and StreamEdgeUrl on the same route and "
+                "compare time_starttransfer against time_total. POST /api/chat streams a "
+                "full turn as NDJSON frames; GET /api/stream and GET /api/model are the "
+                "transport and Bedrock probes. Every request must be SigV4-signed for "
+                "service 'lambda', and POST /api/chat additionally needs a validated JWT "
+                "sub in the request context - which an IAM Function URL does not carry, so "
+                "it answers 401 until a front door is chosen. The only other thing in this "
+                "stack that references it is the site distribution's /api/* behaviour."
             ),
         )
 
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------
+        #       ...and, at the end of it, the streaming endpoint on the same
+        #       distribution: one origin for the browser, one path pattern for the
+        #       stream, and the Function URL from section 5 as its origin.
         #
         # THE BUILD: the Astro app in frontend/ is compiled IN A CONTAINER at synth (see
         # _astro_bundling) and its dist/ is what lands in the bucket. dist/ is gitignored
@@ -2788,6 +2817,35 @@ function handler(event) {
             ),
         )
 
+        # THE STREAMING ENDPOINT RIDES THIS DISTRIBUTION, and section 5's Function URL is
+        # its origin. Everything about that is below; this is the piece that has to exist
+        # before the distribution does.
+        #
+        # WHY THIS DISTRIBUTION AND NOT ONE OF ITS OWN. The browser gets ONE origin for the
+        # whole app - the site and the stream come off the same domain - so there is no
+        # CORS story to write later, no second allowlist entry to keep in step with the HTTP
+        # API's, and no preflight sitting in front of a request whose entire value is time
+        # to first byte. A second distribution would be a second domain and all three.
+        #
+        # WHAT IT IS FOR. Whether a streamed response SURVIVES CloudFront or is buffered at
+        # the edge is not stated in the CloudFront developer guide, and the answer decides
+        # the browser client and the auth header both. It cannot be had locally: uvicorn
+        # streams (verified with curl -N against the app), Lambda's InvokeMode is a
+        # deploy-time property of the URL, and the edge is a third hop again. So this is
+        # built to be measured, direct against edge, on the one route that cannot be
+        # Bedrock's fault.
+        stream_edge_oac = cloudfront.FunctionUrlOriginAccessControl(
+            self,
+            "StreamEdgeOriginAccessControl",
+            # SIGV4_ALWAYS is CDK's default and is spelled out because it is one half of a
+            # contract whose other half is the Function URL's AuthType. AWS_IAM with
+            # anything weaker here is an endpoint the edge cannot reach and a 403 with
+            # nothing in the template to explain it. CDK checks this pair at synth
+            # (ValidationError FunctionUrlAuthTypeMustBeAwsIam), which makes it the one
+            # part of this section that does not need a deploy to find out about.
+            signing=cloudfront.Signing.SIGV4_ALWAYS,
+        )
+
         site_distribution = cloudfront.Distribution(
             self,
             "SiteDistribution",
@@ -2804,6 +2862,54 @@ function handler(event) {
                     )
                 ],
             ),
+            additional_behaviors={
+                # ONE PATTERN, AND THE APP AGREES WITH IT (_STREAM_EDGE_PATH_PREFIX above).
+                # Everything not under it - "/", /login/, /auth/callback/, /_astro/* - still
+                # falls to the default behaviour and the S3 origin, which is also what keeps
+                # the adapter's readiness route off the public domain: it lives at the app's
+                # own root, this pattern does not claim the root, so "/" here is the site's
+                # index.html and the readiness poll stays on 127.0.0.1 where it belongs.
+                #
+                # The directory-index CloudFront Function is on the DEFAULT behaviour only.
+                # Attached here it would rewrite /api/stream to /api/stream/index.html and
+                # every route would 404.
+                _STREAM_EDGE_PATH_PATTERN: cloudfront.BehaviorOptions(
+                    origin=origins.FunctionUrlOrigin.with_origin_access_control(
+                        stream_probe_url, origin_access_control=stream_edge_oac
+                    ),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    # CACHING DISABLED, and not as a default anyone can quietly change.
+                    # Every route under this prefix is a stream: a cached turn is one
+                    # student's answer served to another, and a cached probe answers the
+                    # question this endpoint exists to ask with a copy of last run's
+                    # timings.
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    # ALL_VIEWER **EXCEPT HOST HEADER**, and the exception is the whole
+                    # reason this line is not ALL_VIEWER. OAC signs each origin request with
+                    # SigV4 over the ORIGIN's host - the lambda-url domain - so forwarding
+                    # the viewer's Host, which is this distribution's domain, makes every
+                    # signature fail to validate at Lambda. The rest is needed rather than
+                    # tolerated: content-type and the x-amz-content-sha256 body hash on
+                    # POST /api/chat (Lambda does not accept an unsigned payload, so a
+                    # client sending a body has to compute it), and the query string
+                    # /api/model reads its question out of.
+                    origin_request_policy=(
+                        cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER
+                    ),
+                    # POST is here for /api/chat, and ALLOW_ALL is the only AllowedMethods
+                    # value that carries it - CloudFront has no POST-without-DELETE option.
+                    # The app is the thing that decides a method is not a route: DELETE on
+                    # any of these paths is a FastAPI 405.
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    # COMPRESSION OFF, against a CDK default of ON, because compressing is
+                    # holding bytes in order to compress them. CloudFront in practice does
+                    # not compress a chunked response with no Content-Length, so this is
+                    # probably not load-bearing - but "probably" is the wrong word to have
+                    # anywhere near an endpoint whose only job is to measure whether the
+                    # edge buffers. Off, so the answer is about the edge.
+                    compress=False,
+                ),
+            },
             # A missing key on a REST origin comes back as 403 (the bucket policy grants
             # GetObject only, so S3 cannot distinguish "absent" from "forbidden" without
             # ListBucket). Both are mapped to a real 404 STATUS - deliberately NOT to
@@ -2838,6 +2944,34 @@ function handler(event) {
         )
 
         site_url = f"https://{site_distribution.distribution_domain_name}"
+
+        # THE HALF OF THE GRANT CDK DOES NOT WRITE, and the reason this is a hand-built L1
+        # next to an L2 that looks like it already did the job.
+        # FunctionUrlOrigin.withOriginAccessControl emits exactly ONE
+        # AWS::Lambda::Permission, for `lambda:InvokeFunctionUrl`. Invoking a Function URL
+        # has needed BOTH that and `lambda:InvokeFunction` since October 2025, and the
+        # CloudFront developer guide's own OAC setup is two `aws lambda add-permission`
+        # calls for precisely that reason. With one of them the edge answers 403
+        # AccessDenied - which reads like a signing mistake, is not one, and is invisible
+        # until a deploy. (aws/aws-cdk#35872. Lambda's grace period for the single-action
+        # form runs to 2026-11-01, so a stack that synthesized clean in the meantime would
+        # break on a date rather than on a change.)
+        _lambda.CfnPermission(
+            self,
+            "StreamEdgeInvokeFunctionPermission",
+            action="lambda:InvokeFunction",
+            function_name=stream_probe_lambda.function_arn,
+            principal="cloudfront.amazonaws.com",
+            # SCOPED TO THIS DISTRIBUTION, never to the service principal at large: the
+            # principal is a service every AWS customer has, so without the condition the
+            # grant reads "any CloudFront distribution in any account may invoke this
+            # function". Assembled from stack tokens - the same ARN shape CDK builds for the
+            # other action - so a fresh install in another account scopes to its own.
+            source_arn=(
+                f"arn:{self.partition}:cloudfront::{self.account}"
+                f":distribution/{site_distribution.distribution_id}"
+            ),
+        )
 
         # TWO DEPLOYMENTS INTO ONE BUCKET, and the split is load-bearing rather than tidy.
         #
@@ -3009,4 +3143,18 @@ function handler(event) {
             "SiteUrl",
             value=site_url,
             description="CloudFront URL for the web app.",
+        )
+
+        CfnOutput(
+            self,
+            "StreamEdgeUrl",
+            value=f"{site_url}{_STREAM_EDGE_PATH_PREFIX}",
+            description=(
+                "The streaming app through the edge: same routes as StreamProbeFunctionUrl "
+                "hung off this prefix (/stream, /model, /chat). NO SIGNATURE IS NEEDED - "
+                "origin access control signs the origin request, so this is the same "
+                "endpoint reachable two ways, which is what makes the pair a measurement. "
+                "A client sending a body must add x-amz-content-sha256 for it: Lambda does "
+                "not accept an unsigned payload from an OAC-signed origin request."
+            ),
         )
