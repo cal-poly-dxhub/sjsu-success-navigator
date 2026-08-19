@@ -167,8 +167,6 @@ class FakeConversationStore:
         self.deleted_messages = deleted_messages
         self.calls = []
         self.appended = []
-        # The real item is pk=USER#<sub>, sk=CONN#<connectionId>, so the pair is the identity.
-        self.connections = set()
 
     def append_message(self, **kwargs):
         self.calls.append(("append", kwargs))
@@ -226,16 +224,6 @@ class FakeConversationStore:
         if "delete" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (delete)")
         return self.deleted_messages
-
-    def open_connection(self, **kwargs):
-        """The connection record. It does NOT raise on `fail_on`: the real one swallows its
-        own failures, because the record is a record and not a gate."""
-        self.calls.append(("connect", kwargs))
-        self.connections.add((kwargs["user_id"], kwargs["connection_id"]))
-
-    def close_connection(self, **kwargs):
-        self.calls.append(("disconnect", kwargs))
-        self.connections.discard((kwargs["user_id"], kwargs["connection_id"]))
 
     @property
     def call_names(self):

@@ -1,14 +1,14 @@
-"""The response-streaming probe: a FastAPI app run by the Lambda Web Adapter.
+"""The streaming chat app: a FastAPI app run by the Lambda Web Adapter.
 
-WHY IT EXISTS. The WebSocket section of infra_stack.py says, correctly, that "Lambda
-response streaming is Node.js/custom-runtime only and the agent loop is Python" - so the
-stream was moved out of band, onto a socket and three functions. That sentence is true of
-the PYTHON MANAGED RUNTIME and false of Lambda: the AWS Lambda Web Adapter runs an
+WHY IT EXISTS. This repo once said, and the stack once repeated, that "Lambda response
+streaming is Node.js/custom-runtime only and the agent loop is Python" - which is why the
+stream was first moved out of band, onto a WebSocket and three functions. That sentence is
+true of the PYTHON MANAGED RUNTIME and false of Lambda: the AWS Lambda Web Adapter runs an
 ordinary ASGI app as an execution wrapper and streams its response body out through a
 Function URL, which is the supported way to get in-band streaming out of Python
-(aws/aws-lambda-web-adapter, examples/fastapi-response-streaming-zip). This module is that
-example morphed onto this repo's zip-from-source pipeline, and it exists so the commit
-that moves real logic onto the mechanism is a move rather than a bring-up.
+(aws/aws-lambda-web-adapter, examples/fastapi-response-streaming-zip and
+fastapi-backend-only-response-streaming). This module is those examples morphed onto this
+repo's zip-from-source pipeline. The socket is gone; this is the only streaming transport.
 
 TWO ROUTES THAT STREAM, AND KEEPING BOTH IS THE POINT.
 
@@ -40,10 +40,9 @@ identical ChatResponse the API Gateway handler would have returned. That propert
 structural rather than tested-for, and the acceptance check is still to send one question
 down both paths and diff the payloads.
 
-WHO THE CALLER IS, AND WHY IT IS DECIDED IN HERE. Every other transport in this repo is
+WHO THE CALLER IS, AND WHY IT IS DECIDED IN HERE. The other transport in this repo is
 handed an identity by something in front of it - API Gateway's native JWT authorizer for
-POST /chat, app/ws_authorizer.py at the socket's handshake. A Lambda Function URL takes
-neither, and behind IAM auth with origin access control the request context carries the
+POST /chat. A Lambda Function URL takes none, and behind IAM auth with origin access control the request context carries the
 EDGE's principal rather than a student's claims. So POST /api/chat verifies the token
 itself: app/token_auth.py checks a Cognito ACCESS token's signature against the pool's
 JWKS, its issuer, its expiry, its `token_use` and its `client_id` against the two app
@@ -51,10 +50,6 @@ clients the stack configures, and the `sub` that comes out is the only identity 
 path. The token rides its own request header because origin access control's SigV4
 signature owns `Authorization`. Anything that does not present a verifiable token is the
 same 401 this route has always answered.
-
-THE MODULE NAME IS NOW A LIE and is left alone deliberately. run.sh names `stream_probe:app`
-and the stack's bundle names the file; renaming is a rename commit, and deleting or renaming
-anything is a later step and the captain's call.
 
 TWO ROUTES THAT DO NOT STREAM. `/` is the adapter's readiness target, cheap on purpose:
 the adapter polls AWS_LWA_READINESS_CHECK_PATH (default "/") before forwarding the first
@@ -114,10 +109,10 @@ CHUNK_INTERVAL_SECONDS = 0.5
 PROBE_MAX_TOKENS = 512
 
 # THE PREVIEW IS NOT BATCHED HERE, and that is a measured difference from the socket rather
-# than an oversight. app/streaming.py batches because every push down a WebSocket is a
-# billable API Gateway message; a response-streamed HTTP body has no per-frame charge, so
-# the same thresholds would buy nothing and cost up to STREAM_DELTA_MAX_DELAY_MS of latency
-# on the last words of a sentence. `min_chars=1` pushes every delta the model produces.
+# than an oversight. The socket batched because every push down a WebSocket was a billable
+# API Gateway message; a response-streamed HTTP body has no per-frame charge, so the same
+# thresholds would buy nothing and cost up to a batching delay of latency on the last words
+# of a sentence. `min_chars=1` pushes every delta the model produces.
 STREAM_MIN_CHARS = 1
 STREAM_MAX_DELAY_MS = 0
 
@@ -313,8 +308,7 @@ def identity_from(request: Request) -> Identity | None:
 
     THIS ENDPOINT HAS NO AUTHORIZER IN FRONT OF IT, and that is why the verification is
     here rather than a claim read off an event. `POST /chat` is gated by API Gateway's
-    native JWT authorizer and the socket by app/ws_authorizer.py at the handshake; a Lambda
-    Function URL takes neither. Behind IAM auth and origin access control the request
+    native JWT authorizer; a Lambda Function URL takes none. Behind IAM auth and origin access control the request
     context carries `authorizer.iam` - the EDGE's principal, a CloudFront service principal
     shared by every AWS customer - and no `jwt` block at all, so there has never been
     anything on this transport that could identify a student. app/token_auth.py is that
@@ -365,9 +359,9 @@ class _ResponseSink(PreviewSink):
 
     `_post` ALWAYS SUCCEEDS. There is no 410 to detect: a client that hangs up is noticed by
     the ASGI server when the generator's next chunk cannot be written, and the turn behind
-    it finishes and is persisted regardless - the same posture app/streaming.py takes for
-    the same reason (the model call is already paid for, and a user message with no
-    assistant reply is a dangling turn the next one would have to merge).
+    it finishes and is persisted regardless, for the reason the socket took the same
+    posture (the model call is already paid for, and a user message with no assistant reply
+    is a dangling turn the next one would have to merge).
     """
 
     def __init__(self, frames: "queue.Queue"):
@@ -389,11 +383,13 @@ _DONE = object()
 def _turn_frames(chat_request: ChatRequest, *, user_id: str, client_id: str | None):
     """NDJSON frames for one streamed turn: accepted, status, delta, then one final or error.
 
-    NDJSON RATHER THAN SSE, and it is not a front-door decision - it is the smallest framing
-    that carries the socket's existing frame types unchanged (`accepted`, `status`, `delta`,
-    `final`, `error`), so whatever ends up in front of this can translate one line into one
-    message. SSE's `event:`/`data:` framing would be a second spelling of the same thing,
-    chosen for a browser API nobody has committed to.
+    NDJSON RATHER THAN SSE, and the browser is the reason it stays that way. SSE's
+    `event:`/`data:` framing exists to be read by `EventSource`, and `EventSource` can only
+    issue a GET with no body - a turn carries one, so that API was never available here.
+    What is left is a `fetch` and a stream reader, which reads newline-delimited JSON with
+    no framing library at all (frontend/src/lib/chatStream.ts). The five frame types
+    (`accepted`, `status`, `delta`, `final`, `error`) are the socket's, kept because they
+    were right, not because anything still speaks them.
 
     `accepted` COMES FIRST AND CARRIES THE CONVERSATION ID, and on this transport it is
     app/turn.py that sends it, the instant the student's message is on record under that id
@@ -403,7 +399,7 @@ def _turn_frames(chat_request: ChatRequest, *, user_id: str, client_id: str | No
     that the order the sink posted in is the order the body is written in.
 
     THE DEADLINE IS THE CONFIGURED ONE, unchanged: chat.converse_deadline_seconds, 22
-    seconds, the same number app/handler.py and app/stream_worker.py both use. It is not
+    seconds, the same number app/handler.py uses. It is not
     narrowed against Lambda's remaining time the way the handler narrows it, because there
     is no context object here - the adapter does forward one in `x-amzn-lambda-context`, and
     reading it is a real improvement that belongs with the function timeout it would be
@@ -483,7 +479,7 @@ async def chat(request: Request):
     refused before the first byte of the body leaves, because after that Starlette has
     already sent 200 and the only way to say no is a frame. What is left inside the stream
     is the daily cap, which lives in app/turn.py where its position in the order is argued
-    for - the socket refuses it the same way, as an `error` frame.
+    for, and where it goes out as an `error` frame.
     """
     resolved = settings()
     if resolved is None:

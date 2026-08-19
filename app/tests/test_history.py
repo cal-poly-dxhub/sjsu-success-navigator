@@ -3,6 +3,7 @@
 See docs/accounts-and-storage.md and docs/chat-service.md, Storage.
 """
 
+import inspect
 import re
 
 import pytest
@@ -761,23 +762,32 @@ def test_any_other_failure_on_the_allowance_write_still_raises(monkeypatch):
         )
 
 
-# --- connection records (app/streaming.py) -----------------------------------------------
+# --- the connection records that are gone (was app/streaming.py) --------------------------
 
 
-def test_a_connection_is_an_item_in_the_users_own_partition(table):
-    """pk=USER#<sub>, sk=CONN#<connectionId>: a fourth prefix in the partition already keyed
-    on the user, so it needed no table and no grant."""
-    table.store.open_connection(user_id=_SUB, connection_id="abc123=", expires_at=1_700_010_000)
+def test_the_store_has_no_connection_api_at_all():
+    """THE INVERSION OF FOUR TESTS THAT USED TO PIN THESE METHODS EXIST.
 
-    item = table.puts[0]["Item"]
-    assert item["pk"] == f"USER#{_SUB}"
-    assert item["sk"] == "CONN#abc123="
-    assert item["expiresAt"] == 1_700_010_000
-    assert item["connectedAt"]
+    The WebSocket transport is gone, so the fourth sort-key prefix in this partition
+    (`CONN#<connectionId>`) has nothing to write it and nothing to read it. This is not a
+    tidy-up: a store that still offered `open_connection` would offer a way to put an item
+    in a student's partition that no read here will ever surface and no TTL policy was
+    re-argued for, and the next person to find the method would reasonably assume something
+    still consumed it.
+
+    Asserted on the CLASS rather than by grepping the file, so a method reintroduced under
+    any docstring fails."""
+    assert not hasattr(history.ConversationStore, "open_connection")
+    assert not hasattr(history.ConversationStore, "close_connection")
+    assert "CONN#" not in inspect.getsource(history), (
+        "the connection sort-key prefix is still written somewhere in app/history.py"
+    )
 
 
 def test_a_connection_record_is_invisible_to_every_read_in_the_module(table):
-    """It shares the partition, so the sort-key prefixes are what keep it out of a read."""
+    """KEPT UNCHANGED FROM WHEN THERE WERE CONNECTION RECORDS TO BE INVISIBLE TO. The
+    assertion is about the READS - that each one names its prefix rather than scanning the
+    partition - and that property outlives the item kind that made it worth writing down."""
     table.store.list_conversations(user_id=_SUB, limit=10)
     table.store.conversation_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
     table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
@@ -786,35 +796,6 @@ def test_a_connection_record_is_invisible_to_every_read_in_the_module(table):
         prefix = query["ExpressionAttributeValues"][":prefix"]
         assert prefix in ("CONV#", f"MSG#{_CONV}#")
         assert not prefix.startswith("CONN#")
-
-
-def test_closing_a_connection_deletes_exactly_that_row(table):
-    table.store.close_connection(user_id=_SUB, connection_id="abc123=")
-
-    assert table.deletes == [
-        {"Key": {"pk": f"USER#{_SUB}", "sk": "CONN#abc123="}}
-    ]
-
-
-def test_a_failed_connection_write_does_not_cost_the_student_their_connection(monkeypatch):
-    """The record is a record, not a gate: nothing reads it to let a student stream."""
-    fake = _FakeTable(raises_on="put_item")
-    store = history.ConversationStore("chat-history-test")
-    monkeypatch.setattr(store, "_table_resource", lambda: fake)
-
-    store.open_connection(user_id=_SUB, connection_id="abc", expires_at=1)
-
-    assert fake.puts, "it still attempted the write"
-
-
-def test_a_failed_connection_delete_is_left_to_the_ttl(monkeypatch):
-    fake = _FakeTable(raises_on="delete_item")
-    store = history.ConversationStore("chat-history-test")
-    monkeypatch.setattr(store, "_table_resource", lambda: fake)
-
-    store.close_connection(user_id=_SUB, connection_id="abc")
-
-    assert fake.deletes, "it still attempted the delete"
 
 
 # --- the escalation draft --------------------------------------------------------------

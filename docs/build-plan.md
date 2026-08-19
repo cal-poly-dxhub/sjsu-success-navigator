@@ -380,7 +380,7 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       STREAMED TURN. (1) The preview stops at the first tag, so the reply appeared to end and
       the student had nothing to tell them the cards were still being written; the sink now
       pushes the prose tail and one `status` frame the instant `<card` appears in the model's
-      own output (`cards.card_block_started`, `streaming.CARDS_STAGE`), and the pending
+      own output (`cards.card_block_started`, `preview.CARDS_STAGE`), and the pending
       exchange shows a small indicator until the finished turn replaces it. The signal is the
       reply, not a clock: no card block, no frame, no indicator - which is the prose-only
       reply, roughly one in ten. A `<safety>` anywhere takes it back to no, because that turn
@@ -493,6 +493,28 @@ distribution domain into its cors allowlist. Not frozen after its commit.
       Astro build container gets it as a read-only second mount. Verified byte-identical: the
       built system prompt (both the configured and the no-escalation form) and every safety
       panel the resolver can produce, before and after.
+- [x] the reply streams over HTTP and the WebSocket transport is gone (docs/chat-service.md,
+      Streaming). The browser POSTs a turn to `/api/chat` on its own origin - a behaviour on
+      the distribution that served the bundle, so no second hostname and no CORS story - and
+      reads NDJSON frames off a `fetch` stream reader; `EventSource` was never available,
+      because a turn carries a body and SSE can only issue a GET. Two headers make it work
+      and neither is `Authorization`: the access token rides the app's own header, because
+      origin access control's SigV4 signature owns that one, and the client computes
+      `x-amz-content-sha256` over its own body, because Lambda refuses an unsigned payload
+      from an OAC-signed origin request. It is a hash and not a credential, so the browser
+      holds no AWS key. The conversation id arrives on the `accepted` frame, ahead of any
+      delta, which is what the socket's early id used to be for.
+      WHAT WENT: `app/streaming.py`, `app/stream_worker.py`, `app/ws_authorizer.py`, the
+      WebSocket API and stage, both routes, the `$connect` authorizer and its crypto layer,
+      the `CONN#` connection records, and `streamingApiUrl` in config.json. `app/turn.py`
+      already held the one copy of the turn's order, so nothing about a turn changed - what
+      went was a second function to split it across and a second door into the pool.
+      `POST /chat` stays: the eval runner uses it and the browser falls back to it on any
+      failure before the server took the turn on. `app/stream_probe.py` is
+      `app/streaming_app.py` now; the CDK construct ids still say "probe" deliberately,
+      because renaming one REPLACES the function and its URL. config.yaml still carries a
+      `streaming` block that nothing reads - its knobs were the socket's - and removing it
+      is a config-schema change, not part of removing a transport.
 - [ ] adapt an eval harness from camp's 9-question cli and gav's harness (needs account)
 - [x] ~~measure the real average character advance for Nunito Sans at 0.9375rem (the card
       TITLE size - the only text the estimate still bears on) in a

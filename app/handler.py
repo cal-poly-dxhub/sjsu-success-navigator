@@ -197,9 +197,10 @@ def post_chat(event, context):
     # order, doing the same things and logging the same line. What stays here is the part
     # that is about HTTP - the shapes the two non-answer exits take on the wire.
     #
-    # IT MOVED BECAUSE IT IS ABOUT TO HAVE A SECOND CALLER, and this repo already knows
-    # what a second copy costs: app/streaming.py and app/stream_worker.py hold one between
-    # them, and every ordering argument had to be made twice.
+    # IT MOVED BECAUSE IT HAS A SECOND CALLER, the streaming app under the Lambda Web
+    # Adapter. The WebSocket transport that used to be the third held its own copy of this
+    # sequence across two functions, and every ordering argument below had to be made twice
+    # until it did not.
     #
     # EVERY DEPENDENCY IS PASSED BY NAME OUT OF THIS MODULE'S GLOBALS, which is deliberate
     # rather than ceremonial. SETTINGS, STORE, _bedrock_client, run_chat and generate_title

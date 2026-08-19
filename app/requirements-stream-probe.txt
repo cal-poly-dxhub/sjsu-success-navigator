@@ -1,4 +1,4 @@
-# Deps for the Lambda Web Adapter response-streaming probe (app/stream_probe.py) ONLY.
+# Deps for the Lambda Web Adapter streaming chat app (app/streaming_app.py) ONLY.
 #
 # ITS OWN FILE, not a line in requirements.txt, for the reason requirements-authorizer.txt
 # gives: POST /chat and the WebSocket worker are under a "keeps working unchanged"

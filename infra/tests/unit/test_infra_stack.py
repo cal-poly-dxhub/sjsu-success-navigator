@@ -496,6 +496,19 @@ def _staged_assets() -> dict:
     return {lid: sorted(os.listdir(d)) for lid, d in _staged_asset_dirs().items()}
 
 
+def _staged_listing_for(logical_id_prefix: str) -> list:
+    """The sorted top-level listing of one resource's staged asset."""
+    matches = {
+        lid: sorted(os.listdir(d))
+        for lid, d in _staged_asset_dirs().items()
+        if lid.startswith(logical_id_prefix)
+    }
+    assert len(matches) == 1, (
+        f"expected one staged asset for {logical_id_prefix}*, got {sorted(matches)}"
+    )
+    return next(iter(matches.values()))
+
+
 def _staged_asset_dir(logical_id_prefix: str) -> Path:
     """The staged asset DIRECTORY, for assertions that need to look inside it rather than
     just list its top level."""
@@ -1264,8 +1277,9 @@ def test_the_authorizer_is_native_and_reads_the_authorization_header():
     """A native JWT authorizer - no authorizer Lambda, so nothing to cold-start and none
     of our code in the auth decision.
 
-    That claim is about THIS door only. The socket's door is a Lambda, because a WebSocket
-    API cannot use the native JWT authorizer - see the streaming section."""
+    That claim is about this door and, since the socket went, about every door: the
+    WebSocket API needed a Lambda authorizer because it cannot use the native JWT one, and
+    it was the only piece of our code that ever sat in an auth decision here."""
     authorizer = _http_api_resource(_template(), "AWS::ApiGatewayV2::Authorizer")[
         "Properties"
     ]
@@ -2044,21 +2058,23 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
         if not path.name.startswith("test_")
     }
 
+    # TWO FUNCTIONS NOW, and it was five: the $connect authorizer, the WebSocket route
+    # function and the generation worker went with the socket, and their three modules went
+    # with them. What that costs this test is its margin - every module on disk has to reach
+    # one of these two, where before a module could ride in any of five bundles.
     functions = (
         "ChatFunction",
-        "ConnectAuthorizerFunction",
-        "ChatStreamRouteFunction",
-        "ChatStreamWorkerFunction",
-        # The Lambda Web Adapter probe. Its bundle also carries run.sh, which is not a
-        # module and is filtered out below with every other non-.py entry - the executable
-        # bit that makes it work is pinned by
-        # test_the_stream_probe_ships_an_executable_run_sh instead.
+        # The streaming app under the Lambda Web Adapter. Its bundle also carries run.sh,
+        # which is not a module and is filtered out below with every other non-.py entry -
+        # the executable bit that makes it work is pinned by
+        # test_the_stream_probe_ships_an_executable_run_sh instead. The construct id still
+        # says "probe" because renaming it would REPLACE the function and its URL.
         "StreamProbeFunction",
     )
     per_function = {
         name: {
             entry
-            for entry in _streaming_staged_listing(name)
+            for entry in _staged_listing_for(name)
             if entry.endswith(".py")
         }
         for name in functions
@@ -2079,90 +2095,32 @@ def test_every_app_module_reaches_the_staged_lambda_asset():
         "stale, or something unintended is riding along into a function bundle."
     )
 
-    # The authorizer is the one function whose bundle is a claim rather than a
-    # convenience: it decides who a caller is, so it must not be able to reach the store,
-    # the model or the guardrail even by importing them.
-    assert per_function["ConnectAuthorizerFunction"] == {"ws_authorizer.py"}, (
-        "the $connect authorizer must ship its own module and nothing else"
+    # THE BUNDLE THAT IS A CLAIM RATHER THAN A CONVENIENCE. The $connect authorizer used to
+    # be it - one file, unable to reach the store or the model even by importing them - and
+    # it is gone. The claim moved down a layer with the decision: the streaming app verifies
+    # tokens in its own process, so what must be true is that handler.py, the API Gateway
+    # transport, is NOT in its bundle. Two request pipelines in one function is how a route
+    # ends up reachable by a path nobody meant to serve.
+    assert "handler.py" not in per_function["StreamProbeFunction"], (
+        "the streaming app must not ship the API Gateway handler"
+    )
+    assert "token_auth.py" in per_function["StreamProbeFunction"], (
+        "it has no authorizer in front of it, so the verifier rides in its bundle"
     )
 
 
-# --- WebSocket streaming API (config.yaml `streaming`) ------------------------------------
+# --- The WebSocket streaming API that is gone ---------------------------------------------
 #
-# The whole surface is gated. It used to ship OFF, which let the default template above stand
-# in for the absent case; config.yaml now commits it ON, so BOTH directions need their own
-# synth with the key set explicitly, and neither may be inferred from what config.yaml
-# happens to say this week. Both are tested against REAL templates rather than by reading the
-# code, for the reason the Okta gate's test gives: a resource that gets created anyway with a
-# defaulted value reads fine in a diff and is a live endpoint in the account.
+# THIS BLOCK USED TO HOLD EIGHTEEN TESTS pinning that surface into place: the $connect
+# authorizer and its identity source, the message route, the worker's zero retries, the
+# stage throttle, the two grants, the crypto layer, and the config.json key that told the
+# browser a socket existed. All of them asserted PRESENCE. They are one test now, and it
+# asserts the opposite - because "we deleted it" is not a property, and a WebSocket that
+# came back through a merge, a revert or a copied block would otherwise be caught by
+# nothing at all.
 #
-# ONE PROPERTY IN HERE HAS ALREADY FAILED A DEPLOY. `AuthorizerResultTtlInSeconds` synthesized
-# cleanly, passed the assertion that pinned it, and was refused by API Gateway with a 400 -
-# see test_the_connect_authorizer_carries_no_result_ttl and the sweep beside it. Synth is not
-# a validator of L1 property values, and neither is an assertion that only repeats what synth
-# emitted.
-
-
-@functools.lru_cache(maxsize=1)
-def _streaming_config() -> dict:
-    config = copy.deepcopy(load_config())
-    config["streaming"]["enabled"] = True
-    return config
-
-
-@functools.lru_cache(maxsize=1)
-def _streaming_off_config() -> dict:
-    config = copy.deepcopy(load_config())
-    config["streaming"]["enabled"] = False
-    return config
-
-
-@functools.lru_cache(maxsize=1)
-def _streaming_off_outdir() -> Path:
-    """One real synth with streaming OFF, for the assertions that need the STAGED files.
-
-    Its own synth because config.yaml no longer supplies this direction. The template-level
-    half of the gate is cheap enough to build twice inline (below); config.json is not - it
-    is written into a BucketDeployment asset, so the only way to see what the browser would
-    receive is to stage it."""
-    outdir = tempfile.mkdtemp()
-    app = cdk.App(outdir=outdir)
-    NavigatorStack(app, "SjsuNavigatorStack", config=_streaming_off_config())
-    app.synth()
-    return Path(outdir)
-
-
-@functools.lru_cache(maxsize=1)
-def _streaming_outdir() -> Path:
-    """ONE real synth with streaming on, shared by every assertion below - the template,
-    the staged asset contents and the stamped config.json all come off it. A second synth
-    here would cost another deps-layer bundle and another containerized Astro build."""
-    outdir = tempfile.mkdtemp()
-    app = cdk.App(outdir=outdir)
-    NavigatorStack(app, "SjsuNavigatorStack", config=_streaming_config())
-    app.synth()
-    return Path(outdir)
-
-
-@functools.lru_cache(maxsize=1)
-def _streaming_template() -> Template:
-    return Template.from_json(
-        json.loads((_streaming_outdir() / "SjsuNavigatorStack.template.json").read_text())
-    )
-
-
-def _streaming_staged_dirs() -> dict:
-    return _staged_dirs_in(_streaming_outdir())
-
-
-def _streaming_staged_listing(logical_id_prefix: str) -> list:
-    matches = {
-        lid: sorted(os.listdir(d))
-        for lid, d in _streaming_staged_dirs().items()
-        if lid.startswith(logical_id_prefix)
-    }
-    assert len(matches) == 1, f"expected one staged asset for {logical_id_prefix}*, got {sorted(matches)}"
-    return next(iter(matches.values()))
+# WHAT REPLACED IT is app/streaming_app.py behind the Function URL below: one function
+# running the whole turn in band, which is what the socket existed to work around.
 
 
 def _stamped_config_json(outdir: Path) -> str:
@@ -2178,592 +2136,109 @@ def _stamped_config_json(outdir: Path) -> str:
     raise AssertionError("no config.json deployment found")
 
 
-def test_no_streaming_resources_exist_when_the_key_is_absent():
-    """THE GATE, and the direction that has to keep working: with streaming off the stack
-    must be the one that is deployed today.
-
-    Both spellings of off are checked - `enabled: false` and no block at all - because they
-    are one state and a stack where they disagreed would be a stack where turning the
-    feature off depended on how you turned it off."""
-    for mutate in (
-        lambda c: c["streaming"].__setitem__("enabled", False),
-        lambda c: c.pop("streaming"),
-    ):
-        config = copy.deepcopy(load_config())
-        mutate(config)
-        template = Template.from_stack(
-            NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config)
-        )
-        rendered = template.to_json()
-
-        # Not "no WebSocket API" but "no WebSocket ANYTHING": the API, the stage, the
-        # authorizer and both routes are separate resources, and a leftover authorizer with
-        # no API is still a deployed Lambda with a permission on it.
-        websocket_apis = {
-            lid: r
-            for lid, r in template.find_resources("AWS::ApiGatewayV2::Api").items()
-            if (r.get("Properties") or {}).get("ProtocolType") == "WEBSOCKET"
-        }
-        assert websocket_apis == {}, "a WebSocket API was synthesized with streaming off"
-        assert template.find_resources("AWS::ApiGatewayV2::Authorizer") != {}, (
-            "sanity: the HTTP API's JWT authorizer should still be here"
-        )
-        for logical_id, resource in rendered["Resources"].items():
-            assert not logical_id.startswith("ConnectAuthorizer"), logical_id
-            assert not logical_id.startswith("ChatStream"), logical_id
-        # No authorizer deps layer either. Counted by logical id rather than by type: the
-        # template also holds the scraper's two layers and the CDK BucketDeployment CLI
-        # layers, which are none of this feature's business.
-        assert [
-            lid
-            for lid in template.find_resources("AWS::Lambda::LayerVersion")
-            if lid.startswith("ConnectAuthorizerDepsLayer")
-        ] == []
-
-    # And nothing tells the browser a socket exists. Read off the STAGED config.json, which
-    # is the fix for an assertion that could not fail: this used to be
-    # `"streamingApiUrl" not in json.dumps(rendered)`, and that key NEVER appears in a
-    # template either way - Source.json_data writes it into a BucketDeployment asset and
-    # leaves a `<<marker>>` behind. It passed with streaming on, off, and would have passed
-    # with the gate deleted entirely.
-    assert "streamingApiUrl" not in _stamped_config_json(_streaming_off_outdir())
-
-
-def test_the_config_json_names_the_socket_only_when_streaming_is_on():
-    """THE OMISSION IS THE GATE, and here it decides the browser's TRANSPORT rather than
-    hiding a control: the frontend opens a socket only when this key is present, so a build
-    that never receives it cannot reach the streaming path at all.
-
-    The off side comes from its own synth rather than from `_synth_outdir()`. config.yaml
-    commits streaming ON now, so the default synth proves the ON direction twice over and
-    the OFF direction not at all."""
-    assert "streamingApiUrl" not in _stamped_config_json(_streaming_off_outdir())
-
-    # Read as TEXT, not parsed: Source.jsonData stamps deploy-time markers where the tokens
-    # go, so the staged file is deliberately not valid JSON until CloudFormation resolves
-    # it. That is also the assertion worth making about the URL - it must be a marker rather
-    # than a literal endpoint, so a fresh install in another account gets its own.
-    stamped = _stamped_config_json(_streaming_outdir())
-    assert '"streamingApiUrl"' in stamped
-    url_value = stamped.split('"streamingApiUrl":', 1)[1].lstrip()[:20]
-    assert url_value.startswith("<<marker"), url_value
-    assert "execute-api" not in stamped, "the socket endpoint is hardcoded in config.json"
-    # Turning it on disturbs nothing else.
-    assert '"chatApiUrl"' in stamped
-    assert '"userPoolClientId"' in stamped
-
-
-def test_only_connect_is_authorized_and_it_reads_the_token_from_the_query_string():
-    """$connect is the ONLY route a WebSocket API can attach an authorizer to, so the
-    handshake is where the whole connection is authorized.
-
-    THE IDENTITY SOURCE IS THE QUERY STRING, which is measured rather than preferred:
-    API Gateway accepts Sec-WebSocket-Protocol as an identity source but never echoes the
-    subprotocol back, and a browser then fails the handshake (probed against a deployed
-    WebSocket API, 2026-08-12: Chrome 151 and Node's WHATWG WebSocket both errored)."""
-    template = _streaming_template()
-    routes = template.find_resources("AWS::ApiGatewayV2::Route")
-    by_key = {
-        (r["Properties"] or {}).get("RouteKey"): r["Properties"]
-        for r in routes.values()
-        if str((r["Properties"] or {}).get("RouteKey", "")).startswith("$")
-    }
-    assert set(by_key) == {"$connect", "$disconnect"}, sorted(by_key)
-    assert by_key["$connect"]["AuthorizationType"] == "CUSTOM"
-    # $disconnect cannot carry one, and must not look like it was meant to.
-    assert by_key["$disconnect"].get("AuthorizationType") in (None, "NONE")
-
-    request_authorizers = [
-        r["Properties"]
-        for r in template.find_resources("AWS::ApiGatewayV2::Authorizer").values()
-        if r["Properties"].get("AuthorizerType") == "REQUEST"
-    ]
-    assert len(request_authorizers) == 1
-    authorizer = request_authorizers[0]
-    assert authorizer["IdentitySource"] == ["route.request.querystring.token"]
-
-
-def _websocket_authorizer(template: Template) -> dict:
-    """The socket's $connect authorizer: the one REQUEST authorizer on the WebSocket API."""
-    found = _api_resources(
-        template,
-        "AWS::ApiGatewayV2::Authorizer",
-        _api_logical_id(template, "WEBSOCKET"),
-    )
-    assert len(found) == 1, sorted(found)
-    return next(iter(found.values()))["Properties"]
-
-
-def test_the_connect_authorizer_carries_no_result_ttl():
-    """THE PROPERTY THAT ROLLED BACK A DEPLOY. `AuthorizerResultTtlInSeconds` is documented
-    as "Supported only for HTTP API Lambda authorizers" (AWS::ApiGatewayV2::Authorizer), and
-    API Gateway does not ignore it on the other protocol - it refuses the resource:
-
-        AuthorizerResultTtlInSeconds cannot be set for WEBSOCKET protocol Apis.
-        (Service: AmazonApiGatewayV2; Status Code: 400; BadRequestException)
-
-    ABSENT, NOT ZERO. The stack used to set it to 0 to disable caching, which is exactly the
-    template that failed: the value is not read at all, so 0 is rejected as loudly as 300.
-    A test asserting `== 0` therefore passed on a template that could not deploy, which is
-    why this one asserts the KEY is gone rather than what it holds.
-
-    This assertion has been run against a template carrying the property (it fails: 'the
-    property that rolled back the deploy is back'), not only against one without it."""
-    assert "AuthorizerResultTtlInSeconds" not in _websocket_authorizer(_streaming_template()), (
-        "the property that rolled back the deploy is back on the $connect authorizer"
-    )
-
-
-# Properties AWS documents as HTTP-API-only, read off the AWS::ApiGatewayV2::* CloudFormation
-# reference on 2026-08-12 - every property of Api, Authorizer, Route, Integration and Stage
-# (plus the RouteSettings sub-type) was checked, and these are the ones whose text restricts
-# them to HTTP APIs. Route and Stage are in the table with EMPTY sets on purpose: neither has
-# an HTTP-only property, and an empty set records that the resource was checked and had none,
-# where omitting it would look the same as forgetting it.
-#
-# Quotes, so the next reader does not have to re-derive them:
-#   Api.CorsConfiguration                    "A CORS configuration. Supported only for HTTP APIs."
-#   Api.BasePath / Body / BodyS3Location     "Supported only for HTTP APIs."
-#   Api.CredentialsArn / RouteKey / Target   quick create, "Supported only for HTTP APIs."
-#   Authorizer.AuthorizerResultTtlInSeconds  "Supported only for HTTP API Lambda authorizers."
-#   Authorizer.AuthorizerPayloadFormatVersion "the payload sent to an HTTP API Lambda authorizer"
-#   Authorizer.EnableSimpleResponses         "Supported only for HTTP APIs."
-#   Authorizer.JwtConfiguration              "Supported only for HTTP APIs."
-#   Integration.ConnectionId                 "the VPC link for a private integration. Supported only for HTTP APIs."
-#   Integration.IntegrationSubtype           "Supported only for HTTP API AWS_PROXY integrations."
-#   Integration.PayloadFormatVersion         "Required for HTTP APIs." (and only meaningful there)
-#   Integration.ResponseParameters           "Supported only for HTTP APIs."
-#   Integration.TlsConfig                    "Supported only for HTTP APIs."
-_HTTP_ONLY_PROPERTIES = {
-    "AWS::ApiGatewayV2::Api": {
-        "BasePath",
-        "Body",
-        "BodyS3Location",
-        "CorsConfiguration",
-        "CredentialsArn",
-        "RouteKey",
-        "Target",
-    },
-    "AWS::ApiGatewayV2::Authorizer": {
-        "AuthorizerPayloadFormatVersion",
-        "AuthorizerResultTtlInSeconds",
-        "EnableSimpleResponses",
-        "JwtConfiguration",
-    },
-    "AWS::ApiGatewayV2::Integration": {
-        "ConnectionId",
-        "IntegrationSubtype",
-        "PayloadFormatVersion",
-        "ResponseParameters",
-        "TlsConfig",
-    },
-    "AWS::ApiGatewayV2::Route": set(),
-    "AWS::ApiGatewayV2::Stage": set(),
-}
-
-
-def test_no_websocket_resource_carries_an_http_only_property():
-    """THE CLASS THE TTL BELONGED TO, rather than the one property that got caught.
-
-    API Gateway v2 shares five CloudFormation resource types across two protocols and
-    rejects, at CREATE, the properties that belong to the other one. CDK will not stop this:
-    the L1s emit whatever they are handed, an escape hatch reaches past the L2s that would
-    know better, and synth stays clean either way - which is precisely how the TTL got to a
-    deploy. So every property on every resource of the WebSocket API is checked against the
-    documented HTTP-only set.
-
-    Also asserts the two HTTP-only properties the HTTP API legitimately carries, because a
-    table of forbidden names that matches nothing anywhere is a table nobody would notice
-    going stale."""
-    template = _streaming_template()
-    websocket_api = _api_logical_id(template, "WEBSOCKET")
-
-    checked = 0
-    for type_name, forbidden in _HTTP_ONLY_PROPERTIES.items():
-        resources = _api_resources(template, type_name, websocket_api)
-        if type_name == "AWS::ApiGatewayV2::Api":
-            resources = {websocket_api: template.find_resources(type_name)[websocket_api]}
-        assert resources, f"no {type_name} found on the WebSocket API"
-        for logical_id, resource in resources.items():
-            checked += 1
-            present = forbidden & set(resource["Properties"])
-            assert not present, (
-                f"{logical_id} ({type_name}) carries {sorted(present)}, which API Gateway "
-                f"accepts only for HTTP-protocol APIs and refuses with a 400 on WEBSOCKET"
-            )
-    # The API, its authorizer, three routes, three integrations and the stage.
-    assert checked == 9, checked
-
-    # The control: the same names ARE expected over on the HTTP side, so the table above is
-    # spelling them the way CloudFormation does.
-    assert "CorsConfiguration" in _http_api(template)
-    assert "PayloadFormatVersion" in _http_api_resource(
-        template, "AWS::ApiGatewayV2::Integration"
-    )["Properties"]
-
-
-def test_the_connect_authorizer_validates_against_the_same_pool_and_clients_as_the_http_api():
-    """The WebSocket door and the HTTP door must answer 'whose token?' identically. A
-    WebSocket API cannot use the native JWT authorizer, so this one is our code - and the
-    thing worth pinning is that it is pointed at the same pool and the same two app
-    clients, by reference rather than by a literal anyone could let drift."""
-    template = _streaming_template()
-    authorizer_fn = None
-    for logical_id, resource in template.find_resources("AWS::Lambda::Function").items():
-        if logical_id.startswith("ConnectAuthorizerFunction"):
-            authorizer_fn = resource["Properties"]
-    assert authorizer_fn is not None
-
-    env = json.dumps(authorizer_fn["Environment"]["Variables"])
-    assert "ChatUserPool" in env, "the pool must arrive as a reference, not a literal id"
-    assert "ChatWebClient" in env
-    assert "ChatEvalClient" in env, (
-        "both app clients, exactly as the HTTP API's jwt_audience carries both - two doors "
-        "into one pool with two different answers is how one of them ends up wrong"
-    )
-    assert authorizer_fn["Handler"] == "ws_authorizer.lambda_handler"
-
-
-def test_the_connect_authorizer_can_reach_nothing_but_its_own_logs():
-    """It verifies a signature against a public JWKS document. That needs no credentials,
-    so it must hold none: an authorizer that could read the history table would be an
-    authorizer that could be made to."""
-    template = _streaming_template()
-    role_id = next(
-        lid
-        for lid in template.find_resources("AWS::IAM::Role")
-        if lid.startswith("ConnectAuthorizerFunctionServiceRole")
-    )
-    role = template.find_resources("AWS::IAM::Role")[role_id]["Properties"]
-    managed = json.dumps(role.get("ManagedPolicyArns", []))
-    assert "AWSLambdaBasicExecutionRole" in managed
-
-    # No inline policy at all is the assertion. Anything here would be a grant nothing in
-    # ws_authorizer.py uses.
-    for policy in template.find_resources("AWS::IAM::Policy").values():
-        assert not json.dumps(policy["Properties"].get("Roles", [])).count(role_id), (
-            f"the connect authorizer's role carries an inline policy: {policy}"
-        )
-
-
-def test_the_authorizer_never_logs_the_token():
-    """A token in a query string is a token that can end up in a log, and THIS FILE is the
-    first place it could: the authorizer's event carries queryStringParameters.token in
-    full. Asserted against the source because there is no template property for it - the
-    guarantee is that the module has no logging in it at all.
-
-    Asserted over the AST rather than the text, so the module's own docstring explaining
-    why it does not log is not mistaken for logging."""
-    import ast
-
-    source = (
-        Path(__file__).resolve().parents[3] / "app" / "ws_authorizer.py"
-    ).read_text()
-    tree = ast.parse(source)
-
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
-    assert "logging" not in imported, (
-        "app/ws_authorizer.py imports logging. Its event carries the bearer token in "
-        "queryStringParameters, so this module logs nothing - see its docstring."
-    )
-
-    called = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    assert "print" not in called, "app/ws_authorizer.py prints; its event carries the token"
-
-
-def test_every_streaming_bundle_carries_what_its_handler_imports():
-    """THE LIST-DRIFT TEST, per function rather than over the union.
-
-    "Every module is deployed somewhere" does not catch the failure that actually happens
-    here, which is a bundle missing ONE of its own transitive imports: synth is clean, the
-    deploy succeeds, and the function dies at cold start on an ImportError that surfaces as
-    a socket closing for no stated reason. Four functions now share app/, so the include
-    lists are four chances to get it wrong.
-
-    The expectation is COMPUTED from the source - each handler's imports, followed
-    transitively - never restated here, for the reason the union test gives: a test that
-    repeats the list is a second copy of the thing that goes stale.
-    """
-    import ast
-
-    app_dir = Path(__file__).resolve().parents[3] / "app"
-    local_modules = {path.stem for path in app_dir.glob("*.py")}
-
-    def _local_imports(module_name):
-        tree = ast.parse((app_dir / f"{module_name}.py").read_text())
-        found = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                found.update(a.name.split(".")[0] for a in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                found.add(node.module.split(".")[0])
-        return found & local_modules
-
-    def _closure(entry):
-        seen, pending = set(), [entry]
-        while pending:
-            module = pending.pop()
-            if module in seen:
-                continue
-            seen.add(module)
-            pending.extend(_local_imports(module))
-        return seen
-
-    for prefix, entry in (
-        ("ChatFunction", "handler"),
-        ("ConnectAuthorizerFunction", "ws_authorizer"),
-        ("ChatStreamRouteFunction", "streaming"),
-        ("ChatStreamWorkerFunction", "stream_worker"),
-    ):
-        staged = {name.removesuffix(".py") for name in _streaming_staged_listing(prefix) if name.endswith(".py")}
-        needed = _closure(entry)
-        assert needed <= staged, (
-            f"{prefix} is missing {sorted(needed - staged)} - {entry}.py imports them "
-            "transitively, so the deployed function dies at cold start on an ImportError."
-        )
-        assert staged <= needed, (
-            f"{prefix} ships {sorted(staged - needed)}, which nothing in it imports."
-        )
-
-
-def test_the_message_route_is_named_and_nothing_falls_through_to_a_default():
-    """The API selects routes on `$request.body.action`, so a frame naming `sendMessage`
-    lands on a route built for it and a frame naming nothing lands on `$default` - which
-    this API deliberately does not define. An undefined $default is refused; a defined one
-    would be a billable path that unrecognised frames fall into."""
-    routes = {
-        (r["Properties"] or {}).get("RouteKey")
-        for r in _streaming_template().find_resources("AWS::ApiGatewayV2::Route").values()
-    }
-    assert "sendMessage" in routes
-    assert "$default" not in routes
-
-    api = _resource_named(
-        _streaming_template(), "AWS::ApiGatewayV2::Api", "ChatStreamingApi"
-    )["Properties"]
-    assert api["ProtocolType"] == "WEBSOCKET"
-    assert api["RouteSelectionExpression"] == "$request.body.action"
-
-
-def test_the_generation_worker_never_retries():
-    """THE SINGLE MOST IMPORTANT PROPERTY OF THIS RESOURCE. Lambda retries a failed
-    asynchronous invocation TWICE by default, and a retried generation worker answers the
-    same question again - down the same socket, billing a full agent loop each time, with
-    the student watching a second reply type itself over the first."""
-    config = _resource_named(
-        _streaming_template(), "AWS::Lambda::EventInvokeConfig", "ChatStreamWorkerFunction"
-    )["Properties"]
-    assert config["MaximumRetryAttempts"] == 0
-
-
-def test_the_worker_holds_exactly_the_chat_turns_grants():
-    """It runs the same turn the chat function runs - retrieve, invoke, screen, read and
-    write the table - so it is given that role's statements rather than a hand-written
-    second copy. A streamed turn that could reach less than a buffered one would not fail
-    loudly; it would fail somewhere inside an answer."""
-    template = _streaming_template()
-
-    def _dynamo_and_bedrock_actions(role_id_fragment):
-        actions = set()
-        for policy in template.find_resources("AWS::IAM::Policy").values():
-            if role_id_fragment not in json.dumps(policy["Properties"]):
-                continue
-            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-                for action in _actions(statement):
-                    if action.startswith(("dynamodb:", "bedrock:")):
-                        actions.add(action)
-        return actions
-
-    chat = _dynamo_and_bedrock_actions("ChatFunctionRole")
-    worker = _dynamo_and_bedrock_actions("ChatStreamWorkerRole")
-    assert worker == chat, f"only in worker: {worker - chat}; only in chat: {chat - worker}"
-    # And the hole the chat role's own note is about is still closed on both.
-    assert "dynamodb:Scan" not in worker
-
-
-def test_both_streaming_functions_can_push_but_only_the_route_can_start_the_worker():
-    """The route function pushes a guardrail block or a rate-limit refusal; the worker pushes
-    the whole streamed reply. Only one of them starts a generation."""
-    template = _streaming_template()
-
-    def _actions_for(role_fragment):
-        actions = set()
-        for policy in template.find_resources("AWS::IAM::Policy").values():
-            if role_fragment not in json.dumps(policy["Properties"]):
-                continue
-            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-                actions.update(_actions(statement))
-        return actions
-
-    route = _actions_for("ChatStreamRouteRole")
-    worker = _actions_for("ChatStreamWorkerRole")
-    assert "execute-api:ManageConnections" in route
-    assert "execute-api:ManageConnections" in worker
-    assert "lambda:InvokeFunction" in route
-    assert "lambda:InvokeFunction" not in worker, (
-        "the worker must not be able to start another worker"
-    )
-
-
-def test_the_worker_is_told_where_to_push_by_the_stack_not_by_the_request():
-    """A WebSocket event carries `domainName` and `stage`, so a function COULD assemble its
-    own callback URL - and then a request would be choosing where its reply is sent. Both
-    functions get the endpoint from the stage instead."""
-    for prefix in ("ChatStreamRouteFunction", "ChatStreamWorkerFunction"):
-        env = _resource_named(_streaming_template(), "AWS::Lambda::Function", prefix)[
-            "Properties"
-        ]["Environment"]["Variables"]
-        callback = env["STREAM_CALLBACK_URL"]
-        # A Fn::Join over the API's Ref and the region - resolved at deploy, so a fresh
-        # install in another account pushes to its own endpoint. The assertion is that the
-        # api id is a REFERENCE; the ".execute-api." in the middle is a literal either way.
-        assert isinstance(callback, dict), callback
-        assert "ChatStreamingApi" in json.dumps(callback), callback
-        assert "https://" in json.dumps(callback), (
-            "post_to_connection takes the https callback endpoint, not the wss:// one"
-        )
-
-
-def test_the_streaming_functions_answer_under_the_same_caps_as_the_buffered_one():
-    """The acceptance criterion is that a streamed turn renders identically to a buffered
-    one, and the loop's caps are half of what makes that true. The worker gets a longer
-    LAMBDA timeout because nothing is waiting on an HTTP response - but the same
-    CONVERSE_DEADLINE_SECONDS, so it is headroom for the writes and the final push rather
-    than a longer answer."""
-    template = _streaming_template()
-    chat_env = _resource_named(template, "AWS::Lambda::Function", "ChatFunction")[
-        "Properties"
-    ]["Environment"]["Variables"]
-    worker = _resource_named(template, "AWS::Lambda::Function", "ChatStreamWorkerFunction")[
-        "Properties"
-    ]
-    for key in (
-        "CONVERSE_DEADLINE_SECONDS",
-        "MAX_CONVERSE_ITERATIONS",
-        "MAX_HISTORY_MESSAGES",
-        "CARD_MAX_CARDS",
-        "CARD_DESC_MAX_CHARS",
-        "GENERATION_MAX_TOKENS",
-    ):
-        assert worker["Environment"]["Variables"][key] == chat_env[key], key
-    assert worker["Timeout"] > 29, "the worker is not behind the gateway's ceiling"
-
-
-def test_the_output_guardrail_leaves_no_trace_when_it_is_off():
-    """It is off by default and measured (config.yaml): attaching the guardrail to
-    ConverseStream in its only safe mode moved time-to-first-token from ~1.1s to ~6.8s.
-    Off means the variable is absent, not 'false' - one spelling of off."""
-    worker = _resource_named(
-        _streaming_template(), "AWS::Lambda::Function", "ChatStreamWorkerFunction"
-    )["Properties"]
-    assert "STREAM_OUTPUT_GUARDRAIL" not in worker["Environment"]["Variables"]
-
-    config = copy.deepcopy(_streaming_config())
-    config["streaming"]["output_guardrail"] = True
-    on = Template.from_stack(NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config))
-    worker_on = _resource_named(on, "AWS::Lambda::Function", "ChatStreamWorkerFunction")[
-        "Properties"
-    ]
-    assert worker_on["Environment"]["Variables"]["STREAM_OUTPUT_GUARDRAIL"] == "true"
-
-
-def test_the_streaming_route_function_writes_but_never_reads_a_conversation():
-    """It records a connection, counts the turn against the daily cap, and writes the
-    student's message. It NEVER READS A CONVERSATION - the history read belongs to the
-    worker - so it holds no Query and no GetItem, and the chat function's wider grant stays
-    the chat function's."""
-    template = _streaming_template()
-    actions = set()
-    for policy in template.find_resources("AWS::IAM::Policy").values():
-        rendered = json.dumps(policy["Properties"])
-        if "ChatStreamRouteRole" not in rendered:
-            continue
-        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-            for action in _actions(statement):
-                if action.startswith("dynamodb:"):
-                    actions.add(action)
-    assert actions == {
-        # open_connection, and the student's message.
-        "dynamodb:PutItem",
-        # close_connection.
-        "dynamodb:DeleteItem",
-        # The rate limit's conditional ADD, and the conversation header's counter.
-        "dynamodb:UpdateItem",
-    }, sorted(actions)
-    assert "dynamodb:Query" not in actions
-    assert "dynamodb:Scan" not in actions
-
-
-def test_the_streaming_stage_throttles_like_the_http_stage_and_logs_no_access():
-    """Same paid model calls behind it, so the same fence, from the same config numbers.
-
-    NO ACCESS LOGGING, and with a token in the query string that is a decision: an access
-    log is built from an explicit $context format string, so a token could only get in by
-    being put there - and the surest way for that not to happen is for there to be no log."""
-    from infra.config import resolve_http_api
-
-    http_cfg = resolve_http_api(load_config())
-    stage = _resource_named(
-        _streaming_template(), "AWS::ApiGatewayV2::Stage", "ChatStreamingStage"
-    )["Properties"]
-    assert stage["DefaultRouteSettings"]["ThrottlingRateLimit"] == http_cfg["throttling_rate_limit"]
-    assert stage["DefaultRouteSettings"]["ThrottlingBurstLimit"] == http_cfg["throttling_burst_limit"]
-    assert "AccessLogSettings" not in stage
-
-
-def test_the_authorizer_layer_is_its_own_asset_and_carries_the_crypto_wheel():
-    """A THIRD deps layer, distinct from the other two. The chat layer's long note explains
-    why that matters: layers built with the same image, command and platform share an asset
-    cache key and silently reuse each other's bundle, and the symptom is an ImportError in
-    CloudWatch behind a 502.
-
-    It is separate rather than a line in the chat layer's requirements because POST /chat is
-    under a hard 'keeps working unchanged' constraint, and cryptography is a large wheel it
-    has no use for."""
-    # Our pip-built deps layers, by construct id - the template also holds the scraper's
-    # crawl-list layer, the CDK BucketDeployment CLI layers and the Lambda Web Adapter,
-    # which is referenced by ARN and staged by nobody. The probe's layer is on the list
-    # because it is a FOURTH build with the same image, command and platform as the other
-    # three, which is precisely the shape that collided.
-    layers = {
+def test_no_websocket_transport_is_synthesized_at_all():
+    """THE INVERSION OF THE WHOLE SECTION THAT USED TO BE HERE.
+
+    Not "no WebSocket API" but "no WebSocket ANYTHING": the API, the stage, the two routes,
+    the authorizer, its deps layer, the route function and the generation worker were seven
+    kinds of resource, and a leftover authorizer with no API is still a deployed Lambda with
+    a permission on it and a bill.
+
+    THE STRONGEST CASE IS THE DEFAULT SYNTH, which is why there is no second one here.
+    config.yaml still commits `streaming.enabled: true` - that block's three values were the
+    socket's batching and output-guardrail knobs and nothing reads them any more - so this
+    template is the one where the old gate was OPEN. Nothing appears. A test that synthesized
+    with the key off would prove strictly less.
+
+    THE PUSH GRANT IS ASSERTED SEPARATELY because it is the one that could survive a partial
+    revert: a function still holding `execute-api:ManageConnections` is a function that could
+    push down a connection, which is the capability this transport was."""
+    template = _template()
+    rendered = template.to_json()
+
+    websocket_apis = {
         lid: r
-        for lid, r in _streaming_template()
-        .find_resources("AWS::Lambda::LayerVersion")
-        .items()
-        if lid.startswith(
-            (
-                "ChatDepsLayer",
-                "ScraperDepsLayer",
-                "ConnectAuthorizerDepsLayer",
-                "StreamProbeDepsLayer",
-            )
-        )
+        for lid, r in template.find_resources("AWS::ApiGatewayV2::Api").items()
+        if (r.get("Properties") or {}).get("ProtocolType") == "WEBSOCKET"
     }
-    assert len(layers) == 4, sorted(layers)
-    keys = {json.dumps(r["Properties"]["Content"]["S3Key"]) for r in layers.values()}
-    assert len(keys) == 4, f"two deps layers share a staged asset: {sorted(layers)}"
+    assert websocket_apis == {}, "a WebSocket API is back"
 
-    staged = _streaming_staged_listing("ConnectAuthorizerDepsLayer")
-    assert staged == ["python"], staged
-    authorizer_layer_dir = next(
-        d
-        for lid, d in _streaming_staged_dirs().items()
-        if lid.startswith("ConnectAuthorizerDepsLayer")
+    for logical_id in rendered["Resources"]:
+        assert not logical_id.startswith("ConnectAuthorizer"), logical_id
+        assert not logical_id.startswith("ChatStream"), logical_id
+
+    # Every gateway route and stage left in the template belongs to the HTTP API. Asserted
+    # by protocol on the parent rather than by counting, so a WebSocket route added to a new
+    # API fails here too.
+    http_api_ids = {
+        lid
+        for lid, r in template.find_resources("AWS::ApiGatewayV2::Api").items()
+        if (r.get("Properties") or {}).get("ProtocolType") == "HTTP"
+    }
+    assert len(http_api_ids) == 1, http_api_ids
+    for kind in ("AWS::ApiGatewayV2::Route", "AWS::ApiGatewayV2::Stage"):
+        for lid, resource in template.find_resources(kind).items():
+            assert json.dumps(resource["Properties"]["ApiId"]).count(
+                next(iter(http_api_ids))
+            ), (kind, lid)
+
+    # Nothing anywhere may push a frame down a connection.
+    for lid, policy in template.find_resources("AWS::IAM::Policy").items():
+        assert "execute-api:ManageConnections" not in json.dumps(policy), lid
+
+    # SANITY, so this test cannot pass by synthesizing nothing: the HTTP API's own JWT
+    # authorizer and POST /chat are untouched, and so is the pool the eval harness signs in
+    # to. Those are the pieces the removal was NOT allowed to take with it.
+    assert template.find_resources("AWS::ApiGatewayV2::Authorizer") != {}
+    assert template.find_resources("AWS::Cognito::UserPool") != {}
+    assert len(template.find_resources("AWS::Cognito::UserPoolClient")) == 2
+
+
+def test_nothing_tells_the_browser_a_socket_exists():
+    """THE INVERSION OF test_the_config_json_names_the_socket_only_when_streaming_is_on.
+
+    The key was the browser's TRANSPORT switch: present meant open a socket. The browser now
+    POSTs to `/api/chat` on this same distribution, which is a relative path and nothing to
+    stamp, so the key is not merely off - there is no code that would write it.
+
+    Read off the STAGED config.json rather than the template, which is the fix an earlier
+    version of the positive test needed: Source.jsonData writes the file into a
+    BucketDeployment asset and leaves a `<<marker>>` behind, so `"streamingApiUrl" not in
+    the template` was an assertion that could not fail."""
+    stamped = _stamped_config_json(_synth_outdir())
+    assert "streamingApiUrl" not in stamped
+    assert "execute-api" not in stamped, stamped
+    # The keys the frontend does require are still stamped - see
+    # test_config_json_names_the_history_endpoint_the_frontend_reads for the full set.
+    assert '"chatApiUrl"' in stamped and '"userPoolClientId"' in stamped
+
+
+def test_the_socket_modules_are_gone_from_the_tree():
+    """THE OTHER HALF, and the one the template cannot see. A stack that stopped REFERENCING
+    app/streaming.py would leave the module on disk, importable, still holding a second copy
+    of the turn's order - which is exactly the drift app/turn.py exists to prevent.
+
+    app/ws_authorizer.py is named here for a second reason. It was the only place in this
+    repo where a bearer token travelled in a URL, and
+    test_the_authorizer_never_logs_the_token was the rule that no log line might touch it.
+    That rule has no subject any more, and this is what says so."""
+    app_dir = Path(__file__).resolve().parents[3] / "app"
+    for gone in (
+        "streaming.py",
+        "stream_worker.py",
+        "ws_authorizer.py",
+        "requirements-authorizer.txt",
+        # The module rename: it is not a probe, and run.sh, the bundle and the router
+        # prefix all name the new file.
+        "stream_probe.py",
+    ):
+        assert not (app_dir / gone).exists(), f"app/{gone} is back"
+
+    assert (app_dir / "streaming_app.py").exists()
+    assert "streaming_app:app" in (app_dir / "run.sh").read_text(), (
+        "run.sh must exec the renamed module - the handler is a PATH, so a stale name is a "
+        "clean deploy and a function that never starts"
     )
-    packages = sorted(p.name for p in (authorizer_layer_dir / "python").iterdir())
-    assert any(p.startswith("jwt") for p in packages), packages
-    # The `crypto` extra. Without it PyJWT cannot verify RS256 at all, which is the only
-    # algorithm Cognito signs with - and the failure would be at runtime, on a connect.
-    assert any(p.startswith("cryptography") for p in packages), packages
 
 
 # --- The response-streaming probe: FastAPI + Lambda Web Adapter + Function URL ----------
@@ -2819,7 +2294,7 @@ def _origin_by_id(template: Template, origin_id: str) -> dict:
 
 
 def _stream_probe_source() -> str:
-    return (Path(__file__).resolve().parents[3] / "app" / "stream_probe.py").read_text()
+    return (Path(__file__).resolve().parents[3] / "app" / "streaming_app.py").read_text()
 
 
 def test_the_stream_probe_boots_through_the_adapter_wrapper_not_a_python_handler():
@@ -3231,7 +2706,7 @@ def test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string():
     """THE CONTRACT NO SYNTH AND NO OTHER TEST CAN SEE. CloudFront matches a behaviour on
     the viewer's path and forwards that path to the origin UNCHANGED - there is no
     prefix-stripping short of a rewrite function - so the pattern in infra_stack.py and the
-    router prefix in app/stream_probe.py have to be the same string. Disagree and the
+    router prefix in app/streaming_app.py have to be the same string. Disagree and the
     template is valid, the deploy is clean, and every request is a 404 from FastAPI served
     through a distribution behaving exactly as configured.
 
@@ -3257,7 +2732,7 @@ def test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string():
         if isinstance(target, ast.Name)
     }
     assert constants.get("EDGE_PATH_PREFIX") == _STREAM_EDGE_PATH_PREFIX, (
-        f"app/stream_probe.py serves {constants.get('EDGE_PATH_PREFIX')!r} and the edge "
+        f"app/streaming_app.py serves {constants.get('EDGE_PATH_PREFIX')!r} and the edge "
         f"routes {_STREAM_EDGE_PATH_PREFIX!r} at it"
     )
     assert _STREAM_EDGE_PATH_PATTERN == f"{_STREAM_EDGE_PATH_PREFIX}/*"
@@ -3309,21 +2784,24 @@ def test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string():
         and isinstance(node.value.func, ast.Attribute)
         and node.value.func.attr == "include_router"
         for node in tree.body
-    ), "app/stream_probe.py builds a router and never includes it"
+    ), "app/streaming_app.py builds a router and never includes it"
 
 
 def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
     """IT RUNS THE SAME TURN, SO IT HOLDS THE SAME GRANTS - and neither of the two the
-    socket needs. A streamed turn that could reach less than a buffered one would fail
+    socket needed. A streamed turn that could reach less than a buffered one would fail
     somewhere subtle and only for some questions; a streaming function that could start a
     Lambda or push down a WebSocket connection would be one that had quietly grown a second
-    architecture.
+    architecture, and that architecture has just been removed.
 
     WIDENED, DELIBERATELY, when this stopped being a probe. It used to hold one action on
     one model, which was right when the only thing it did was stream a bare ConverseStream.
-    Serving the turn means the turn's grants, and the assertion moved with it: the list is
-    compared against the WORKER's, which is the other function running the same turn out of
-    the same `_chat_turn_statements`.
+    Serving the turn means the turn's grants, and the assertion moved with it.
+
+    THE COMPARAND IS THE CHAT FUNCTION NOW. It was the WebSocket generation worker, which
+    was the other function built from `_chat_turn_statements`; with the socket gone the
+    chat function is, and it is the better one anyway - it is the transport this one has to
+    render identically to.
 
     NARROWED WHEN THE APP LEARNED WHO ITS CALLER IS, and narrowed by ONE statement that is
     named and asserted rather than waved past. This function has no authorizer in front of
@@ -3348,38 +2826,30 @@ def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
     def _statements(role_prefix):
         role_lid = next(
             lid
-            for lid in _streaming_template().find_resources("AWS::IAM::Role")
+            for lid in template.find_resources("AWS::IAM::Role")
             if lid.startswith(role_prefix)
         )
         found = []
-        for policy in _streaming_template().find_resources("AWS::IAM::Policy").values():
+        for policy in template.find_resources("AWS::IAM::Policy").values():
             if role_lid in json.dumps(policy["Properties"].get("Roles", [])):
                 found.extend(policy["Properties"]["PolicyDocument"]["Statement"])
         return found
 
     probe = _statements("StreamProbeFunctionServiceRole")
-    worker = _statements("ChatStreamWorkerRole")
+    chat = _statements("ChatFunctionRole")
 
-    # The worker's grants MINUS the one thing it needs that this function does not: pushing
-    # frames back down a WebSocket connection. That subtraction is the assertion - it is the
-    # exact difference between running the turn out of band and running it in band, and it
-    # is one statement.
-    def _rendered(statements, drop_socket):
-        return sorted(
-            json.dumps(statement, sort_keys=True)
-            for statement in statements
-            if not (drop_socket and "execute-api:" in json.dumps(statement))
-        )
+    def _rendered(statements):
+        return sorted(json.dumps(statement, sort_keys=True) for statement in statements)
 
-    worker_without_socket = _rendered(worker, drop_socket=True)
-    assert len(worker_without_socket) == len(worker) - 1, (
-        "the worker should hold exactly one execute-api grant"
-    )
+    chat_grants = _rendered(chat)
+    # Neither role may carry a push grant now. It was the exact difference between running
+    # the turn out of band and running it in band, and there is no out of band left.
+    assert "execute-api:" not in json.dumps(chat), chat
 
     # THE ONE STATEMENT THAT IS THE DOOR AND NOT THE TURN, lifted out and asserted on its
     # own rather than allowed to blur the comparison below. It reads the client allowlist
-    # (see test_the_streaming_app_is_told_which_pool_and_which_clients_to_trust); the
-    # worker has an authorizer in front of it and needs nothing like it.
+    # (see test_the_streaming_app_is_told_which_pool_and_which_clients_to_trust); the chat
+    # function has an authorizer in front of it and needs nothing like it.
     allowlist_grants = [
         statement for statement in probe if "ssm:" in json.dumps(statement)
     ]
@@ -3397,20 +2867,20 @@ def test_the_stream_probe_holds_the_chat_turns_grants_and_not_the_sockets():
     # Compared as rendered JSON so a changed resource ARN or a widened action shows up
     # rather than being counted equal. Sorted because the two roles are built by different
     # constructs and nothing promises the order.
-    assert _rendered(probe_turn_grants, drop_socket=False) == worker_without_socket, (
-        json.dumps({"probe": probe, "worker": worker}, indent=2, sort_keys=True)
+    assert _rendered(probe_turn_grants) == chat_grants, (
+        json.dumps({"streaming app": probe, "chat": chat}, indent=2, sort_keys=True)
     )
 
     document = json.dumps(probe)
     # It retrieves, it invokes, it screens and it stores. Named individually rather than
     # left to the set comparison above, so this still says what the turn needs if the
-    # worker is ever deleted.
+    # comparand is ever deleted.
     assert "bedrock:Retrieve" in document, document
     assert "bedrock:InvokeModel*" in document, document
     assert "bedrock:ApplyGuardrail" in document, document
     assert "dynamodb:PutItem" in document, document
-    # And it starts nothing and pushes down nothing. These are the socket's two grants, and
-    # not needing them is the argument for this function existing.
+    # And it starts nothing and pushes down nothing. These were the socket's two grants,
+    # and not needing them is the argument for this function existing.
     assert "lambda:InvokeFunction" not in document, document
     assert "execute-api:" not in document, document
     # dynamodb:Scan is the one operation that takes no partition key, and the whole
@@ -3430,7 +2900,7 @@ def test_the_stream_probe_ships_every_module_it_imports():
     deliberately not written down here; it was, it said fifteen, and the list had grown to
     twenty by the time anybody read it again.
 
-    So the expectation is COMPUTED, never restated: it walks app/stream_probe.py's own
+    So the expectation is COMPUTED, never restated: it walks app/streaming_app.py's own
     imports, follows every one that names another module in app/, and asserts the closure is
     in the staged asset. Adding an import to any module on that path fails here until the
     include list catches up, which is exactly the failure that reached production twice
@@ -3451,7 +2921,7 @@ def test_the_stream_probe_ships_every_module_it_imports():
                     names.add(alias.name.split(".")[0])
         return {name for name in names if name in on_disk}
 
-    needed, frontier = {"stream_probe"}, ["stream_probe"]
+    needed, frontier = {"streaming_app"}, ["streaming_app"]
     while frontier:
         for name in imports_of(frontier.pop()):
             if name not in needed:
@@ -3461,7 +2931,7 @@ def test_the_stream_probe_ships_every_module_it_imports():
     staged = {name for name in _staged_listing("StreamProbeFunction") if name.endswith(".py")}
     missing = {f"{name}.py" for name in needed} - staged
     assert missing == set(), (
-        f"app/stream_probe.py imports these, and the bundle does not ship them: "
+        f"app/streaming_app.py imports these, and the bundle does not ship them: "
         f"{sorted(missing)}. The deployed function dies at cold start on the first one."
     )
 
@@ -3545,19 +3015,19 @@ def test_the_streaming_app_is_told_which_pool_and_which_clients_to_trust():
     assert json.dumps({"Ref": web_client}) in value, value
     assert json.dumps({"Ref": eval_client}) in value, value
 
-    # And it is the SAME pair the WebSocket handshake's authorizer verifies against. That
-    # function only exists when the streaming gate is on, so this reads the gated template.
-    streaming = _streaming_template()
-    authorizer_allowed = _resource_named(
-        streaming, "AWS::Lambda::Function", "ConnectAuthorizerFunction"
-    )["Properties"]["Environment"]["Variables"]["ALLOWED_CLIENT_IDS"]
-    parameter_value = _resource_named(
-        streaming, "AWS::SSM::Parameter", "StreamingAllowedClientIds"
-    )["Properties"]["Value"]
-    assert parameter_value == authorizer_allowed, {
-        "streaming app": parameter_value,
-        "authorizer": authorizer_allowed,
-    }
+    # And it is the SAME pair the HTTP API's own authorizer accepts as its audience. This
+    # used to be compared against the $connect authorizer's ALLOWED_CLIENT_IDS as well -
+    # three doors into one pool, and the assertion was that none of them answered "whose
+    # tokens?" differently. That door is gone; the two that are left still have to agree,
+    # because a student served by one and refused by the other is a bug nobody can
+    # reproduce from the browser.
+    audience = _http_api_resource(template, "AWS::ApiGatewayV2::Authorizer")[
+        "Properties"
+    ]["JwtConfiguration"]["Audience"]
+    rendered_audience = json.dumps(audience)
+    assert json.dumps({"Ref": web_client}) in rendered_audience, rendered_audience
+    assert json.dumps({"Ref": eval_client}) in rendered_audience, rendered_audience
+    assert len(audience) == 2, audience
 
 
 def test_nothing_the_site_distribution_reaches_names_an_app_client():
@@ -3631,9 +3101,14 @@ def test_the_streaming_apps_layer_carries_the_library_its_verifier_needs():
     Cognito signs with. That failure is a runtime one on a student's first request, and it
     looks like a bad token rather than a missing wheel.
 
-    Read off disk rather than restated, and pinned to the SAME requirement the $connect
-    authorizer's layer carries: two doors into one pool verifying with two versions of one
-    library is a difference nobody would choose."""
+    Read off disk rather than restated. This used to be compared against the $connect
+    authorizer's own layer - two doors into one pool verifying with two versions of one
+    library is a difference nobody would choose - and that layer went with the socket, so
+    what is left is the pin itself and the suite that exercises it.
+
+    THE DEV SUITE IS THE SECOND HALF and is asserted here rather than assumed:
+    app/tests/test_token_auth.py mints real RS256 tokens, so the same extra has to be in
+    requirements-dev.txt or those tests never run against a real signature."""
     app_dir = Path(__file__).resolve().parents[3] / "app"
 
     def _pyjwt_line(name):
@@ -3646,16 +3121,15 @@ def test_the_streaming_apps_layer_carries_the_library_its_verifier_needs():
         return lines[0]
 
     probe_pin = _pyjwt_line("requirements-stream-probe.txt")
-    authorizer_pin = _pyjwt_line("requirements-authorizer.txt")
 
     assert "crypto" in probe_pin, (
         f"the streaming app pins PyJWT without the crypto extra ({probe_pin}), so it "
         "cannot verify RS256 - the only algorithm Cognito signs with"
     )
-    assert probe_pin == authorizer_pin, {
-        "stream-probe": probe_pin,
-        "authorizer": authorizer_pin,
-    }
+    assert "crypto" in _pyjwt_line("requirements-dev.txt"), (
+        "app/tests/test_token_auth.py verifies real signatures; without the crypto extra "
+        "it would pass while checking nothing"
+    )
 
     # The layer's asset hash covers the file, so a changed pin rebuilds rather than leaving
     # the previous build staged. Asserted because the hash is computed in the stack and a
@@ -3674,7 +3148,7 @@ def test_the_auth_header_is_spelled_in_exactly_one_place():
     app/token_auth.py is the only place the string exists, and everything else imports it.
 
     Scanned across app/ and infra/ as TEXT rather than through an import, because the one
-    module that would have to be imported to check it (app/stream_probe.py) needs fastapi,
+    module that would have to be imported to check it (app/streaming_app.py) needs fastapi,
     which is in the streaming app's own layer and in no environment this suite builds."""
     import ast
 
@@ -3802,7 +3276,7 @@ def test_the_streaming_app_takes_its_caller_from_the_verified_token_and_never_fr
     caller said. A user id read off a request body would be the same value with nothing
     behind it, and the convenience and the vulnerability would be the same line of code.
 
-    THREE THINGS ARE PINNED, all by reading app/stream_probe.py off disk - fastapi is in
+    THREE THINGS ARE PINNED, all by reading app/streaming_app.py off disk - fastapi is in
     that function's own layer and in no environment this suite builds, so an import here
     raises and the AST is what is left.
 
@@ -4254,7 +3728,10 @@ def test_the_escalation_module_is_in_the_functions_that_import_it():
     lists are explicit (no directory glob), which is exactly why a new module has to be added
     to them by hand - and why this asserts it was."""
     template = _template()
-    for function in ("ChatFunction", "ChatStreamWorkerFunction"):
+    # Both functions that run the turn. It was three - the WebSocket generation worker was
+    # the middle one - and the pair that is left is the buffered transport and the streamed
+    # one, which is the whole set now.
+    for function in ("ChatFunction", "StreamProbeFunction"):
         resource = _resource_named(template, "AWS::Lambda::Function", function)
         staged = _staged_asset_dir(function)
         assert (staged / "escalation.py").exists(), f"{function} cannot import escalation"

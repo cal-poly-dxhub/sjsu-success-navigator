@@ -4,10 +4,10 @@ WHAT THIS IS. Every step a student's question goes through between "the caller h
 identified" and "there is a ChatResponse to send": the daily cap, the input guardrail, the
 student's message written, the previous messages read back, the agent loop, the reply
 written, and - on a conversation that did not exist a moment ago - the title. It was
-app/handler.py's, in the same order, and it is here now because it is about to have a
-SECOND caller (the FastAPI app under the Lambda Web Adapter) and this repo already knows
-what a second copy of this sequence costs: app/streaming.py and app/stream_worker.py hold
-one between them, and every ordering argument below had to be re-made in its docstring.
+app/handler.py's, in the same order, and it is here now because it has a SECOND caller
+(the FastAPI app under the Lambda Web Adapter) and this repo already knew what a second
+copy of this sequence costs: the WebSocket transport held one across two functions, and
+every ordering argument below had to be re-made in its docstring until that went.
 
 THE ORDER IS THE WHOLE FILE, and each position was argued for:
 
@@ -71,7 +71,7 @@ class TurnRefused(Exception):
     AN EXCEPTION RATHER THAN A RETURN VALUE, because a refusal is the one exit from
     `run_turn` that is not a ChatResponse: it carries a limit, a reset instant and a
     retry-after, and each transport renders those its own way - POST /chat as a 429 with a
-    Retry-After header, the socket as an `error` frame. Folding it into the response model
+    Retry-After header, the stream as an `error` frame. Folding it into the response model
     would put a shape on the wire that no client asks for; returning a two-field result
     object would make every caller unpack a tuple whose second half is almost always None.
 
@@ -311,10 +311,9 @@ def run_turn(
     # sidebar row or to address its next turn. It is sent on a continuing conversation too,
     # echoing the id that arrived, so the client never has to know which case it is in.
     #
-    # THE SAME FRAME THE SOCKET SENDS, from the same method (app/preview.py) - which is why
-    # this is one line rather than a second wire format. The socket sends it from
-    # app/streaming.py instead, at the same point in the same order, because that transport
-    # splits the turn across two functions and this module is only the second half of it.
+    # ONE METHOD ON THE SINK (app/preview.py), which is why this is one line rather than a
+    # wire format spelled out here. The frame's own argument lives there, so a second
+    # transport arriving later inherits it rather than re-deciding it.
     #
     # A BUFFERED TURN HAS NO SINK and sends nothing: POST /chat carries the id in the
     # response, which for a caller that waits for the whole reply is the same instant.

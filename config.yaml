@@ -275,6 +275,12 @@ chat_history:
 # normalisation and the safety-card decision all come off the COMPLETE reply, in the same
 # code POST /chat runs, and arrive in one final message carrying exactly the payload
 # POST /chat would have returned. The browser renders that, not the preview.
+# THE WEBSOCKET STREAMING BLOCK, AND NOTHING READS IT. The socket it configured is gone:
+# a reply now streams in band out of the FastAPI app behind the site's own /api/* path
+# (app/streaming_app.py), which pushes every delta because an HTTP response body has no
+# per-frame charge, and attaches no output guardrail. These four values are still validated
+# at synth (infra/infra/config.py, resolve_streaming) and consumed by nobody. Removing the
+# block is a config-schema change and its own commit.
 streaming:
   enabled: true
   # How many characters accumulate before a delta is pushed. EVERY PUSH IS A BILLABLE

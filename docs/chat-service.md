@@ -86,8 +86,9 @@ as a sidebar whose rows change length depending on which path named them.
 5. **the turn** - write the student's message, read the previous N back, call the model,
    write the reply.
 
-Each position is a property somebody argued for, and the WebSocket path
-(`app/streaming.py`) repeats the order in full rather than reordering it:
+Each position is a property somebody argued for. The order lives once, in `app/turn.py`,
+and both transports run that: the WebSocket path used to hold a second copy of it across two
+functions, and re-arguing every position in a second docstring is what that cost.
 
 - The rate limit is **before** the guardrail, so a refused turn spends one DynamoDB write
   and nothing billable, not even a guardrail text unit. A check after the guardrail would
@@ -210,22 +211,20 @@ labelled with.
 `app/history.py`. The design is `docs/accounts-and-storage.md`; what follows is what the
 implementation depends on.
 
-**Four sort-key prefixes share one partition, because the partition is already the user.**
+**Three sort-key prefixes share one partition, because the partition is already the user.**
 
 | item | pk | sk |
 |---|---|---|
 | conversation header | `USER#<sub>` | `CONV#<convId>` |
 | message | `USER#<sub>` | `MSG#<convId>#<ulid>` |
 | daily rate counter | `USER#<sub>` | `RATE#DAY#<YYYY-MM-DD>` |
-| open WebSocket connection | `USER#<sub>` | `CONN#<connectionId>` |
 
-The last two are not history and are invisible to every read here, because the conversation
-list is `begins_with('CONV#')` and both message reads are `begins_with('MSG#<convId>#')`.
-Neither needed a new table or a new IAM grant. The connection record is keyed on the **user**
-rather than on the connection id, even though a connection-keyed item sounds more natural:
-API Gateway carries the `$connect` authorizer's context onto every later route, so the
-message route already has a verified `sub`, and keeping every key derived from a JWT claim
-preserves the property the whole table is built on.
+The last is not history and is invisible to every read here, because the conversation list is
+`begins_with('CONV#')` and both message reads are `begins_with('MSG#<convId>#')`. It needed no
+new table and no new IAM grant. There was a fourth, `CONN#<connectionId>`, holding one row per
+open WebSocket connection with a three-hour TTL against API Gateway's own idle and hard
+limits; it went with the socket, and `test_the_store_has_no_connection_api_at_all` is what
+stops it coming back as a method nothing calls.
 
 **`USER#<sub>` is built from the JWT claim and never from the request body.** That is the
 whole isolation story: a request cannot address another student's partition, because the
@@ -411,8 +410,9 @@ the search still happens where a raise would lose a reply the model had already 
 Content-block indices are the stream's and nothing promises they arrive in order, so blocks
 are held in a dict. A block the stream never closed is kept, for the same instinct the
 zero-card fallback has. An unknown event is ignored, so a new Bedrock event type cannot fail a
-turn. Every push to the sink is wrapped, because the sink writes to a socket the student may
-have closed and a broken pipe is not a reason to abandon a reply that is already paid for.
+turn. Every push to the sink is wrapped, because the sink writes to a connection the student
+may have closed and a broken pipe is not a reason to abandon a reply that is already paid
+for.
 
 **The model is never shown its own markup.** A stored assistant reply is the model's raw
 text, which is what makes a reopened conversation re-renderable, so the card, safety and
@@ -713,28 +713,39 @@ and the copy path is measured after the conversion rather than on the text.
 
 ## Streaming
 
-`app/streaming.py` (the WebSocket routes) and `app/stream_worker.py` (the generation half).
-There is a second streaming transport in the tree, the FastAPI app under the Lambda Web
-Adapter (`app/stream_probe.py`), which runs the same turn as `POST /chat` in one function and
-streams it as NDJSON. The frames both transports send, and the rules for what is safe to show
-of a half-written reply, live once in `app/preview.py`.
+`app/streaming_app.py`: the FastAPI app under the Lambda Web Adapter, which runs the same
+turn as `POST /chat` in one function and streams it as NDJSON out of a Function URL. It is
+the only streaming transport. The rules for what is safe to show of a half-written reply
+live in `app/preview.py`, which is where they went when there were two.
 
-**The HTTP stream is reachable two ways, and that is a measurement rather than a fallback.**
-Its Function URL stays IAM-signed and open; the site's CloudFront distribution now also
-serves it on a `/api/*` behaviour with origin access control. The open question is whether a
-streamed body survives the edge or is buffered there - it is not stated in the CloudFront
-developer guide, we could not find it stated anywhere, and it decides both the browser client
-and where the auth header can live. It cannot be answered locally: uvicorn streams (checked
-with `curl -N`), Lambda's `InvokeMode` is a deploy-time property of the URL, and the edge is a
-third hop again. So the pair exists to be curled against each other on one route -
-`time_starttransfer` against `time_total`, direct and through the edge - and the direct URL is
-the control that must not be taken away.
+**There was a WebSocket API and it is gone.** `app/streaming.py`, `app/stream_worker.py`
+and `app/ws_authorizer.py`, plus the API, its stage, its two routes, its `$connect`
+authorizer, that authorizer's own deps layer and the `CONN#<connectionId>` records in the
+history table. It existed because API Gateway response streaming is REST-only and Lambda's
+managed Python runtime cannot stream a response - so the stream went out of band, onto a
+socket, across two functions, with a second copy of the turn's ordering in it. The Lambda
+Web Adapter removes the premise: it runs an ASGI app as an execution wrapper and streams
+the body out through a Function URL, which is the supported way to stream in band from
+Python. One function, one copy of the order, no gateway ceiling to work around and no
+connection lifecycle to keep records of. What survives is what the socket's frames taught:
+the five frame types, the `accepted`-first ordering, and `app/preview.py` itself.
+
+**The HTTP stream is reachable two ways, and the pair is a measurement rather than a
+fallback.** Its Function URL stays IAM-signed and open; the site's CloudFront distribution
+serves it on a `/api/*` behaviour with origin access control, which is the one the browser
+calls. Whether a streamed body survives the edge or is buffered there is not stated in the
+CloudFront developer guide and we could not find it stated anywhere, and it cannot be
+answered locally: uvicorn streams (checked with `curl -N`), Lambda's `InvokeMode` is a
+deploy-time property of the URL, and the edge is a third hop again. So the pair exists to be
+curled against each other on one route - `time_starttransfer` against `time_total`, direct
+and through the edge - and the direct URL is the control that must not be taken away.
 
 **The edge behaviour and the app's routes are one string, spelled twice.** CloudFront matches
 a behaviour on the viewer's path and forwards that path to the origin unchanged; there is no
 prefix-stripping short of a rewrite function. So every route the outside world calls moved
-under `/api` (`EDGE_PATH_PREFIX` in `stream_probe.py`, `_STREAM_EDGE_PATH_PREFIX` in the
-stack) and a test reads both off disk, because a mismatch synthesizes clean, deploys clean,
+under `/api` (`EDGE_PATH_PREFIX` in `streaming_app.py`, `_STREAM_EDGE_PATH_PREFIX` in the
+stack, `STREAM_PATH_PREFIX` in `frontend/src/lib/chatStream.ts`) and tests read all three
+off disk, because a mismatch synthesizes clean, deploys clean, builds clean,
 and is a 404 from FastAPI served through a distribution behaving exactly as configured. `/`
 is the exception and stays at the app's root: it is the adapter's readiness target, polled on
 127.0.0.1 before anything is forwarded, and a readiness check answering 404 is a function that
@@ -761,13 +772,6 @@ used to answer 401 to every caller: behind IAM auth with origin access control t
 URL's request context carries `authorizer.iam` - the edge's principal - and no `jwt` block at
 all, and a Function URL accepts no authorizer. So the app verifies the token itself
 (`app/token_auth.py`), and the section below is what that costs and what it buys.
-
-**Why a WebSocket and not response streaming.** Two constraints meet and leave one door. API
-Gateway response streaming is REST-API only and this is an HTTP API; Lambda response streaming
-supports Node.js and custom runtimes only and this agent loop is Python. In-band streaming
-therefore means rewriting the loop in another language. A WebSocket API keeps the loop where it
-is and moves the streaming out of band: the model's tokens go out through `ConverseStream` and
-`post_to_connection` while the HTTP request that started the turn has already returned.
 
 **The browser reads the HTTP stream, and nothing chooses between transports any more.**
 `frontend/src/lib/chatStream.ts` POSTs the turn to `/api/chat` and reads the NDJSON body
@@ -797,45 +801,11 @@ the buffered path, so the two are written with `??` rather than a single conditi
 conversation that learned its id from the first frame must still take its NAME from the
 reply that named it.
 
-**The socket is still synthesized and nothing opens it.** `POST /chat` is untouched and
-stays the fallback whenever the stream cannot carry a turn. The WebSocket surface is still
-gated on one config key and still deployed with it on, but no client reaches it any more -
-removing it is the next commit, not this one.
-
 **What streams is a preview.** The deltas are prose only and are never parsed, capped or
 trusted. Cards, caps, dash normalisation, the trailing-text split and the safety decision all
 derive from the complete reply, in exactly the code `POST /chat` runs. One final message
 carries the authoritative payload: the identical `ChatResponse` `POST /chat` would have
 returned. The browser throws the preview away and renders that.
-
-**Why the generation is a separate function.** A WebSocket route integration has the same
-29-second ceiling every API Gateway integration has, and the agent loop can use most of it. So
-the route function does the fast ordered part and hands off asynchronously; the worker is not
-behind the gateway at all, which is why the timeout stops applying.
-
-**The async invoke's retry count is zero, set on the function and on the client that calls
-it.** Lambda retries a failed asynchronous invocation twice by default, and a retried worker
-answers the same question a second and third time, down the same socket, billing the model each
-time. There is no idempotency key that would make that safe. The client's own `max_attempts` is
-1 for the same reason: a retry racing a response the first call already delivered would start a
-second worker.
-
-**The worker's loop budget is deliberately the same number as the buffered path,** even
-though it is not behind the gateway ceiling and could be given more. A longer budget would make
-a streamed turn answer questions a buffered turn gives up on, and identical rendering for the
-same question is the property this feature is held to.
-
-**Frames are batched, not per token, and that is a cost control.** Every push is a billable
-API Gateway message, and the browser reveals text at about 108 characters a second while the
-model outruns that, so a frame per token would multiply the message count by the token count
-to no visible end. Defaults come from `config.yaml`; a dropped variable batches rather than
-pushing per token.
-
-**A 410 is the student closing the tab.** It stops the pushing and nothing else: the turn
-finishes and is persisted, because the model call is already paid for and because a user
-message with no assistant reply is the dangling turn `docs/accounts-and-storage.md` calls a
-reef. Coming back to a coherent conversation is worth the writes. One 410 sets a flag so the
-rest of the turn's frames stop rather than raising once per delta.
 
 **The sink's offset indexes its own raw accumulated text,** which is why `flush` takes no
 argument. Slicing the parsed prose with an offset taken from the raw stream sends a fragment
@@ -850,30 +820,8 @@ words of the lead-in must not sit in the batcher behind a `min_chars` threshold 
 reach, and the browser clears the indicator on any arriving prose, so a delta landing after the
 frame would take it back off.
 
-**The callback endpoint and the worker's function name come from the stack, never from the
-event.** The event carries `domainName` and `stage`, and assembling the URL a reply is sent to
-out of request data is how a request ends up choosing its own destination. They are read with
-a default of `""` rather than through `settings._required`, because they exist only when the
-streaming gate is on and `settings.py` is imported by the chat function too.
-
-**The guardrail screen is repeated rather than imported from `handler.py`,** because importing
-that module would pull the whole HTTP request path and its module-scope Bedrock client into a
-function that serves neither. The thing that must not drift is the guardrail **identity**, and
-that comes from Settings, which both read from the same environment. The same reasoning gives
-the streaming path its own `ConversationStore` instance.
-
-**Output guardrail: `sync` is the only mode this can emit, structurally.** `async` releases
-text to the student before it has been scanned, which is not a screen, and it does not support
-PII masking. There is no configuration that produces it. The feature is off by default and
-measured: the only safe stream mode holds the reply back to scan it in chunks, which spends
-most of this feature's benefit on a screen today's guardrail cannot fire.
-
-**A turn id is minted per turn and carried on every frame,** so a reply arriving after the
-student has moved on, or two turns racing on one connection, lands on the right bubble or is
-discarded.
-
-**The `accepted` frame announces the conversation id, and it leads the turn on both
-streaming transports.** The server mints the id and an absent one means a new conversation
+**The `accepted` frame announces the conversation id, and it leads the turn.** The server
+mints the id and an absent one means a new conversation
 (`docs/accounts-and-storage.md`), so on a conversation the client could not name, the stream
 is the only place a browser learns it - and it needs it to place the sidebar row and to
 address its next turn, both of which happen long before a reply finishes. It goes out the
@@ -883,22 +831,11 @@ arrived: a frame whose presence depended on newness would make the client's own 
 whether it gets told. On a query the input guardrail blocks there is no frame, because the
 screen runs before the write and no id was ever minted.
 
-The frame itself is one method on `PreviewSink` (`app/preview.py`), which is what stops the
-two transports growing two spellings of it. The socket sends it from `app/streaming.py`
-rather than from the turn, and that is not a second copy of the decision: that path splits a
-turn across two functions, so the half that mints the id is the route function and the frame
-has to leave before the worker is invoked. The HTTP stream runs the whole turn in one place,
-so `app/turn.py` sends it at the same point of the same order. A buffered `POST /chat` has no
-sink and sends nothing - it carries the id in the response the caller is already waiting for,
+The frame itself is one method on `PreviewSink` (`app/preview.py`), which is what stopped
+the two transports growing two spellings of it and is where the next one would inherit it.
+`app/turn.py` sends it, at the point in the order where the student's message is on record.
+A buffered `POST /chat` has no sink and sends nothing - it carries the id in the response the caller is already waiting for,
 which for a caller that waits is the same instant.
-
-**`$default` is not the message route.** The named `sendMessage` route carries turns;
-`$default` catches a frame whose `action` names no route, which is a malformed client rather
-than a turn, so it is refused. A billable path should not be the thing an unrecognised request
-falls into. The WebSocket route key lives at `requestContext.routeKey`, one level down from
-where an HTTP API payload 2.0 event carries it, which is part of why the two handlers are
-separate functions: a shared one would have to guess which protocol it was serving, and
-guessing wrong on a WebSocket frame would run a billable chat turn.
 
 **Connection records carry a 3-hour TTL against API Gateway's own quotas:** 10 minutes idle,
 2 hours hard. Three hours is the hard cap plus an hour of slack, so the only rows TTL ever
@@ -909,10 +846,13 @@ clock.
 
 ### Verifying the token in the streaming app
 
-`app/token_auth.py`. The third implementation of the same decision, and the reason there are
-three is that each transport is handed its identity by something different: `POST /chat` by
-API Gateway's native JWT authorizer, the socket by `app/ws_authorizer.py` at the handshake,
-and the streaming app by nothing at all.
+`app/token_auth.py`. The second implementation of the same decision, and the reason there
+are two is that each transport is handed its identity by something different: `POST /chat`
+by API Gateway's native JWT authorizer, and the streaming app by nothing at all. There were
+three: the socket's `$connect` authorizer (`app/ws_authorizer.py`) ran the same five checks
+at the handshake, because a WebSocket API accepts no native JWT authorizer and a REQUEST
+Lambda authorizer on `$connect` was the only type it takes. It went with the socket, and
+with it went the one place in this repo where a bearer token travelled in a URL.
 
 **The token rides its own header, and that is forced rather than preferred.** Origin access
 control signs each origin request with SigV4 and the signature lives in `Authorization`, so a
@@ -923,15 +863,15 @@ arrives intact. `AUTH_HEADER_NAME` is the only place its name is written - the t
 keep it that way. The two credentials are one per layer and neither substitutes for the other:
 SigV4 says the request may reach the function, the token says who it is for.
 
-**The checks are the `$connect` authorizer's, for the same Cognito reasons.** Signature
+**The checks are the ones the `$connect` authorizer ran, for the same Cognito reasons.** Signature
 against the pool's JWKS, issuer, expiry, `token_use`, and `client_id` against an allowlist -
 `verify_aud` off, because a Cognito access token carries no `aud`; `token_use` checked,
 because an ID token does carry one and would otherwise sail past a `client_id` check that
 never ran. RS256 is pinned rather than read off the token, which is what refuses `alg: none`
-and the HS256-signed-with-the-public-key confusion. It is a separate module rather than an
-import of `ws_authorizer.py` because that function's bundle is exactly one file and a test
-pins it that way; what must not drift is the decision, and both read the same pool and the
-same two clients out of the same stack.
+and the HS256-signed-with-the-public-key confusion. What must not drift between it and API
+Gateway's own authorizer is the decision, and both read the same pool and the same two
+clients out of the same stack - which an infra test asserts by comparing the parameter's
+value against the HTTP API's audience list.
 
 **Two clients pass.** The browser's and the eval harness's machine client both send turns
 here, so pinning a single audience would serve every student and 401 every eval run.
@@ -959,63 +899,6 @@ the route pulls out by hand is the query. There is no bypass flag and no header 
 a `sub` without a token behind it, so every way a token can fail to verify is the same 401
 with no detail on the wire - a 401 that distinguished "expired" from "not one of our clients"
 would be an oracle, and a browser does the same thing either way.
-
-### The $connect authorizer
-
-`app/ws_authorizer.py`. The HTTP API gates its routes with API Gateway's **native** JWT
-authorizer: no code, no cold start, none of our logic in the auth decision. A WebSocket API
-has no such thing. The only authorizer type it accepts is a REQUEST (Lambda) authorizer, and
-it may only be attached to `$connect`. So this module re-implements what the HTTP API's
-authorizer already does: signature against the pool's JWKS, issuer, expiry, and `client_id`
-against the same allowlist.
-
-**`$connect` alone is the model, not a limitation.** A WebSocket connection is authorized
-once, at the handshake, and every frame after rides the connection that handshake opened. API
-Gateway carries this function's `context` onto every later route invocation, `$default` and
-`$disconnect` included (verified against a deployed probe), which is what lets the message
-route read `sub` from a validated token rather than from anything the client typed. Values in
-`context` must be strings; API Gateway silently drops other types.
-
-**The token arrives in the query string, and that is measured rather than preferred.** The
-better-looking option is `Sec-WebSocket-Protocol`, keeping it out of URLs entirely, and API
-Gateway does accept that header as an identity source. It just never echoes the subprotocol
-back in its 101 response, and RFC 6455 says a client whose requested subprotocol is not echoed
-must fail the connection. Probed against a real deployed WebSocket API: the 101 came back with
-no `Sec-WebSocket-Protocol` header, and both Chrome 151 and Node's WHATWG WebSocket fired
-`error` and never opened. The query string is what is left.
-
-**What that costs, and what pays it back.** A token in a URL is a token that can end up in a
-log, and this function is the first place it could: the authorizer event carries
-`queryStringParameters.token` in full. So **nothing in that file may ever log the event, the
-token, or anything derived from it but the claims.** That is why it has no debug logging at
-all, why the rejection path re-raises a bare exception rather than one that might carry a
-token fragment, and why `test_the_authorizer_never_logs_the_token` pins it. The stack
-configures no access logging on the WebSocket API, so there is no access log for it to land in
-either.
-
-**A failure is a raise, not a Deny policy.** Raising makes API Gateway answer the handshake
-401; returning an explicit Deny makes it 403. 401 is the honest answer to a bad token and is
-what the HTTP API's authorizer returns for one.
-
-**`verify_aud` is off and `client_id` is checked by hand,** which is the same documented
-Cognito quirk the HTTP API authorizer's audience list relies on: a Cognito **access** token
-carries no `aud` claim, it carries `client_id`, so audience verification would reject every
-token this app issues. `token_use` is checked because the quirk cuts both ways: an ID token
-*does* carry `aud`, so without that line an ID token for the same client would sail through a
-`client_id` check that never ran. The HTTP API rejects ID tokens by the same mechanism.
-
-**The policy is scoped to the method ARN that was asked for, never `*`.** A wildcard would be
-a policy that outlives the question it was asked.
-
-**The identity source must agree letter for letter with the authorizer's declaration**
-(`route.request.querystring.token`). A mismatch does not read as a bug: an identity source
-absent from the request means API Gateway never invokes the function at all, so the failure
-arrives as a handshake rejection with nothing in these logs to explain it.
-
-**The JWKS client is built once per container** and caches signing keys, so a warm container
-validates without a network call, which matters on `$connect` where it sits directly in front
-of a student waiting for a socket. An empty `ALLOWED_CLIENT_IDS` admits nobody, which is the
-safe direction for a misconfigured deploy.
 
 ## Conversation titling
 
@@ -1305,8 +1188,13 @@ Some assertions are load-bearing in ways the test name cannot carry:
 - **`test_no_gav_specific_resources_were_inherited`** pins the strip of the source project's
   own surface (its catalog bucket, its feedback path, its dual hosting) so a later pull cannot
   reintroduce them, with the deliberately-inherited pieces pinned alongside.
-- **`test_the_authorizer_never_logs_the_token`** is the enforcement of the rule that the
-  WebSocket token, which travels in a query string, never reaches a log line.
+- **`test_no_websocket_transport_is_synthesized_at_all`** and the two beside it are the
+  inversion of the eighteen assertions that used to pin the WebSocket surface into place.
+  They assert its ABSENCE - no resource, no module, no `streamingApiUrl` in config.json -
+  because "we deleted it" is not a property and a socket that came back through a merge or a
+  revert would otherwise be caught by nothing. The rule they replaced was
+  `test_the_authorizer_never_logs_the_token`, which enforced that the `$connect` token,
+  travelling in a query string, never reached a log line; there is no token in a URL now.
 - **The prompt suite asserts the editorial balance directly** (titles and descriptions
   outweigh the prose on both sides of the grid in every worked example that emits cards), so a
   rewrite cannot drift the weight back into the bubble.

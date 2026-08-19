@@ -1,6 +1,6 @@
 """Conversation history in DynamoDB: the server's copy of the turn, and the only one.
 
-Four sort-key prefixes share one partition, and every key derives from the JWT `sub`;
+Three sort-key prefixes share one partition, and every key derives from the JWT `sub`;
 see docs/accounts-and-storage.md and docs/chat-service.md, Storage.
 """
 
@@ -242,39 +242,6 @@ class ConversationStore:
                 return False
             raise
         return True
-
-    def open_connection(
-        self,
-        *,
-        user_id: str,
-        connection_id: str,
-        expires_at: int,
-    ) -> None:
-        """Record that this user has a WebSocket connection open, and swallow any failure."""
-        try:
-            self._table_resource().put_item(
-                Item={
-                    "pk": f"USER#{user_id}",
-                    "sk": f"CONN#{connection_id}",
-                    "connectedAt": _now_iso(),
-                    "expiresAt": expires_at,
-                }
-            )
-        except Exception:
-            logger.exception(
-                "Could not record a WebSocket connection; streaming continues without it"
-            )
-
-    def close_connection(self, *, user_id: str, connection_id: str) -> None:
-        """Forget a connection that has closed. Idempotent, and swallows its failures."""
-        try:
-            self._table_resource().delete_item(
-                Key={"pk": f"USER#{user_id}", "sk": f"CONN#{connection_id}"}
-            )
-        except Exception:
-            logger.exception(
-                "Could not clear a WebSocket connection record; its TTL will collect it"
-            )
 
     def set_generated_title(
         self,

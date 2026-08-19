@@ -3,14 +3,14 @@
 WHY THIS IS ITS OWN MODULE. A streamed turn has two independent questions in it. "Which
 bytes of a half-written reply is it safe to put in front of a student, and how often?" is
 one, and the answer is the same wherever the bytes are going. "How do I get a frame to the
-client?" is the other, and it is different for every transport - post_to_connection down a
-WebSocket, a chunk on an open HTTP response.
+client?" is the other, and it is different for every transport - a chunk on an open HTTP
+response today, `post_to_connection` down a WebSocket before that.
 
-The second question already has two answers in this repo and is about to have them at the
-same time. The first must never have two, and it nearly did: app/streaming.py's docstring
-records the bug that comes from getting it wrong twice - `flush` sliced the PARSED prose
-with an offset measured against the RAW stream, and the student watched a sentence restart
-in the middle of itself. That bookkeeping lives here now, once.
+The second question has had two answers in this repo at once. The first must never have
+two, and it nearly did: the socket's own version of `flush` sliced the PARSED prose with an
+offset measured against the RAW stream, and the student watched a sentence restart in the
+middle of itself. That bookkeeping lives here now, once, and the transport that made the
+mistake is gone while the lesson is not.
 
 WHAT A SUBCLASS OWES: `_post(payload) -> bool`, returning True if the frame left. Everything
 else - the offset, the accumulated raw text, the batching thresholds, the card announcement,
@@ -41,11 +41,12 @@ class PreviewSink:
     """A `orchestrator.StreamSink` with the preview logic filled in and the wire left out.
 
     BATCHED, and the thresholds are the caller's to choose because the reason to batch is
-    the caller's too. Down a WebSocket every push is a billable API Gateway message, so a
-    frame per token multiplies the message count by the token count to no visible end - the
+    the caller's too. On a response-streamed HTTP body there is no per-frame charge, so
+    `min_chars=1, max_delay_ms=0` pushes everything and that is what the streaming app
+    passes. The thresholds are still here because the reason to batch was a real one and
+    could be again: down a WebSocket every push was a billable API Gateway message, and a
+    frame per token multiplied the message count by the token count to no visible end - the
     browser reveals text at ~108 characters a second and the model outruns it either way.
-    On a response-streamed HTTP body there is no per-frame charge, so the same numbers would
-    only add latency. Pass `min_chars=1, max_delay_ms=0` to push everything.
 
     `gone` and `frames` belong to the subclass's transport but live here because `_post` is
     the only place either changes, and every method above it reads them.

@@ -68,7 +68,7 @@ def _bedrock_client(region: str):
 
 
 class StreamSink(Protocol):
-    """Where a streaming turn's PREVIEW goes. Implemented by app/streaming.py."""
+    """Where a streaming turn's PREVIEW goes. Implemented by app/preview.py."""
 
     def status(self, stage: str) -> None:
         """Something is happening that is not text arriving - a retrieval, say."""

@@ -1,9 +1,8 @@
 """Who the caller is on the streaming app, verified in this process.
 
-WHY THE APP VERIFIES ITS OWN TOKEN. Every other transport in this repo is handed an
-identity: `POST /chat` reads claims API Gateway's native JWT authorizer already checked,
-and the socket reads claims `app/ws_authorizer.py` checked at the handshake. The streaming
-app has neither. It is a Lambda Function URL with AuthType AWS_IAM, reached through the
+WHY THE APP VERIFIES ITS OWN TOKEN. The other transport in this repo is handed an
+identity: `POST /chat` reads claims API Gateway's native JWT authorizer already checked.
+The streaming app has nothing. It is a Lambda Function URL with AuthType AWS_IAM, reached through the
 site's CloudFront distribution with origin access control, and the request that arrives
 carries the EDGE's IAM identity - `requestContext.authorizer.iam`, a CloudFront service
 principal - not a student's claims. A Function URL takes no authorizer, so there is
@@ -14,13 +13,15 @@ origin request with SigV4 and the signature lives in `Authorization`, so a token
 header is a token CloudFront overwrites on its way past. The behaviour forwards every
 other viewer header (AllViewerExceptHostHeader), so a header of our own arrives intact.
 AUTH_HEADER_NAME below is the only place its name is written - the same treatment
-`EDGE_PATH_PREFIX` gets in app/stream_probe.py, and for the same reason: a second spelling
-is a 401 that synthesizes clean, deploys clean and is nobody's fault.
+`EDGE_PATH_PREFIX` gets in app/streaming_app.py, and for the same reason: a second
+spelling is a 401 that synthesizes clean, deploys clean and is nobody's fault. The browser
+is the one place the name is written in another language, and an infra test reads the two
+off disk and compares them.
 
 THE ACCESS TOKEN, NOT THE ID TOKEN, and `client_id` rather than `aud`. A Cognito access
 token carries no `aud` claim at all - it carries `client_id` - so audience verification
-would reject every token this pool issues, which is why `verify_aud` is off here exactly as
-it is in the $connect authorizer and why the HTTP API's authorizer uses an audience
+would reject every token this pool issues, which is why `verify_aud` is off here and why
+the HTTP API's authorizer uses an audience
 ALLOWLIST. The quirk cuts both ways: an ID token DOES carry `aud` and no `client_id`, so
 without the `token_use` check an ID token would sail past a `client_id` check that never
 ran on it. Both directions are checked.
@@ -64,18 +65,18 @@ which on a warm Lambda is hours. The failure refuses THIS request and the next o
 again. The success is cached forever, because the allowlist changes only when the stack is
 redeployed and a redeploy is a new container.
 
-WHY THIS IS NOT `app/ws_authorizer.py` IMPORTED. That module's bundle is exactly one file
-and a test pins it that way - the module that decides who a caller is must not be able to
-reach the store, the model or the guardrail even by importing them - so sharing code with
-it would mean changing its bundle, and the $connect path is explicitly not in this
-commit's scope. What must not drift between the two is the DECISION, and that comes from
-the same three environment variables the stack sets from the same pool and the same two
-clients.
+THIS USED TO BE THE THIRD IMPLEMENTATION OF ONE DECISION and is now the second. The
+socket's `$connect` authorizer ran the same five checks at the handshake; it existed
+because a WebSocket API accepts no native JWT authorizer, and it went with the socket.
+What is left is this and API Gateway's own, which shares this pool and this pair of
+clients because a stack with two answers to "whose tokens?" is a stack where one of them
+is wrong.
 
 NOTHING TOKEN-SHAPED IS LOGGED. Every rejection raises Unauthorized carrying one of the
-fixed strings below, and callers log that string rather than the exception chain. A header
-is not a URL, so this is a weaker constraint than the $connect authorizer's - it is kept
-anyway, because the difference between the two is only which log a token would land in.
+fixed strings below, and callers log that string rather than the exception chain. The
+token arrives on a header rather than in a URL, which makes this a weaker constraint than
+the one the socket's authorizer kept - it is kept anyway, because the difference is only
+which log a token would land in.
 """
 
 from __future__ import annotations
@@ -257,7 +258,7 @@ def _client_ids_from(parameter_name):
 def verifier():
     """The process's verifier, built once. None when it cannot be built.
 
-    LAZY, FOR THE REASON app/stream_probe.py's settings are lazy. A raise at module scope
+    LAZY, FOR THE REASON app/streaming_app.py's settings are lazy. A raise at module scope
     would take the whole ASGI app down with it - the adapter's readiness poll would fail,
     the Function URL would answer an opaque 502, and a misconfigured pool would look
     exactly like a broken deploy. Held as an error instead, so the transport probes keep

@@ -1,10 +1,10 @@
 """The streaming app's token verification: app/token_auth.py.
 
-THIS IS THE ONE MODULE IN app/ WHOSE CORRECTNESS IS A SECURITY PROPERTY. Every other
+THIS IS THE ONE MODULE IN app/ WHOSE CORRECTNESS IS A SECURITY PROPERTY. The other
 transport is handed an identity by something in front of it - API Gateway's native JWT
-authorizer, or app/ws_authorizer.py at the socket's handshake. The streaming app is a
-Lambda Function URL, which takes no authorizer, so what this file asserts is the whole of
-what stands between a stranger and a student's conversation history.
+authorizer. The streaming app is a Lambda Function URL, which takes no authorizer, so what
+this file asserts is the whole of what stands between a stranger and a student's
+conversation history.
 
 SO IT IS TESTED AGAINST REAL SIGNATURES, not a stubbed library. The suite generates an RSA
 keypair, mints tokens with it, and hands the verifier a JWKS client that returns the
@@ -13,7 +13,7 @@ RS256 rather than about a mock. It is also the reason pyjwt is in requirements-d
 stub here would pass every one of these tests while verifying nothing.
 
 WHAT IS NOT TESTED HERE, and where it is instead. The FastAPI route that turns an
-Unauthorized into a 401 lives in app/stream_probe.py, which this suite cannot import -
+Unauthorized into a 401 lives in app/streaming_app.py, which this suite cannot import -
 fastapi is in the streaming app's own layer and in no environment CI builds for app/. Its
 shape is pinned by the infra suite, which reads the module off disk
 (test_the_streaming_app_takes_its_caller_from_the_verified_token_and_never_from_the_body).
@@ -397,8 +397,10 @@ def test_an_empty_client_allowlist_admits_nobody(keypair, jwk_client):
 
 def test_no_rejection_message_carries_any_part_of_the_token(verifier, keypair):
     """NOTHING TOKEN-SHAPED REACHES A LOG LINE. The route logs the exception's own message,
-    so the messages are a fixed vocabulary rather than anything derived from the input -
-    the same discipline app/ws_authorizer.py keeps for the same reason, one layer down."""
+    so the messages are a fixed vocabulary rather than anything derived from the input.
+    The socket's `$connect` authorizer kept the same discipline one layer down and under a
+    harder constraint - its token travelled in a query string - and it is gone; this is
+    where the rule lives now."""
     _, other_private = keypair
     token = access_token(keypair, _signing_key=other_private)
 
