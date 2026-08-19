@@ -158,7 +158,7 @@ CAMPUS_PLACES: dict[str, CampusPlace] = {
         address="9th and San Fernando",
         building="student-services-center",
         directions_destination="Student Services Center, San Jose State University, San Jose, CA",
-        when="the one-stop front desk, when the student does not know which office they need",
+        when="the Student Services Center's own front counter, which is not the Student Union and stands in for no other office",
     ),
     "financial-aid-office": CampusPlace(  # faso-contact
         name="Financial Aid and Scholarship Office",

@@ -439,6 +439,9 @@ def test_the_section_states_that_going_over_drops_the_offer():
 
 
 def test_the_section_bans_an_offer_on_a_safety_turn():
+    """Stated HERE and not with Safety's other exclusions, because this section is gated: a
+    deployment with no recipient must not read a sentence about a tag it was never taught.
+    That makes it the one duplicate in the prompt that is deliberate."""
     prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
 
     assert "Never offer it on a turn where you emit a safety block." in prompt
@@ -519,19 +522,33 @@ def test_the_prompt_says_an_unlisted_place_gets_no_block():
     assert "Not the nearest key" in prompt
 
 
-def test_the_place_section_bans_a_location_on_a_safety_turn():
-    prompt = build_system_prompt(_SETTINGS)
-    place_section = prompt.split("Showing a student where a place is:")[1]
-    assert "never on a turn where you emit a safety block" in place_section
+def test_the_safety_section_carries_every_safety_turn_exclusion():
+    """One list, in the Safety section: a safety turn drops the cards AND the location panel.
+
+    The place ban used to be a second sentence at the foot of the place section. Both are
+    enforced server-side anyway (apply_safety_handoff_to_response drops the cards and the
+    place card together), so the second statement bought no coverage a rule does not cost -
+    and a rule restated in a later section competes with the earlier one rather than
+    reinforcing it. Asserted on the section, so it cannot be satisfied by the escalation
+    section's own (deliberately duplicated, because gated) ban."""
+    safety_section = build_system_prompt(_SETTINGS).split("Safety:")[1].split("Never:")[0]
+
+    assert "no cards and no location block" in safety_section
 
 
 def test_the_place_keys_are_not_translated_with_the_rest_of_the_reply():
-    """A translated key resolves to nothing, exactly as a translated safety key does. The
-    carve-out is stated inside the section rather than left to the language rules, because
-    that is where a model reading about the tag will be."""
-    prompt = build_system_prompt(_SETTINGS)
-    place_section = prompt.split("Showing a student where a place is:")[1]
-    assert "stay in English" in place_section
+    """A translated key resolves to nothing, exactly as a translated safety key does.
+
+    The carve-out is stated once, in the Language section, where every other
+    do-not-translate rule lives and where the tag names and ref ids are already named. It
+    used to be repeated inside the place section; the Language rule now names the <place>
+    key itself, which is what this asserts. The safety keys keep their second statement,
+    and only they do: a dropped place card costs a panel, a dropped safety key costs a
+    crisis panel."""
+    section = _language_section(build_system_prompt(_SETTINGS))
+
+    assert "the key inside a <place> block" in section
+    assert "stay in English" in section
 
 
 def test_the_prompt_never_writes_an_address_the_model_could_copy():
