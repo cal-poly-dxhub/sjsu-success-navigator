@@ -93,6 +93,13 @@ export type TurnUsage = {
 	modelCalls: number;
 	inputTokens: number;
 	outputTokens: number;
+	/**
+	 * The titling call's tokens, kept apart from the two above because a DIFFERENT and
+	 * cheaper model wrote them (app/usage.py, record_title_call). Counted inside modelCalls,
+	 * priced at their own rate.
+	 */
+	titleInputTokens: number;
+	titleOutputTokens: number;
 	guardrailContentUnits: number;
 	retrievals: number;
 };

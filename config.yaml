@@ -383,7 +383,7 @@ generation:
 # three are invisible from outside:
 #   - one question is not one model call (the agentic loop re-calls after a tool result,
 #     and each call resends the whole context);
-#   - the retrieved passages ride in the input tokens and dominate them (85% of the cost);
+#   - the retrieved passages ride in the input tokens and dominate them (~89% of the cost);
 #   - the guardrail bills per 1,000-character text unit, not per question.
 cost_model:
   # The gate. false -> no costModel key in config.json -> no cost section inside the
@@ -408,6 +408,23 @@ cost_model:
   rates:
     generation_input_per_1m: 3.00        # Claude Sonnet 4.6 input (pricing page)
     generation_output_per_1m: 15.00      # Claude Sonnet 4.6 output (pricing page)
+    # THE TITLING CALL IS A SECOND MODEL. chat.title_model_id is Haiku, not the Sonnet
+    # that answers, so its tokens are recorded in their own fields (app/usage.py,
+    # record_title_call) and priced here rather than folded into the two rates above -
+    # which is what the panel did until eval/measure_usage.py --audit put the tally
+    # beside Bedrock's own usage blocks and showed the title's tokens arriving in the
+    # generation bucket.
+    #
+    # THESE TWO ARE A CEILING, NOT THE MODEL'S RATE, and that is deliberate rather than
+    # lazy. The Price List API publishes no Claude 4.x row at all (all 1,008 us-west-2
+    # AmazonBedrock rows paged 2026-08-20: the only Claude rows are 2.0, 2.1, Instant,
+    # 3 Haiku and 3 Sonnet) and the pricing page's Anthropic table does not survive being
+    # fetched. So rather than invent a Haiku rate, these hold the generation rate: the
+    # title model is the cheaper of the two, so this cannot understate the bill, and the
+    # panel's figure does not move until somebody can read the page. Fix them the day it
+    # can be read - one line each, and nothing else has to change.
+    title_input_per_1m: 3.00             # >= Claude Haiku 4.5 input; see above
+    title_output_per_1m: 15.00           # >= Claude Haiku 4.5 output; see above
     embedding_per_1m: 0.02               # TitanEmbeddingV2-Text-input-tokens
     guardrail_content_per_1k_units: 0.15 # Guardrail-ContentPolicyUnitsConsumed
     # NO sensitive-information (PII) rate: this stack's guardrail is PROMPT_ATTACK only,
@@ -424,45 +441,64 @@ cost_model:
     dynamodb_write_per_1m: 0.625         # on-demand write request units
     dynamodb_read_per_1m: 0.125          # on-demand read request units
 
-  # What ONE question actually consumed. From eval/measure_usage.py, which drives the real
-  # orchestrator against this stack's own model, knowledge base, guardrail and prompt (read
-  # out of the deployed chat Lambda's environment) and reads `usage` off each Converse
-  # response. See that script for the one thing it cannot measure - the Lambda line below.
+  # What ONE question actually consumed. From eval/run_eval.py through the deployed
+  # endpoint, folded up by eval/measure_usage.py --from-eval, which reads this stack's own
+  # model, knowledge base, guardrail and prompt out of the deployed chat Lambda's
+  # environment. See that script for the one thing it cannot measure - the Lambda line
+  # below - and docs/eval-harness.md for why the depth slope is still measured locally.
   measured:
-    at: "2026-08-11"
-    # 24 questions from eval/ground-truth.yaml, spread across its behaviors (RAG answers and
-    # safety triage alike - there is no pre-model phrase gate, so a safety turn costs a full
-    # model call and excluding it would flatter the average).
-    sample_questions: 24
-    # Converse invocations per question. Above 1 because the loop re-calls the model after a
-    # tool result: 22 of the 24 answered in one call, 2 needed a second search.
-    model_calls_avg: 1.08
-    # Input tokens for ONE model call: system prompt + card contract + history + the
+    at: "2026-08-20"
+    # 40 questions from eval/ground-truth.yaml, taken by an even stride so the run keeps the
+    # set's own mix of behaviors (RAG answers and safety triage alike - there is no pre-model
+    # phrase gate, so a safety turn costs a full model call and excluding it would flatter
+    # the average). `eval/run_eval.py --sample 40`, then `measure_usage.py --from-eval`.
+    #
+    # THESE 40 WENT THROUGH THE FRONT DOOR - API Gateway, the chat Lambda, the daily cap, the
+    # store - signed in as the eval machine account, rather than through the loop run in a
+    # local process. What that buys is that the numbers describe the deployed system whole.
+    # What it costs is that one wire `usage` block cannot say which model spent what, so the
+    # three generation figures below are taken from Bedrock's OWN per-model CloudWatch
+    # counters over the run's window, reconciled against the run's wire totals call for call
+    # and token for token before anything is derived from them.
+    sample_questions: 40
+    # GENERATION Converse invocations per question - the answering model only. Above 1
+    # because the loop re-calls after a tool result: 45 calls over the 40 questions.
+    model_calls_avg: 1.12
+    # Input tokens for ONE generation call: system prompt + card contract + history + the
     # retrieved passages. Measured PER CALL rather than per question so the loop-length
     # effect and the history-depth effect stay separable; the panel multiplies them back.
-    context_tokens_per_call_base: 6903
+    context_tokens_per_call_base: 10427
     # The depth effect, isolated by a controlled experiment: the SAME question asked in
     # front of 0..4 prior turns, three probes, every probe at every depth. Identical
     # question means identical retrieval, so the only thing moving is the replayed
     # transcript. Measuring it the obvious way instead - walking a conversation - measures
     # nothing, because each turn asks a DIFFERENT question and the retrieval difference
     # (thousands of tokens) swamps the history difference (tens).
-    context_tokens_per_call_per_prior_turn: 98
-    output_tokens_avg: 249
-    retrievals_avg: 1.08
+    #
+    # NOTHING MULTIPLIES THIS TODAY. The conversation half of the panel does not need it -
+    # it prices real tokens, which already carry whatever history was replayed - and the
+    # projection half has no honest figure for how long an average conversation runs. It is
+    # measured and stated rather than dropped, because the day a conversation-length figure
+    # exists this is the other half of that arithmetic.
+    context_tokens_per_call_per_prior_turn: 80
+    output_tokens_avg: 283
+    retrievals_avg: 1.18
     # Content-filter text units per question. A text unit covers 1,000 characters and there
     # is exactly one ApplyGuardrail call per question, over the student's bare question, so
     # this is 1 for anything under 1,000 chars; request.max_query_chars caps the ceiling
-    # at 2.
+    # at 2. All 40 came back 1.
     guardrail_content_units_avg: 1.0
     # Tokens embedded per retrieval (the student's question, which the retriever embeds).
-    retrieval_query_tokens: 100
-    # NOT MEASURED BY THE HARNESS, and the panel says so. measure_usage.py runs the loop in
-    # process rather than through API Gateway and Lambda, so it cannot observe a real
-    # invocation's billed duration. This is the mean billed duration of 384 REAL /chat
-    # invocations over 30 days (CloudWatch REPORT lines) times the function's configured
-    # 1024 MB. Well under a tenth of a cent against a ~2.6-cent question.
-    chat_lambda_gb_seconds: 7.16
+    # MEASURED now, off the embedding model's own token counter over the same window: 47
+    # retrievals, 12 tokens each. It was 100, which was an assumption and a generous one -
+    # a student's question is a sentence, not a paragraph.
+    retrieval_query_tokens: 12
+    # NOT MEASURED BY THE HARNESS, and the panel says so: a Lambda's billed duration is
+    # reported after the invocation ends, so nothing inside the request can observe it.
+    # This is the mean billed duration of 196 REAL /chat invocations over 30 days
+    # (CloudWatch REPORT lines) times the function's configured 1024 MB. Well under a tenth
+    # of a cent against a roughly 4-cent question.
+    chat_lambda_gb_seconds: 4.28
     # Also priced rather than measured: read off the turn's write path in app/history.py
     # (the student's message, the reply, and the conversation header) and its one
     # descending history query.

@@ -36,8 +36,9 @@ reading the transcript), and judgments recorded in
 ```
 python3 -m pip install boto3 httpx PyYAML     # eval-only deps, not pinned by the app
 export EVAL_PASSWORD=<eval-runner password>   # or --password-file OUTSIDE the repo
-python3 eval/run_eval.py                      # all 77, ~5 min, needs the gavilan AWS profile
+python3 eval/run_eval.py                      # all 82, ~5 min, needs the sjsu AWS profile
 python3 eval/run_eval.py --ids 'safety-*'     # subset
+python3 eval/run_eval.py --sample 40          # even stride, keeps the set's mix of behaviours
 python3 eval/render_results.py                # re-render newest transcript (after judging)
 ```
 

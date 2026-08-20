@@ -133,7 +133,8 @@ def generate_title(
         return None
 
     if usage is not None:
-        usage.record_model_call(response)
+        # Its OWN fields: a different model wrote this and is not billed at the same rate.
+        usage.record_title_call(response)
 
     parts = [
         block["text"]
