@@ -24,7 +24,7 @@ import httpx
 import yaml
 
 DEFAULT_STACK = "SjsuNavigatorStack"
-DEFAULT_PROFILE = "gavilan"
+DEFAULT_PROFILE = "sjsu"
 DEFAULT_REGION = "us-west-2"
 DEFAULT_USERNAME = "eval-runner"
 # The HTTP API integration cap is 30s, so past ~32s it is the gateway, not the answer.
@@ -136,6 +136,12 @@ def main() -> None:
     parser.add_argument("--ground-truth", default=str(here / "ground-truth.yaml"))
     parser.add_argument("--ids", action="append", default=[],
                         help="glob over pair ids, repeatable (e.g. --ids 'safety-*')")
+    parser.add_argument("--sample", type=int, default=0,
+                        help="ask only N pairs, taken by an EVEN STRIDE through the file. The "
+                             "file is grouped by behaviour, so a stride keeps the run's mix of "
+                             "routing, factual, process, safety and out-of-scope questions "
+                             "close to the set's - which a head or a random draw does not. "
+                             "Same rule eval/measure_usage.py samples by.")
     parser.add_argument("--concurrency", type=int, default=3,
                         help="parallel questions; stay well under the 10 rps throttle")
     parser.add_argument("--stack-name", default=DEFAULT_STACK)
@@ -166,6 +172,9 @@ def main() -> None:
         pairs = [p for p in pairs if any(fnmatch.fnmatch(p["id"], g) for g in args.ids)]
     if not pairs:
         raise SystemExit("no pairs matched --ids")
+    if args.sample and args.sample < len(pairs):
+        stride = len(pairs) / args.sample
+        pairs = [pairs[int(i * stride)] for i in range(args.sample)]
 
     if args.api_url and args.client_id:
         endpoint = {"api_url": args.api_url, "client_id": args.client_id}
@@ -186,6 +195,7 @@ def main() -> None:
             pass
 
         started = time.monotonic()
+        started_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         results: list[dict | None] = [None] * len(pairs)
         done = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -208,6 +218,12 @@ def main() -> None:
     transcript = {
         "run": {
             "timestamp_utc": stamp,
+            # The WINDOW, not just the finish stamp. eval/measure_usage.py --from-eval reads
+            # Bedrock's own per-model CloudWatch counters over exactly this span to split the
+            # run's tokens between the answering model and the titling one, which the wire
+            # `usage` block cannot do on its own.
+            "started_utc": started_utc,
+            "finished_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "api_url": endpoint["api_url"],
             "ground_truth": str(Path(args.ground_truth).name),
             "git_commit": git_commit(here.parent),

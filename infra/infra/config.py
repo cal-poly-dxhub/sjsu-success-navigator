@@ -999,6 +999,8 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         (
             "generation_input_per_1m",
             "generation_output_per_1m",
+            "title_input_per_1m",
+            "title_output_per_1m",
             "embedding_per_1m",
             "guardrail_content_per_1k_units",
             "vector_query_per_1m",

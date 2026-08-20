@@ -11,13 +11,14 @@ import argparse
 import os
 import statistics
 import sys
+import time
 from pathlib import Path
 
 import boto3
 import yaml
 
 DEFAULT_STACK = "SjsuNavigatorStack"
-DEFAULT_PROFILE = "gavilan"
+DEFAULT_PROFILE = "sjsu"
 DEFAULT_REGION = "us-west-2"
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -96,22 +97,35 @@ def lambda_billed_seconds(session, stack_name: str) -> tuple[float, int] | tuple
 
 class UsageRecorder:
     """Wrap the bedrock-runtime client so every Converse response's `usage` is captured,
-    leaving the loop under measurement byte-identical to the deployed one."""
+    leaving the loop under measurement byte-identical to the deployed one.
+
+    `modelId` is kept beside each call because this stack calls TWO models on a turn that
+    names a conversation, and they are not billed at the same rate; ApplyGuardrail is
+    captured for the same reason the Converse calls are - so the audit below can corroborate
+    app/usage.py against the service rather than against itself.
+    """
 
     def __init__(self, inner):
         self._inner = inner
         self.calls: list[dict] = []
+        self.guardrails: list[dict] = []
 
     def converse(self, **kwargs):
         response = self._inner.converse(**kwargs)
         usage = response.get("usage") or {}
         self.calls.append(
             {
+                "model_id": kwargs.get("modelId"),
                 "input_tokens": usage.get("inputTokens", 0),
                 "output_tokens": usage.get("outputTokens", 0),
             }
         )
         return response
+
+    def apply_guardrail(self, **kwargs):
+        result = self._inner.apply_guardrail(**kwargs)
+        self.guardrails.append(dict(result.get("usage") or {}))
+        return result
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -158,6 +172,149 @@ def measure_one(orchestrator, retrieve_module, settings, query: str, history):
     }
 
 
+def audit_one(orchestrator, retrieve_module, titles, turn, settings, query: str) -> dict:
+    """One turn run with the SERVER'S OWN tally attached, beside the raw usage blocks.
+
+    THE INSTRUMENT IS CHECKED BEFORE IT IS READ. app/usage.py counts inside the loop, which
+    is the only place the counts exist - so nothing outside the loop can corroborate it
+    except this: the same turn, with every Converse and ApplyGuardrail response captured at
+    the client and summed independently. A disagreement here means the cost panel is
+    pricing a number the service never reported.
+
+    The sequence is app/turn.py's, minus the three DynamoDB steps: screen, loop, name. The
+    title is included deliberately - it is the one step that calls a SECOND model.
+    """
+    from models import ChatRequest
+    from usage import TurnUsage
+
+    recorder = UsageRecorder(boto3.client("bedrock-runtime", region_name=settings.bedrock_region))
+    orchestrator._BEDROCK_CLIENT = recorder
+    titles._BEDROCK_CLIENT = recorder
+
+    usage = TurnUsage()
+    retrievals = {"count": 0}
+    original_retrieve = retrieve_module.retrieve_chunks
+
+    def counting_retrieve(*args, **kwargs):
+        retrievals["count"] += 1
+        return original_retrieve(*args, **kwargs)
+
+    orchestrator.retrieve_chunks = counting_retrieve
+    try:
+        turn.apply_input_guardrail(query, settings=settings, bedrock=recorder, usage=usage)
+        response = orchestrator.run_chat(
+            ChatRequest(query=query), settings, history=(), usage=usage
+        )
+        titles.generate_title(
+            question=query,
+            answer=response.conversational_text or "",
+            settings=settings,
+            deadline=time.monotonic() + settings.title_deadline_seconds,
+            usage=usage,
+        )
+    finally:
+        orchestrator.retrieve_chunks = original_retrieve
+        orchestrator._BEDROCK_CLIENT = None
+        titles._BEDROCK_CLIENT = None
+
+    generation = [c for c in recorder.calls if c["model_id"] == settings.generation_model_id]
+    title_calls = [c for c in recorder.calls if c["model_id"] == settings.title_model_id]
+    return {
+        "query": query,
+        "bedrock_calls": len(recorder.calls),
+        "bedrock_input": sum(c["input_tokens"] for c in recorder.calls),
+        "bedrock_output": sum(c["output_tokens"] for c in recorder.calls),
+        "bedrock_guardrail_units": sum(
+            int(g.get("contentPolicyUnits", 0)) for g in recorder.guardrails
+        ),
+        "generation_calls": len(generation),
+        "generation_input": sum(c["input_tokens"] for c in generation),
+        "generation_output": sum(c["output_tokens"] for c in generation),
+        "title_calls": len(title_calls),
+        "title_input": sum(c["input_tokens"] for c in title_calls),
+        "title_output": sum(c["output_tokens"] for c in title_calls),
+        "usage": usage,
+        "retrievals": retrievals["count"],
+    }
+
+
+def run_audit(orchestrator, retrieve_module, titles, turn, settings, questions) -> int:
+    """Audit turns until both shapes are covered: a one-call turn and a multi-call one.
+
+    A tally that agrees on a single call proves nothing about the loop, because the loop is
+    where the addition happens - a turn that searches again bills a second full context and
+    the panel has to see both.
+    """
+    print("Auditing app/usage.py against Bedrock's own usage blocks.")
+    print(f"  generation  {settings.generation_model_id}")
+    print(f"  title       {settings.title_model_id}\n")
+
+    audited: list[dict] = []
+    for query in questions:
+        row = audit_one(orchestrator, retrieve_module, titles, turn, settings, query)
+        audited.append(row)
+        usage = row["usage"]
+        agree = not _differences(row)
+        print(
+            f"  {'AGREE' if agree else 'DIFFER'}  "
+            f"calls {row['bedrock_calls']}/{usage.model_calls}  "
+            f"in {row['bedrock_input']}/{usage.input_tokens + usage.title_input_tokens}  "
+            f"out {row['bedrock_output']}/{usage.output_tokens + usage.title_output_tokens}  "
+            f"guardrail {row['bedrock_guardrail_units']}/{usage.guardrail_content_units}  "
+            f"(generation {row['generation_calls']}, title {row['title_calls']})  "
+            f"{query[:44]!r}"
+        )
+        shapes = {r["generation_calls"] for r in audited}
+        if len(shapes) > 1 and max(shapes) > 1:
+            break
+
+    print("\n" + "=" * 72)
+    print("Bedrock (raw) vs app/usage.py (the tally the panel prices), summed")
+    print("=" * 72)
+    rows = _comparison(audited)
+    for label, raw, recorded in rows:
+        print(f"  {label:<24} {raw:>8} {recorded:>8}   {'ok' if raw == recorded else 'MISMATCH'}")
+    retrievals = sum(r["usage"].retrievals for r in audited)
+    print(f"  {'retrievals':<24} {'-':>8} {retrievals:>8}   (no service counter to check)")
+
+    print(
+        f"\n  The split is the point: {sum(r['title_input'] for r in audited)} in / "
+        f"{sum(r['title_output'] for r in audited)} out came from\n  "
+        f"{settings.title_model_id}, not {settings.generation_model_id},\n"
+        "  and the panel prices the generation fields at the generation rate."
+    )
+    mismatched = [label for label, raw, recorded in rows if raw != recorded]
+    if mismatched:
+        print(f"\n  MISMATCH on: {', '.join(mismatched)}")
+        return 1
+    return 0
+
+
+def _comparison(audited: list[dict]) -> list[tuple[str, int, int]]:
+    """The rows that have to match: Bedrock's own numbers, PER MODEL, against the fields
+    app/usage.py put them in. Comparing the two models' tokens as one total would pass
+    whether or not they landed in the right bucket, which is the whole thing being checked."""
+    def raw(key: str) -> int:
+        return sum(r[key] for r in audited)
+
+    def tally(field: str) -> int:
+        return sum(getattr(r["usage"], field) for r in audited)
+
+    return [
+        ("model calls", raw("bedrock_calls"), tally("model_calls")),
+        ("generation in", raw("generation_input"), tally("input_tokens")),
+        ("generation out", raw("generation_output"), tally("output_tokens")),
+        ("title in", raw("title_input"), tally("title_input_tokens")),
+        ("title out", raw("title_output"), tally("title_output_tokens")),
+        ("guardrail units", raw("bedrock_guardrail_units"), tally("guardrail_content_units")),
+    ]
+
+
+def _differences(row: dict) -> list[str]:
+    """Which of the comparison rows disagree for one turn."""
+    return [label for label, raw, recorded in _comparison([row]) if raw != recorded]
+
+
 def measure_guardrail(session, settings, query: str) -> int:
     """The input screen, exactly as the handler runs it, for its billed text units."""
     client = session.client("bedrock-runtime", region_name=settings.bedrock_region)
@@ -169,6 +326,178 @@ def measure_guardrail(session, settings, query: str) -> int:
     )
     usage = result.get("usage") or {}
     return int(usage.get("contentPolicyUnits", 0))
+
+
+def embedding_model_arn(session, settings) -> str:
+    """The KB's own embedding model ARN, which is the dimension AWS/Bedrock publishes the
+    retriever's token counts under. Read off the deployed knowledge base rather than
+    config.yaml, for the reason every other value here is."""
+    kb = session.client("bedrock-agent").get_knowledge_base(
+        knowledgeBaseId=settings.knowledge_base_id
+    )["knowledgeBase"]
+    return kb["knowledgeBaseConfiguration"]["vectorKnowledgeBaseConfiguration"][
+        "embeddingModelArn"
+    ]
+
+
+def print_before_and_after(block: dict) -> None:
+    """The committed constants beside the ones just measured, and what the panel's
+    per-message figure does between them. Read from config.yaml ONLY here: nothing above
+    this line is allowed to, because a measurement that consulted the number it is
+    replacing is not one."""
+    config_path = _REPO_ROOT / "config.yaml"
+    try:
+        cost_model = yaml.safe_load(config_path.read_text())["cost_model"]
+    except Exception as error:
+        print(f"\n  (could not read {config_path.name} for a comparison: {error})")
+        return
+
+    old, rates = dict(cost_model["measured"]), cost_model["rates"]
+    new = {**old, **block}
+    print("\n  against the committed block:")
+    for key, value in block.items():
+        was = old.get(key)
+        flag = "" if was == value else "   <-"
+        print(f"    {key:<40} {str(was):>10} -> {str(value):>10}{flag}")
+    print(
+        f"\n    {'cost per message (costModel.ts, perMessage)':<40} "
+        f"{per_message_cost(rates, old):>10.5f} -> {per_message_cost(rates, new):>10.5f}"
+    )
+
+
+def bedrock_by_model(session, started, finished, model_ids: dict) -> dict:
+    """Bedrock's OWN per-model counters over one eval run's window.
+
+    WHY THIS EXISTS. `/chat` reports one `usage` block per turn, and until app/usage.py
+    learned to split them that block folded the answering model's tokens together with the
+    titling model's. The deployed function is whatever was last deployed, so a run against
+    it cannot be asked for the split - but AWS publishes it: AWS/Bedrock carries
+    Invocations, InputTokenCount and OutputTokenCount per `ModelId`. Summed over the run's
+    window, those are the same calls the transcript counted, taken apart by model.
+    """
+    import datetime
+
+    cloudwatch = session.client("cloudwatch")
+    start = datetime.datetime.fromisoformat(started) - datetime.timedelta(seconds=15)
+    end = datetime.datetime.fromisoformat(finished) + datetime.timedelta(seconds=15)
+
+    measured = {}
+    for role, model_id in model_ids.items():
+        row = {}
+        for metric in ("Invocations", "InputTokenCount", "OutputTokenCount"):
+            points = cloudwatch.get_metric_statistics(
+                Namespace="AWS/Bedrock",
+                MetricName=metric,
+                Dimensions=[{"Name": "ModelId", "Value": model_id}],
+                StartTime=start,
+                EndTime=end,
+                # 60s is the finest AWS/Bedrock publishes, so a window is rounded out to
+                # whole minutes either side. The reconciliation below is what makes that
+                # safe: traffic from anything else in those minutes breaks it loudly.
+                Period=60,
+                Statistics=["Sum"],
+            )["Datapoints"]
+            row[metric] = int(sum(point["Sum"] for point in points))
+        measured[role] = row
+    return measured
+
+
+def reconcile(per_model: dict, totals: dict) -> None:
+    """The per-model split has to add back up to what the run itself reported, or it is
+    describing different calls - a neighbouring minute's traffic, or a window that cut the
+    tail off. Refusing loudly, because either failure produces plausible numbers."""
+    generation, title = per_model["generation"], per_model["title"]
+    checks = [
+        ("model calls",
+         generation["Invocations"] + title["Invocations"], totals["model_calls"]),
+        ("input tokens",
+         generation["InputTokenCount"] + title["InputTokenCount"], totals["input_tokens"]),
+        ("output tokens",
+         generation["OutputTokenCount"] + title["OutputTokenCount"], totals["output_tokens"]),
+        ("retrievals", per_model["embedding"]["Invocations"], totals["retrievals"]),
+    ]
+    print("  reconciling CloudWatch against the run's own wire totals:")
+    for label, from_metrics, from_wire in checks:
+        mark = "ok" if from_metrics == from_wire else "MISMATCH"
+        print(f"    {label:<14} {from_metrics:>8} {from_wire:>8}   {mark}")
+    bad = [label for label, a, b in checks if a != b]
+    if bad:
+        raise SystemExit(
+            f"CloudWatch and the transcript disagree on: {', '.join(bad)}. The per-model "
+            "split would describe a different set of calls, so these are not this run's "
+            "numbers. Re-run when the metrics have settled, or against a quiet account."
+        )
+
+
+def per_message_cost(rates: dict, measured: dict) -> float:
+    """What the panel says one message costs. MIRRORS frontend/src/lib/costModel.ts,
+    perMessage - it is here only so a recalibration can print the old figure beside the
+    new one, and it must be changed with that file or the two will disagree."""
+    million = 1_000_000
+    model = (
+        measured["model_calls_avg"] * measured["context_tokens_per_call_base"] / million
+        * rates["generation_input_per_1m"]
+        + measured["output_tokens_avg"] / million * rates["generation_output_per_1m"]
+    )
+    guardrail = measured["guardrail_content_units_avg"] / 1000 * rates[
+        "guardrail_content_per_1k_units"
+    ]
+    retrieval = measured["retrievals_avg"] * (
+        rates["vector_query_per_1m"] / million
+        + measured["retrieval_query_tokens"] / million * rates["embedding_per_1m"]
+    )
+    plumbing = (
+        rates["api_requests_per_1m"] / million
+        + rates["cloudfront_per_1m_requests"] / million
+        + rates["lambda_per_1m_requests"] / million
+        + measured["chat_lambda_gb_seconds"] * rates["lambda_per_gb_second"]
+        + measured["chat_dynamodb_writes"] / million * rates["dynamodb_write_per_1m"]
+        + measured["chat_dynamodb_reads"] / million * rates["dynamodb_read_per_1m"]
+    )
+    return model + guardrail + retrieval + plumbing
+
+
+def load_eval_run(path: Path) -> tuple[list[dict], dict, str, str]:
+    """One eval transcript's turns, as billable units. Nothing here is re-asked or re-billed.
+
+    These are turns through the REAL front door - API Gateway, the chat Lambda, the daily
+    cap, the guardrail, the store - under the eval account's own identity, which is the one
+    thing running the loop in this process cannot be.
+    """
+    import json
+
+    transcript = json.loads(path.read_text())
+    run = transcript.get("run") or {}
+    turns = []
+    for result in transcript.get("results") or []:
+        if result.get("status") != 200:
+            continue
+        response = result.get("response") or {}
+        usage = response.get("usage")
+        if not usage:
+            continue
+        turns.append(
+            {
+                "question": result["question"],
+                "answer": response.get("conversationalText") or "",
+                "model_calls": int(usage.get("modelCalls", 0)),
+                "input_tokens": int(usage.get("inputTokens", 0)),
+                "output_tokens": int(usage.get("outputTokens", 0)),
+                "retrievals": int(usage.get("retrievals", 0)),
+                "guardrail_units": int(usage.get("guardrailContentUnits", 0)),
+            }
+        )
+    if not turns:
+        raise SystemExit(f"{path} carries no successful turn with a usage block.")
+
+    started, finished = run.get("started_utc"), run.get("finished_utc")
+    if not (started and finished):
+        raise SystemExit(
+            f"{path} predates the run window being recorded, so the per-model split cannot "
+            "be taken. Re-run eval/run_eval.py to produce a transcript that carries "
+            "started_utc and finished_utc."
+        )
+    return turns, run, started, finished
 
 
 def load_questions(limit: int) -> list[str]:
@@ -207,6 +536,20 @@ def main() -> int:
         default=5,
         help="Depths to measure each probe at (0..n-1 prior turns).",
     )
+    parser.add_argument(
+        "--from-eval",
+        default=None,
+        help="Take the single-turn half from an eval/results transcript instead of asking "
+             "again here. Those turns went through API Gateway and the chat Lambda under "
+             "the eval account, which this process cannot do; the depth series below still "
+             "runs locally, because it needs to control the history exactly.",
+    )
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Check app/usage.py against Bedrock's own usage blocks and stop. Measures "
+             "nothing; it is what has to hold before the numbers below mean anything.",
+    )
     args = parser.parse_args()
 
     # PROCESS-WIDE, before anything under app/ is imported: those modules build clients
@@ -232,20 +575,62 @@ def main() -> int:
     sys.path.insert(0, str(_APP_DIR))
     import orchestrator
     import retrieve as retrieve_module
+    import titles
+    import turn
     from history import StoredMessage
 
     questions = load_questions(args.questions)
 
-    singles = []
-    for index, question in enumerate(questions, start=1):
-        units = measure_one(orchestrator, retrieve_module, settings, question, history=())
-        units["guardrail_units"] = measure_guardrail(session, settings, question)
-        singles.append(units)
-        print(
-            f"  [{index}/{len(questions)}] {units['model_calls']} call(s), "
-            f"{units['input_tokens']} in, {units['output_tokens']} out, "
-            f"{units['retrievals']} retrieval(s)  {question[:52]!r}"
+    if args.audit:
+        return run_audit(orchestrator, retrieve_module, titles, turn, settings, questions)
+
+    per_model = None
+    if args.from_eval:
+        # THE SINGLE-TURN HALF COMES FROM TURNS THAT ALREADY HAPPENED, through API Gateway
+        # and the chat Lambda under the eval account's own identity - which is the one thing
+        # running the loop in this process cannot be. Nothing here is re-asked or re-billed.
+        singles, run, started, finished = load_eval_run(Path(args.from_eval))
+        questions = [turn_["question"] for turn_ in singles]
+        print(f"Reading {len(singles)} deployed turn(s) from {Path(args.from_eval).name}")
+        print(f"  asked at {run.get('api_url')}")
+        print(f"  window   {started} -> {finished}")
+        per_model = bedrock_by_model(
+            session,
+            started,
+            finished,
+            {
+                "generation": settings.generation_model_id,
+                "title": settings.title_model_id,
+                "embedding": embedding_model_arn(session, settings),
+            },
         )
+        reconcile(
+            per_model,
+            {
+                key: sum(turn_[key] for turn_ in singles)
+                for key in ("model_calls", "input_tokens", "output_tokens", "retrievals")
+            },
+        )
+        generation, title = per_model["generation"], per_model["title"]
+        print(
+            f"\n  generation  {generation['Invocations']:>4} call(s), "
+            f"{generation['InputTokenCount']:>7} in, {generation['OutputTokenCount']:>6} out"
+        )
+        print(
+            f"  title       {title['Invocations']:>4} call(s), "
+            f"{title['InputTokenCount']:>7} in, {title['OutputTokenCount']:>6} out"
+        )
+    else:
+        singles = []
+        for index, question in enumerate(questions, start=1):
+            units = measure_one(orchestrator, retrieve_module, settings, question, history=())
+            units["guardrail_units"] = measure_guardrail(session, settings, question)
+            singles.append(units)
+            print(
+                f"  [{index}/{len(questions)}] {units['model_calls']} call(s), "
+                f"{units['input_tokens']} in, {units['output_tokens']} out, "
+                f"{units['retrievals']} retrieval(s)  {question[:52]!r}"
+            )
 
     # ---- the depth slope, a CONTROLLED experiment; see docs/eval-harness.md -------------
     print("\nDepth series (same question, growing history):")
@@ -281,6 +666,27 @@ def main() -> int:
     retrievals = [u["retrievals"] for u in singles]
     guardrails = [u["guardrail_units"] for u in singles]
 
+    # EVERY GENERATION FIGURE IS GENERATION-ONLY. A deployed turn's wire `usage` folds the
+    # titling model's tokens into the same fields until the fix in app/usage.py reaches the
+    # deployed function, so a run read out of a transcript takes its three generation
+    # numbers from Bedrock's per-model counters instead - where the two were never mixed.
+    # The three constants below are what the panel multiplies by the GENERATION rate; a
+    # figure carrying the title model's tokens would price them at the wrong model's price.
+    query_tokens = None
+    if per_model is not None:
+        generation = per_model["generation"]
+        embedding = per_model["embedding"]
+        turns = len(singles)
+        calls_avg = generation["Invocations"] / turns
+        base_tokens = generation["InputTokenCount"] / max(1, generation["Invocations"])
+        output_avg = generation["OutputTokenCount"] / turns
+        if embedding["Invocations"]:
+            query_tokens = embedding["InputTokenCount"] / embedding["Invocations"]
+    else:
+        calls_avg = statistics.mean(calls)
+        base_tokens = statistics.mean(per_call_input)
+        output_avg = statistics.mean(outputs)
+
     # Fitted on tokens PER CALL, or the loop-length effect contaminates it.
     slope = 0.0
     if len(by_prior_turns) > 1:
@@ -296,23 +702,28 @@ def main() -> int:
     print("=" * 72)
     block = {
         "sample_questions": len(singles),
-        "model_calls_avg": round(statistics.mean(calls), 2),
-        "context_tokens_per_call_base": round(statistics.mean(per_call_input)),
+        "model_calls_avg": round(calls_avg, 2),
+        "context_tokens_per_call_base": round(base_tokens),
         "context_tokens_per_call_per_prior_turn": round(slope),
-        "output_tokens_avg": round(statistics.mean(outputs)),
+        "output_tokens_avg": round(output_avg),
         "retrievals_avg": round(statistics.mean(retrievals), 2),
         "guardrail_content_units_avg": round(statistics.mean(guardrails), 2),
     }
+    if query_tokens is not None:
+        block["retrieval_query_tokens"] = round(query_tokens)
     if billed_seconds is not None:
         block["chat_lambda_gb_seconds"] = round(billed_seconds * memory_mb / 1024.0, 2)
     for key, value in block.items():
         print(f"    {key}: {value}")
+
+    print_before_and_after(block)
     if billed_seconds is not None:
         print(
             f"\n  (chat_lambda_gb_seconds from {invocations} real invocations: "
             f"{billed_seconds:.3f}s mean billed x {memory_mb} MB)"
         )
-    print(f"\n  spread: model_calls {min(calls)}-{max(calls)}, "
+    wire = " (as the wire reported it, titling call included)" if per_model else ""
+    print(f"\n  spread per turn{wire}: model_calls {min(calls)}-{max(calls)}, "
           f"input/call {min(per_call_input):.0f}-{max(per_call_input):.0f}, "
           f"output {min(outputs)}-{max(outputs)}")
     print("  depth series, mean input tokens per call by prior turns: "

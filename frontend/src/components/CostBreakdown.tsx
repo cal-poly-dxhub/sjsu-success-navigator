@@ -36,7 +36,7 @@ const MESSAGES_DEFAULT = 20_000;
  * THE LEFT HALF IS MEASURED, NOT MODELLED. It prices the tokens the server counted on the
  * turns this student actually sent (app/usage.py, reported on every reply), so it answers
  * "what did that cost" about the conversation in front of the reader. It used to show the
- * 24-question sample average under the heading "one student message", which was a figure
+ * 40-question sample average under the heading "one student message", which was a figure
  * about a sample presented where a reader would read it as a figure about their chat.
  *
  * THE RIGHT HALF IS A PROJECTION, and it is one slider and three numbers: the total a
@@ -84,12 +84,18 @@ export function CostBreakdown({ model, usage }: CostBreakdownProps) {
 							<span className="cost-rows__v">{count(conversation.modelCalls)}</span>
 						</li>
 						<li>
+							{/* Both models' tokens, because the row says what the conversation used.
+							    They are priced apart (costModel.ts) and counted together here. */}
 							<span className="cost-rows__k">{t.costInputTokens}</span>
-							<span className="cost-rows__v">{count(conversation.inputTokens)}</span>
+							<span className="cost-rows__v">
+								{count(conversation.inputTokens + conversation.titleInputTokens)}
+							</span>
 						</li>
 						<li>
 							<span className="cost-rows__k">{t.costOutputTokens}</span>
-							<span className="cost-rows__v">{count(conversation.outputTokens)}</span>
+							<span className="cost-rows__v">
+								{count(conversation.outputTokens + conversation.titleOutputTokens)}
+							</span>
 						</li>
 						<li>
 							<span className="cost-rows__k">{t.costPerMessage}</span>

@@ -78,7 +78,12 @@ show.
 
 ## measure_usage.py
 
-`EVAL_PASSWORD=... python3 measure_usage.py --questions 24`
+```
+python3 measure_usage.py --audit                          # check the meter, measure nothing
+EVAL_PASSWORD=... python3 run_eval.py --sample 40         # 40 deployed turns
+python3 measure_usage.py --from-eval results/eval-<stamp>.json
+python3 measure_usage.py --questions 24                   # the older all-local path
+```
 
 `config.yaml`'s `cost_model.measured` block feeds the cost panel, and every number in it has to
 be measured rather than guessed, because three properties of this architecture make the obvious
@@ -92,6 +97,52 @@ estimate wrong and all three are invisible from outside:
 3. **History is re-sent every turn,** so question five does not cost what question one costs.
    This measures by position and fits the slope rather than reporting one average.
 
+### --audit checks the meter before anybody reads it
+
+`app/usage.py` is what the cost panel prices a conversation from, and it counts **inside** the
+loop, which is the only place those counts exist. Nothing outside the loop can corroborate it,
+so `--audit` runs real turns with a real `TurnUsage` attached and captures every Converse and
+ApplyGuardrail response at the client, then puts the two side by side.
+
+**It compares per model, never in total.** This stack answers on Sonnet and names conversations
+on Haiku. A comparison of summed input tokens passes whether or not the two models' tokens
+landed in the right fields, which is how the titling call spent four months being priced at the
+generation rate (`docs/chat-service.md`, What one turn cost). So the audit's rows are
+generation-in, generation-out, title-in, title-out, calls and guardrail units, and any one of
+them disagreeing is a non-zero exit.
+
+**It keeps drawing questions until it has seen a multi-call turn as well as a single-call one.**
+A tally that agrees on one call proves nothing about the loop, because the loop is where the
+addition happens: a turn that searches again bills a second full context, and the panel has to
+see both.
+
+### --from-eval takes the single-turn half from the deployed endpoint
+
+The questions are asked by `run_eval.py --sample 40` through API Gateway and the chat Lambda,
+signed in as the eval machine account, so the numbers describe the deployed system whole -
+the handler, the store, the cap, the guardrail - rather than a loop run in a local process
+under a developer's credentials. `--sample N` takes an even stride through `ground-truth.yaml`,
+which is grouped by behaviour, so the run keeps the set's own mix rather than a head or a
+random draw's.
+
+**One wire `usage` block cannot say which model spent what,** and the deployed function is
+whatever was last deployed - so a run against it cannot be asked for the split. AWS publishes
+it anyway: `AWS/Bedrock` carries `Invocations`, `InputTokenCount` and `OutputTokenCount` per
+`ModelId`. Summed over the run's window (`started_utc`/`finished_utc`, recorded in the
+transcript for exactly this), those are the same calls the transcript counted, taken apart by
+model - and `retrieval_query_tokens` stops being an assumption, because the embedding model has
+a counter too.
+
+**The split is reconciled before anything is derived from it,** call for call and token for
+token against the run's own wire totals, and a disagreement raises. AWS/Bedrock's finest period
+is 60 seconds, so the window is rounded out to whole minutes either side; the reconciliation is
+what makes that safe, because both failure modes - a neighbouring minute's traffic, and a tail
+the metrics have not published yet - break it loudly instead of producing plausible numbers.
+
+**The depth slope is still measured locally,** because it needs to control the history in front
+of each question exactly, which is a thing the server owns and a client cannot ask for. Its
+prior turns are the real ones from the same 40-turn run.
+
 ### How it reaches the deployed stack, and the one honest limitation
 
 It runs `app/orchestrator.py` **in this process** against the deployed stack's own Bedrock
@@ -102,12 +153,10 @@ shaped exactly as production shapes them. The function's physical name is discov
 stack's own resources, because it carries CloudFormation's hash and differs per deployment; a
 literal would silently measure a different account's function.
 
-**What it does not do is go through API Gateway and Lambda.** `/chat` now reports its usage on
-the wire, so that is no longer the reason. The reasons now are that a run through the API would
-store 24 conversations of eval traffic under the runner's account, and that the depth
-experiment needs to control the history in front of each question exactly, which is a thing the
-server owns and a client cannot ask for. The consequence is precise and small: the Bedrock,
-guardrail and retrieval lines are **measured**, and the Lambda line is not.
+**The all-local path does not go through API Gateway and Lambda,** which is what `--from-eval`
+above exists to fix; it survives as the way to measure without an eval account. Either way the
+Lambda line is the one thing neither can observe: the Bedrock, guardrail and retrieval lines are
+**measured**, and that one is not.
 `chat_lambda_gb_seconds` is filled from the chat function's real billed durations in CloudWatch
 (its `REPORT` lines, over actual invocations, last 30 days) multiplied by its configured memory,
 because a local run has no cold start, no VPC attach and no handler work around the model call,

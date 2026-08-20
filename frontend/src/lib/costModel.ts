@@ -8,7 +8,7 @@
  *     on the turns actually sent in this tab (app/usage.py), so it is the real bill for the
  *     chat in front of the reader.
  *   - MEASURED, a sample. `perMessage` and `fixedMonthly` price a projection from the
- *     24-question average and the deployed baseline in config.yaml, which is the only
+ *     40-question average and the deployed baseline in config.yaml, which is the only
  *     honest way to answer "what would a month of this cost".
  *
  * The same rate table prices both, so the two halves of the panel can never disagree about
@@ -62,6 +62,8 @@ export const NO_CONVERSATION_USAGE: ConversationUsage = {
 	modelCalls: 0,
 	inputTokens: 0,
 	outputTokens: 0,
+	titleInputTokens: 0,
+	titleOutputTokens: 0,
 	guardrailContentUnits: 0,
 	retrievals: 0,
 };
@@ -83,6 +85,8 @@ export function addTurnUsage(
 		modelCalls: base.modelCalls + (turn.modelCalls ?? 0),
 		inputTokens: base.inputTokens + (turn.inputTokens ?? 0),
 		outputTokens: base.outputTokens + (turn.outputTokens ?? 0),
+		titleInputTokens: base.titleInputTokens + (turn.titleInputTokens ?? 0),
+		titleOutputTokens: base.titleOutputTokens + (turn.titleOutputTokens ?? 0),
 		guardrailContentUnits: base.guardrailContentUnits + (turn.guardrailContentUnits ?? 0),
 		retrievals: base.retrievals + (turn.retrievals ?? 0),
 	};
@@ -102,9 +106,15 @@ export function conversationCost(
 	measured: CostMeasured,
 	usage: ConversationUsage,
 ): number {
+	// TWO MODELS, TWO RATES. The turn that opens a conversation also pays for a small call
+	// to the titling model, which is not the model that answered and is not billed like it.
+	// Priced together on one line because the panel shows one "model" figure, added apart
+	// because adding them together is exactly the bug this replaced.
 	const model =
 		(usage.inputTokens / PER_MILLION) * rates.generation_input_per_1m +
-		(usage.outputTokens / PER_MILLION) * rates.generation_output_per_1m;
+		(usage.outputTokens / PER_MILLION) * rates.generation_output_per_1m +
+		(usage.titleInputTokens / PER_MILLION) * rates.title_input_per_1m +
+		(usage.titleOutputTokens / PER_MILLION) * rates.title_output_per_1m;
 
 	const guardrail =
 		(usage.guardrailContentUnits / 1000) * rates.guardrail_content_per_1k_units;
@@ -138,7 +148,7 @@ function plumbingPerMessage(rates: CostRates, measured: CostMeasured): number {
  * What one message costs on average, from the sample.
  *
  * This is what the monthly projection multiplies, and it is deliberately NOT what the panel
- * shows for the conversation on screen: an average over 24 questions answers "what will a
+ * shows for the conversation on screen: an average over 40 questions answers "what will a
  * month cost", never "what did this chat cost".
  */
 export function perMessage(rates: CostRates, measured: CostMeasured): PerMessageCost {

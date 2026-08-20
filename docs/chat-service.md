@@ -322,8 +322,8 @@ started per second, reserved concurrency bounds invocations running at once, and
 deadline and iteration cap bound a single request. Not one of them can tell two students
 apart, so a signed-in account could sit inside all four all day.
 
-**The arithmetic.** An answered message costs roughly **$0.026**, so sixty a day is about
-**$1.56** per person. The 60 lives in `config.yaml`; the per-message figure comes from
+**The arithmetic.** An answered message costs roughly **$0.040**, so sixty a day is about
+**$2.37** per person. The 60 lives in `config.yaml`; the per-message figure comes from
 `eval/measure_usage.py` against the deployed stack (see `docs/eval-harness.md`).
 
 **One atomic conditional write per turn, no read first.** `ADD #count :one` under
@@ -960,7 +960,7 @@ rather than a standing instruction.
 
 ## What one turn cost
 
-`app/usage.py`. The cost panel used to price every figure from one average of 24 sample
+`app/usage.py`. The cost panel used to price every figure from one average of a sample of
 questions, including the number it put in front of the student as "this conversation". That
 number was never this conversation: it was the sample's mean multiplied by a message count.
 
@@ -969,6 +969,19 @@ turn, so a message that triggers a second search bills two invocations, and the 
 everything before it: system prompt, history, and every retrieved passage already in the
 transcript. A conversation with a title also paid for the small titling call. None of that is
 guessable from outside the loop, so it is counted inside it.
+
+**It is not one MODEL either, and that was a real miscount.** `chat.title_model_id` is Haiku
+and `generation_model_id` is Sonnet, so a turn that names a conversation calls two models at
+two prices. Until 2026-08-20 the titling call went through `record_model_call` like any other
+and its tokens landed in `input_tokens` and `output_tokens` - the two fields the cost panel
+prices at the *generation* rate. `record_title_call` puts them in `title_input_tokens` and
+`title_output_tokens` instead, and the panel carries a rate pair for them. The call is still
+counted in `model_calls`, because it was still billed as one.
+
+The way that was found is the way to find the next one: `eval/measure_usage.py --audit` runs a
+real turn with a real tally attached and captures every Converse and ApplyGuardrail response at
+the client, then compares the two **per model**. Comparing the totals would have passed either
+way, which is exactly why it did for four months.
 
 **One tally per request, opened before the guardrail screen and mutated in place all the way
 down.** It is an argument rather than a return value because every exit is an exit under a

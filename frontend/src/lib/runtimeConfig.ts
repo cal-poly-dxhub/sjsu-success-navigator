@@ -82,6 +82,9 @@ export type RuntimeConfig = {
 export type CostRates = {
 	generation_input_per_1m: number;
 	generation_output_per_1m: number;
+	/** The titling model's rates. A ceiling rather than its own rate; see config.yaml. */
+	title_input_per_1m: number;
+	title_output_per_1m: number;
 	embedding_per_1m: number;
 	guardrail_content_per_1k_units: number;
 	vector_query_per_1m: number;

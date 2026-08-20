@@ -784,7 +784,7 @@ def titler(monkeypatch):
         )
     # The real one counts its own Converse call, mirrored here so the usage assertion holds.
         if usage is not None:
-            usage.record_model_call({"usage": {"inputTokens": 300, "outputTokens": 8}})
+            usage.record_title_call({"usage": {"inputTokens": 300, "outputTokens": 8}})
         return "Financial aid appeal deadline"
 
     monkeypatch.setattr(handler, "generate_title", fake)
@@ -1037,6 +1037,8 @@ def test_the_turn_reports_its_usage_on_the_wire(bedrock, loop, store):
         "modelCalls": 1,
         "inputTokens": 6000,
         "outputTokens": 200,
+        "titleInputTokens": 0,
+        "titleOutputTokens": 0,
         "guardrailContentUnits": 0,
         "retrievals": 0,
     }
@@ -1078,8 +1080,24 @@ def test_naming_a_new_conversation_is_counted_in_the_turn(bedrock, loop, store, 
     body = _body(handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None))
 
     assert body["usage"]["modelCalls"] == 2, "the loop's call plus the titling call"
-    assert body["usage"]["inputTokens"] == 6300
     assert titler[0]["usage"] is not None, "the titler is handed the turn's own tally"
+
+
+def test_the_titling_call_is_counted_apart_from_the_answer_it_names(
+    bedrock, loop, store, titler
+):
+    """A DIFFERENT model writes the title, so its tokens do not join the generation totals.
+
+    They used to: `inputTokens` on this turn read 6300, and the cost panel prices that field
+    at the generation rate - so every conversation's first turn was billed for 300 Sonnet
+    tokens that a cheaper model actually produced.
+    """
+    body = _body(handler.lambda_handler(_event(json.dumps({"query": "aid appeal?"})), None))
+
+    assert body["usage"]["inputTokens"] == 6000, "the answer's tokens, and only those"
+    assert body["usage"]["outputTokens"] == 200
+    assert body["usage"]["titleInputTokens"] == 300
+    assert body["usage"]["titleOutputTokens"] == 8
 
 
 def test_the_loop_is_handed_the_same_tally_the_guardrail_wrote_to(bedrock, loop, store):
