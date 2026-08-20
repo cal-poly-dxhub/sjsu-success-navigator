@@ -845,18 +845,18 @@ class NavigatorStack(Stack):
             execute_on_handler_change=True,
         )
 
-        # --- 3. Guardrail: PROMPT_ATTACK input screen (after safety intercept) ---
+        # --- 3. Guardrail: PROMPT_ATTACK input screen ---
         #
         # ONE guardrail, screening PROMPT_ATTACK on the input side. It is applied via
         # ApplyGuardrail(source=INPUT) on the bare query in the handler; nothing is attached to
         # Converse, so there is no output guardrail here to find.
         #
-        # THE ORDERING IS LOAD-BEARING (docs/synthesis.md, docs/architecture-v1.py:146): the
-        # deterministic safety intercept runs FIRST, in-Lambda, before this screen and before any
-        # model call. A guardrail block returns a fixed refusal string - so if it ran first, a
-        # student in crisis whose message also tripped the screen would get the refusal instead of
-        # the crisis panel. app/handler.py enforces the order and
-        # test_safety_intercept_runs_before_the_guardrail pins it.
+        # WHERE IT SITS IN THE TURN (docs/synthesis.md, docs/architecture.drawio): the screen runs
+        # on the bare query after the daily cap and before the student's message is written
+        # (app/turn.py, STEP 2), so a blocked message never becomes a turn. There is NO pre-model
+        # safety intercept. The deterministic phrase gate was removed on 2026-08-10; safety is now
+        # a model-emitted <safety> tag the server resolves against data/contacts.csv
+        # (docs/chat-service.md, Safety).
         #
         # Everything else was left out deliberately. The screen runs ahead of the system prompt,
         # so a content filter or a silent PII rewrite would pre-empt the prompt's crisis handling.
