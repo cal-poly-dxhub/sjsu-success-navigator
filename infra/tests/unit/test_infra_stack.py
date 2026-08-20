@@ -3231,7 +3231,16 @@ def test_the_auth_header_is_spelled_in_exactly_one_place():
 
     Scanned across app/ and infra/ as TEXT rather than through an import, because the one
     module that would have to be imported to check it (app/streaming_app.py) needs fastapi,
-    which is in the streaming app's own layer and in no environment this suite builds."""
+    which is in the streaming app's own layer and in no environment this suite builds.
+
+    SCANNED WITH `git grep`, WHICH IS THE ASSERTION'S SCOPE AND NOT A CONVENIENCE. It reads
+    TRACKED FILES and nothing else, so the source tree is the only thing that can enter the
+    result. An rglob over app/ and infra/ could not say that: `cdk synth` stages a copy of
+    token_auth.py into the streaming app's bundle under infra/cdk.out/asset.*/, and a
+    .venv or any other gitignored directory is one `pip install` away from being scanned
+    too. Either one is a SECOND SPELLING that is really the first one, copied - so the test
+    failed wherever a synth had run, which made a real invariant read as a flaky one and
+    trained the next person to ignore it."""
     import ast
 
     root = Path(__file__).resolve().parents[3]
@@ -3250,15 +3259,19 @@ def test_the_auth_header_is_spelled_in_exactly_one_place():
     # header names and one canonical spelling is a lookup that never has to guess.
     assert header == header.lower(), header
 
-    spelled_in = []
-    for path in sorted(
-        list((root / "app").rglob("*.py"))
-        + list((root / "infra").rglob("*.py"))
-        + list((root / "app").glob("*.txt"))
-        + [root / "app" / "run.sh"]
-    ):
-        if header in path.read_text():
-            spelled_in.append(str(path.relative_to(root)))
+    # -I skips binaries; `--` separates the pattern from the pathspec, and the pathspec is
+    # the two trees that ship - the browser's spelling lives in frontend/ and is compared
+    # against this one by test_the_browser_sends_the_token_on_the_header_the_app_reads.
+    # Every tracked file under them is searched whatever its extension, which is wider than
+    # the *.py + *.txt + run.sh list this replaced and needs no upkeep when a file type
+    # joins the bundle. git grep exits 1 with no output when nothing matches.
+    found = subprocess.run(
+        ["git", "-C", str(root), "grep", "-lI", "-e", header, "--", "app", "infra"],
+        capture_output=True,
+        text=True,
+    )
+    assert found.returncode in (0, 1), found.stderr
+    spelled_in = sorted(found.stdout.split())
 
     # token_auth.py declares it; its own suite reads the constant to build a request, which
     # is the one other place the string may appear - and it appears there as an import, not
