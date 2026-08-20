@@ -40,7 +40,7 @@
         <mxCell id="m-hist" parent="g-back" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" value="History Lambda&#xa;/conversations" vertex="1">
           <mxGeometry height="87.21" width="87.21" x="311.63" y="90" as="geometry" />
         </mxCell>
-        <mxCell id="MiXA1jkQ_HVd00SzvK42-3" parent="g-back" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Per question flow:&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. Rate limit&lt;/div&gt;&lt;div&gt;2. AWS Guardrails&lt;/div&gt;&lt;div&gt;3. Log question&lt;/div&gt;&lt;div&gt;4. Read history&lt;/div&gt;&lt;div&gt;5.&lt;b&gt;&amp;nbsp;Retrieve&lt;/b&gt;&lt;/div&gt;&lt;div&gt;6&lt;i&gt;. &lt;/i&gt;Generate&lt;/div&gt;&lt;div&gt;7. Parse and resolve&lt;/div&gt;&lt;div&gt;8. Log answer&lt;/div&gt;" vertex="1">
+        <mxCell id="MiXA1jkQ_HVd00SzvK42-3" parent="g-back" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Per question flow:&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;1. Rate limit&lt;/div&gt;&lt;div&gt;2. AWS Guardrails&lt;/div&gt;&lt;div&gt;3. Log question&lt;/div&gt;&lt;div&gt;4. Read history&lt;/div&gt;&lt;div&gt;5.&lt;b&gt;&amp;nbsp;Converse loop&lt;/b&gt; (model calls retrieve)&lt;/div&gt;&lt;div&gt;6. Parse and resolve&lt;/div&gt;&lt;div&gt;7. Log answer&lt;/div&gt;" vertex="1">
           <mxGeometry height="26.5" width="150" x="36" y="291.48" as="geometry" />
         </mxCell>
         <mxCell id="MiXA1jkQ_HVd00SzvK42-4" parent="g-back" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Batch Get/Delete conversations from dynamo&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Used to restore/delete chat history per user&lt;/div&gt;" vertex="1">
@@ -271,10 +271,10 @@
         <mxCell id="WYCaLXXWB3S8y5m5hIWQ-2" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="2. guard on prompt attacks" vertex="1">
           <mxGeometry height="30" width="60" x="653" y="281" as="geometry" />
         </mxCell>
-        <mxCell id="WYCaLXXWB3S8y5m5hIWQ-3" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="4. retrieve relevent information from the knowledge base" vertex="1">
+        <mxCell id="WYCaLXXWB3S8y5m5hIWQ-3" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="4. converse loop: model calls retrieve itself" vertex="1">
           <mxGeometry height="30" width="120" x="800" y="280" as="geometry" />
         </mxCell>
-        <mxCell id="WYCaLXXWB3S8y5m5hIWQ-4" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="5. generate answer using information" vertex="1">
+        <mxCell id="WYCaLXXWB3S8y5m5hIWQ-4" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="5. model writes the answer" vertex="1">
           <mxGeometry height="30" width="89" x="944.5" y="280" as="geometry" />
         </mxCell>
         <mxCell id="WYCaLXXWB3S8y5m5hIWQ-5" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="8. write title on new chat" vertex="1">
@@ -323,7 +323,7 @@
             <mxPoint x="1281" y="418" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="g9xexk5qRXwYH9Na88Bn-4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="&lt;div&gt;&lt;b&gt;Generation:&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;&lt;br&gt;&lt;/b&gt;&lt;/div&gt;&lt;div&gt;1. Retrieve top &lt;b&gt;8&lt;/b&gt; chunks&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. Augment together:&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;- Past &lt;b&gt;24&lt;/b&gt; messages&lt;/div&gt;&lt;div&gt;- Time&lt;/div&gt;&lt;div&gt;- Sys. prompt&lt;/div&gt;&lt;div&gt;- RAG response&lt;/div&gt;&lt;div&gt;- Question&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3. Generate answer w/ llm&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+        <mxCell id="g9xexk5qRXwYH9Na88Bn-4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="&lt;div&gt;&lt;b&gt;Generation:&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;b&gt;&lt;br&gt;&lt;/b&gt;&lt;/div&gt;&lt;div&gt;1. Converse loop, not one-shot RAG&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;2. Model calls &lt;b&gt;retrieve_campus_resources&lt;/b&gt; itself, up to &lt;b&gt;6&lt;/b&gt; times, &lt;b&gt;8&lt;/b&gt; chunks per call&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;3. Also sees:&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;- Past &lt;b&gt;24&lt;/b&gt; messages&lt;/div&gt;&lt;div&gt;- Time&lt;/div&gt;&lt;div&gt;- Sys. prompt&lt;/div&gt;&lt;div&gt;- Question&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;4. Ends when it answers instead of calling the tool&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
           <mxGeometry height="211" width="170" x="766" y="650" as="geometry" />
         </mxCell>
         <mxCell id="g9xexk5qRXwYH9Na88Bn-5" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="6. parse/resolve" vertex="1">
