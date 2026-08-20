@@ -33,13 +33,21 @@
  * payload POST /chat would have returned, and that is what the caller renders. The preview
  * is thrown away.
  *
- * FALLING BACK IS NOT UNCONDITIONAL, and the line is `accepted`. Before it, the server has
- * done nothing - nothing written, nothing billed - so any failure can safely become a
- * POST /chat: a 404 from a deployment that has no `/api` behind it, a 403 from the edge, a
- * dropped connection. AFTER it, the student's message is on record and the turn is running;
- * retrying over HTTP would ask the same question twice, bill it twice and store it twice.
- * So a failure there is reported instead, and the reply is still written server-side for
- * when they come back.
+ * FALLING BACK IS NOT UNCONDITIONAL, and there are two lines rather than one.
+ *
+ * The first is `accepted`. Before it the server has done nothing - nothing written,
+ * nothing billed. After it the student's message is on record and the turn is running, so
+ * retrying over HTTP would ask the same question twice, bill it twice and store it twice;
+ * a failure there is reported instead, and the reply is still written server-side for when
+ * they come back.
+ *
+ * The second is WHAT the failure was, and it is the narrower of the two. A non-2xx is not
+ * a fallback condition on its own: the buffered POST /chat answers whether or not `/api`
+ * is alive, so falling back on every refusal makes a broken front door look like a working
+ * product - which is precisely the thing a deploy needs to be able to see. Only a 404
+ * falls back, because only a 404 means there is no door: nothing behind `/api`, or a
+ * prefix that does not match. An authentication or authorization failure never falls back.
+ * See the check itself for the rest.
  */
 
 import type { ChatResponse } from '../types/chat';
@@ -207,15 +215,36 @@ export async function streamChat(
 			);
 		}
 
-		// EVERY NON-2xx IS RETRYABLE, and that is a property of where the refusals live
-		// rather than a hopeful default: the app answers a status code only for things it
-		// decides BEFORE the first byte of the body - a malformed body, an over-long query,
-		// an unverifiable token - and everything the server commits to (the daily cap, a
-		// failed loop) arrives as an `error` FRAME inside a 200. So a status here means no
-		// turn was taken on, and asking POST /chat the same question is free of consequence.
+		// ONE STATUS FALLS BACK, AND IT IS 404. Every non-2xx used to, on the reasoning
+		// that the app decides a status code before it commits to a turn, so retrying is
+		// free of consequence. That is true about consequence and wrong about
+		// DIAGNOSIS: the buffered POST /chat works whether or not `/api` does, so a
+		// fallback that fires on any refusal turns a dead streaming front door into a
+		// product that looks fine. The failure has to be visible before it is survivable.
+		//
+		// 404 is the one status that means the door is not there at all - a deployment
+		// with nothing behind `/api`, or a FastAPI whose prefix does not match the
+		// behaviour's (EDGE_PATH_PREFIX against _STREAM_EDGE_PATH_PREFIX). There is no
+		// server to have taken the turn on, so this is the known-safe unavailability and
+		// the caller may ask POST /chat instead.
+		//
+		// EVERYTHING ELSE SURFACES, AND 401 MOST OF ALL. An unverifiable token is the
+		// answer of a door that IS there and refused this caller (app/token_auth.py);
+		// POST /chat sits behind the same Cognito pool, so falling back either spends a
+		// second request to be refused again or - worse - succeeds through API Gateway's
+		// own authorizer and hides that the streaming path trusts nobody. 403 is the edge
+		// failing to invoke the origin or a request the origin would not have signed, 400
+		// is this client sending a body the app will not parse, 5xx is the app itself:
+		// none of those is a missing door, and none of them gets quieter for being asked
+		// twice. They are reported, with the status in the sentence, because the status
+		// is the whole diagnosis.
+		if (response.status === 404) {
+			throw new StreamUnavailable('There is no streaming route at this deployment.');
+		}
 		if (!response.ok) {
-			throw new StreamUnavailable(
-				`The live connection answered ${response.status}.`,
+			throw new ChatApiError(
+				`The live connection answered ${response.status}. Is the streaming endpoint healthy?`,
+				response.status,
 			);
 		}
 		if (!response.body) {

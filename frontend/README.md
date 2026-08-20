@@ -12,5 +12,7 @@ memory, expiry checked before fetch) and the mock sidebar fixtures deleted.
   region, or API id.
 - One turn streams over `POST /api/chat` on this same origin - a `fetch` plus a stream
   reader, NDJSON frames in, one authoritative `ChatResponse` on the last one
-  (`src/lib/chatStream.ts`). `POST /chat` on the HTTP API stays the fallback for any
-  failure the server had not yet taken the turn on.
+  (`src/lib/chatStream.ts`). `POST /chat` on the HTTP API is the fallback for one failure
+  only: a 404, meaning there is no streaming route at this deployment. A refusal - 401,
+  403, anything else non-2xx - surfaces with its status instead, because the buffered path
+  works whether or not `/api` does and a wider fallback hides a dead front door.

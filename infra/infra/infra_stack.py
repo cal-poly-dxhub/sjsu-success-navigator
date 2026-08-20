@@ -2580,23 +2580,59 @@ function handler(event) {
                     compress=False,
                 ),
             },
-            # A missing key on a REST origin comes back as 403 (the bucket policy grants
-            # GetObject only, so S3 cannot distinguish "absent" from "forbidden" without
-            # ListBucket). Both are mapped to a real 404 STATUS - deliberately NOT to
-            # index.html with a 200, which is the blanket-fallback anti-pattern: it would
-            # make every typo look like a working page that failed to render.
-            # BOTH response_http_status AND response_page_path, always. CloudFront
+            # THIS MAPPING IS DISTRIBUTION-WIDE AND CANNOT BE SCOPED TO A BEHAVIOUR, which
+            # is the whole reason the list below is the shape it is. CustomErrorResponses
+            # lives on DistributionConfig; AWS::CloudFront::Distribution CacheBehavior has
+            # no error-response property of any kind, so every entry here applies to
+            # /api/* exactly as much as it applies to the site. The only lever left is
+            # WHICH STATUS each entry claims, and the two origins have to divide them.
+            #
+            # 403 IS THE SITE'S, AND IT IS THE S3 REST ORIGIN'S OWN "no such page" SIGNAL.
+            # A missing key comes back as 403 rather than 404 because the bucket policy
+            # grants GetObject only - without s3:ListBucket, S3 will not distinguish
+            # "absent" from "forbidden" - so 403 is the only status a page miss can
+            # arrive on. That coupling is load-bearing now rather than incidental, and
+            # test_the_site_origin_signals_a_missing_page_with_403 pins it: grant
+            # ListBucket and misses become 404, which is the API's status, and the two
+            # halves of this list would silently swap meanings.
+            #
+            # 404 IS THE API'S, AND IT PASSES THROUGH UNTOUCHED. A deployment with nothing
+            # behind /api answers 404 - from FastAPI on a prefix that does not match
+            # (EDGE_PATH_PREFIX), or from a route that is not there - and that 404 is the
+            # single clearest signal that the streaming front door is dead. Mapped to
+            # /404.html it arrived as the site's error page instead: a curl got HTML, the
+            # browser got a non-2xx and fell back to buffered POST /chat, and a broken
+            # deploy read as a working product from both instruments at once. The entry
+            # stays, with neither response_http_status nor response_page_path, because an
+            # explicit pass-through says "404 is deliberately not the site's page" in the
+            # deployed config, where an absent entry would only look like an oversight.
+            # ttl=0 is the other half: CloudFront caches a 404 for ten seconds by default,
+            # and a cached front-door failure outlives the fix that repaired it.
+            #
+            # BOTH response_http_status AND response_page_path, or NEITHER. CloudFront
             # rejects a status without a page outright - "Both or neither of ResponseCode
             # and ResponsePagePath must be specified" - and it rejects it at CREATE time,
             # not at synth, so this cost a failed deploy and a rollback before it was
             # caught. The L1 does not validate it and neither did the first version of
             # test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback, which asserted
-            # ResponsePagePath was ABSENT and so pinned the broken shape in place.
+            # ResponsePagePath was ABSENT and so pinned the broken shape in place. The
+            # pass-through entry below is the "neither" case and is legal for that reason;
+            # CDK still requires one of the three to be set, which ttl is.
             #
             # /404.html is a real page Astro builds (frontend/src/pages/404.astro), served
-            # WITH a 404 status. That is still not the blanket fallback: the distinction
-            # that matters is the status code, not whether a page is named. Serving
-            # index.html with a 200 would tell the browser the typo'd URL is a real page.
+            # WITH a 404 status - deliberately NOT index.html with a 200, which is the
+            # blanket-fallback anti-pattern: it would make every typo look like a working
+            # page that failed to render. The distinction that matters is the status code,
+            # not whether a page is named.
+            #
+            # WHAT THIS STILL CANNOT REACH: a 403 raised on /api/* - the edge failing to
+            # invoke the origin, or an origin request whose payload hash is missing - is
+            # covered by the site's entry and arrives as /404.html. There is no way to
+            # separate it inside one distribution, and a second distribution is a second
+            # domain, which is CORS and a preflight in front of the one request whose
+            # entire value is time to first byte. The instrument for that failure is the
+            # direct Function URL (StreamProbeFunctionUrl), which is the control the
+            # measurement already keeps for exactly this kind of question.
             error_responses=[
                 cloudfront.ErrorResponse(
                     http_status=403,
@@ -2606,9 +2642,7 @@ function handler(event) {
                 ),
                 cloudfront.ErrorResponse(
                     http_status=404,
-                    response_http_status=404,
-                    response_page_path="/404.html",
-                    ttl=Duration.minutes(5),
+                    ttl=Duration.seconds(0),
                 ),
             ],
         )

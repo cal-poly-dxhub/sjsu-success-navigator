@@ -758,6 +758,29 @@ over the *origin's* host - forwarding the viewer's would make every signature fa
 at Lambda. Compression is off against a CDK default of on, because compressing is holding
 bytes to compress them and this endpoint exists to measure whether the edge holds bytes.
 
+**The distribution's error mapping is not one of them, and that is the point: it cannot be
+scoped to a behaviour.** `CustomErrorResponses` lives on `DistributionConfig` and
+`CacheBehavior` has no error-response property of any kind, so a status this list names is
+claimed on `/api/*` exactly as much as on the site. The two origins therefore divide the
+status codes. **403 is the site's,** because a REST (OAC) origin answers a missing key with
+403 AccessDenied - without `s3:ListBucket` S3 will not distinguish absent from forbidden -
+so 403 is the only status a page miss can arrive on, and it carries `/404.html`. **404 is
+the app's, and it passes through untouched:** an entry with neither a response code nor a
+page, and `ErrorCachingMinTTL` 0. A 404 is what a dead front door answers - nothing behind
+`/api`, or a prefix that does not match - and mapped to `/404.html` it came back as the
+site's error page, so a curl got HTML and the browser got a non-2xx it fell back from, and
+a broken deploy read as a working product on both instruments at once. The coupling to the
+bucket policy is pinned rather than commented: grant `ListBucket` and the two halves swap
+meanings with nothing failing at synth or at deploy.
+
+**One failure is still masked and no configuration inside this distribution can unmask it.**
+A 403 raised on `/api/*` - the edge unable to invoke the origin, or an origin request whose
+payload hash never arrived - is covered by the site's entry and comes back as `/404.html`.
+Separating it needs a second distribution, which is a second domain, which is CORS and a
+preflight in front of the one request whose whole value is time to first byte. The
+instrument for that failure is the direct Function URL, which is the control the
+measurement already keeps.
+
 **OAC needs two invoke actions and CDK writes one.** `FunctionUrlOrigin.withOriginAccessControl`
 emits a single `lambda:InvokeFunctionUrl` permission; invoking a Function URL has needed
 `lambda:InvokeFunction` alongside it since October 2025, which is why the CloudFront developer
@@ -782,6 +805,19 @@ second hostname, no CORS allowlist to keep in step, and no preflight in front of
 whose entire value is time to first byte. There is no config key to read and no gate: a
 deployment with nothing behind `/api` answers the POST, and the turn falls back to
 `POST /chat` on the same line it always did.
+
+**Exactly one status falls back, and it is 404.** Every non-2xx used to, reasoning that the
+app decides a status before it commits to a turn, so retrying costs nothing. That is true
+about cost and wrong about diagnosis: the buffered path answers whether or not `/api` is
+alive, so a fallback that fires on any refusal delivers every turn and leaves a dead
+streaming deployment looking healthy - which, with the edge already turning a 404 into the
+site's error page, was both of a deploy's instruments lying at once. 404 is the one status
+that means there is no door, so it is the one that is safe to route around. **An
+authentication or authorization failure never falls back.** A 401 is a door that is there
+and refused this caller, and `POST /chat` sits behind the same Cognito pool - falling back
+either spends a second request to be refused again or succeeds through API Gateway's own
+authorizer and hides that the streaming path trusts nobody. A 403, a 400, a 5xx are
+reported the same way, with the status in the sentence.
 
 **Two headers, and neither of them is `Authorization`.** The access token rides
 `AUTH_HEADER_NAME` for the reason [below](#verifying-the-token-in-the-streaming-app), and

@@ -1718,7 +1718,7 @@ def test_a_directory_index_function_runs_on_viewer_request():
 
 
 def test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback():
-    """THE anti-pattern this guards against: mapping 403/404 to index.html with a 200
+    """THE anti-pattern this guards against: mapping a page miss to index.html with a 200
     would make every typo look like a working page that failed to render, and would mask
     real 404s. camp's app is multi-page, so it needs no shell fallback at all.
 
@@ -1726,17 +1726,99 @@ def test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback():
     test asserted ResponsePagePath was absent, which looked like the same principle but
     encoded a shape CloudFront rejects outright - it requires ResponseCode and
     ResponsePagePath together or neither, and enforces that at CREATE time. That mistake
-    cost a failed deploy and a rollback, so this now pins BOTH halves."""
+    cost a failed deploy and a rollback, so this now pins BOTH halves.
+
+    403 is the whole of the site's half here, because it is the only status a missing key
+    can arrive on - see test_the_site_origin_signals_a_missing_page_with_403. What 404 does
+    instead is test_the_error_page_does_not_cover_the_api_path."""
+    errors = _custom_error_responses()
+    entry = errors[403]
+    assert entry["ResponseCode"] == 404, "a page miss must surface as a real 404"
+    # Both or neither - CloudFront rejects a status with no page.
+    assert entry["ResponsePagePath"] == "/404.html"
+    assert entry["ResponseCode"] != 200, "a 200 here would be the blanket fallback"
+
+
+def _custom_error_responses() -> dict:
     dist = _resource(_template(), "AWS::CloudFront::Distribution")["Properties"][
         "DistributionConfig"
     ]
-    errors = {e["ErrorCode"]: e for e in dist["CustomErrorResponses"]}
-    assert set(errors) == {403, 404}
-    for code, entry in errors.items():
-        assert entry["ResponseCode"] == 404, f"{code} must surface as a real 404"
-        # Both or neither - CloudFront rejects a status with no page.
-        assert entry["ResponsePagePath"] == "/404.html", code
-        assert entry["ResponseCode"] != 200, "a 200 here would be the blanket fallback"
+    return {e["ErrorCode"]: e for e in dist["CustomErrorResponses"]}
+
+
+def test_the_error_page_does_not_cover_the_api_path():
+    """THE ERROR MAPPING IS DISTRIBUTION-WIDE, SO THE STATUS CODES HAVE TO DIVIDE THE TWO
+    ORIGINS - there is nowhere else to draw the line. CustomErrorResponses lives on
+    DistributionConfig and AWS::CloudFront::Distribution CacheBehavior has no
+    error-response property at all, so an entry that names a status claims it on `/api/*`
+    exactly as much as on the site.
+
+    A 404 is what a dead streaming front door answers: nothing behind `/api`, or a FastAPI
+    whose prefix does not match the behaviour's. Mapped to /404.html it came back as the
+    site's error page - a curl got HTML with no hint the API had been reached at all, and
+    the browser got a non-2xx and fell back to buffered POST /chat, so a broken deploy read
+    as a working product on both of the instruments a deploy actually has. So 404 carries
+    NEITHER a response code nor a page: CloudFront returns the origin's own response, and
+    ErrorCachingMinTTL is 0 because the default is ten seconds and a cached front-door
+    failure outlives the fix that repaired it.
+
+    The pass-through entry is asserted to EXIST rather than 404 being asserted absent. An
+    absence is indistinguishable from an oversight, and the shape it would be "corrected"
+    back to is the one this is here to forbid."""
+    errors = _custom_error_responses()
+
+    passthrough = errors[404]
+    assert "ResponsePagePath" not in passthrough, (
+        "404 is what a dead /api answers; a page here masks it as a site miss"
+    )
+    assert "ResponseCode" not in passthrough, (
+        "404 must reach the client as its own status, unrewritten"
+    )
+    assert passthrough["ErrorCachingMinTTL"] == 0, passthrough
+
+    # Nothing else may claim a status on the way past. 403 is the site's (below); any
+    # third entry is a status one of the two origins answers with, quietly redirected.
+    assert set(errors) == {403, 404}, sorted(errors)
+
+    # The statuses the streaming app writes by hand, read off disk rather than restated:
+    # a 400 for an unparseable body, a 401 for a token it will not verify, a 503 when it
+    # cannot serve. None of them may be a code this mapping substitutes a page for.
+    source = (Path(__file__).resolve().parents[3] / "app" / "streaming_app.py").read_text()
+    answered = {int(code) for code in re.findall(r"status_code=(\d{3})", source)}
+    assert answered, "no status codes found in app/streaming_app.py"
+    substituting = {code for code, e in errors.items() if "ResponsePagePath" in e}
+    assert not (answered & substituting), (
+        f"the streaming app answers {sorted(answered & substituting)}, which the "
+        f"distribution replaces with the site's error page"
+    )
+
+
+def test_the_site_origin_signals_a_missing_page_with_403():
+    """WHY 403 IS THE ONE STATUS THAT CARRIES THE SITE'S ERROR PAGE, asserted where the
+    reason actually lives: the bucket policy.
+
+    A REST (OAC) origin returns 403 AccessDenied for a key that is not there, because
+    without s3:ListBucket S3 will not distinguish "absent" from "forbidden". That is the
+    only reason a page miss arrives on 403 and not on 404, and it is what leaves 404 free
+    to mean "the streaming app said so" (test_the_error_page_does_not_cover_the_api_path).
+
+    Grant ListBucket here and the two swap without a word: site misses start arriving as
+    404 and get the pass-through, real page misses stop reaching /404.html, and the API's
+    own 404 starts being masked instead. Nothing about that fails at synth or at deploy,
+    which is why it is pinned rather than commented."""
+    policy = _resource_named(
+        _template(), "AWS::S3::BucketPolicy", "SiteBucketPolicy"
+    )["Properties"]
+    edge = [
+        statement
+        for statement in policy["PolicyDocument"]["Statement"]
+        if statement.get("Principal", {}).get("Service") == "cloudfront.amazonaws.com"
+    ]
+    assert len(edge) == 1, edge
+    assert edge[0]["Action"] == "s3:GetObject", (
+        "the edge may read objects and nothing else - s3:ListBucket would turn a missing "
+        "page into a 404, which is the status the streaming app owns"
+    )
 
 
 def test_the_error_page_is_actually_built_and_shipped():

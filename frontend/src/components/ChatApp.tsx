@@ -611,13 +611,15 @@ export default function ChatApp() {
 
 		void streamed()
 			.catch((error: unknown) => {
-				// FALLING BACK IS NOT UNCONDITIONAL. StreamUnavailable means the stream
-				// failed BEFORE the server took the turn on - nothing written, nothing
-				// billed - which is what a deployment with no streaming route, or a request
-				// that never arrived, looks like, and asking the same question over
-				// POST /chat is free of consequence. Anything else is the server having said
-				// something definite, or having already started work; retrying that would
-				// ask a question twice and bill it twice.
+				// FALLING BACK IS NOT UNCONDITIONAL, AND IT IS NARROW ON PURPOSE.
+				// StreamUnavailable means the stream failed before the server took the turn
+				// on AND the failure was the front door being absent - a deployment with no
+				// streaming route, or a request that never arrived. Asking the same question
+				// over POST /chat is free of consequence there. Anything else surfaces: a
+				// refused token, an edge that cannot invoke its origin, a server that said
+				// something definite or has already started work. The buffered path answers
+				// whether or not `/api` is alive, so a broader net here would quietly
+				// deliver every turn and leave a dead streaming deployment looking healthy.
 				if (!(error instanceof StreamUnavailable)) throw error;
 				setPendingPreview('');
 				setPendingStage(null);
