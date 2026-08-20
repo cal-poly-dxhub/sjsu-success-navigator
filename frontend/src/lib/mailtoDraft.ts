@@ -9,9 +9,9 @@
  * THE BUDGET IS MEASURED ON THE PERCENT-ENCODED URL, which is the only length that matters
  * and is not the length of the text. Outlook on Windows fails SILENTLY past roughly 2,000
  * characters - no error, no mail window, nothing at all happens when the button is pressed -
- * and the encoding is where a draft gets long: every newline costs three characters (%0A),
- * every space three in a query value (%20), and one emoji or a smart quote can cost nine.
- * So a 1,300-character message can be a 2,100-character URL.
+ * and the encoding is where a draft gets long: every newline costs SIX characters (%0D%0A,
+ * see encodeBody below), every space three in a query value (%20), and one emoji or a smart
+ * quote can cost nine. So a 1,300-character message can be a 2,100-character URL.
  *
  * OVER BUDGET THERE IS NO LINK AT ALL. Not a truncated one - a truncated draft is a message
  * the student can send without noticing what went missing - and not a button that does
@@ -49,6 +49,30 @@ export type MailtoDraft = {
 };
 
 /**
+ * The body, encoded with the line breaks a mail client is required to honour.
+ *
+ * THE BREAKS WERE ALWAYS IN THE TEXT; THEY WERE ENCODED WRONG. The server writes the draft
+ * with real newlines (app/escalation.py: the model's paragraphs, then a blank line, then the
+ * provenance line) and the panel shows them, because it renders the body in a <pre>. What
+ * went out in the URL was `encodeURIComponent`'s `%0A` - a bare LF - and RFC 6068 section 5,
+ * like RFC 2368 before it, says line breaks in a mailto body MUST be `%0D%0A`. A client
+ * within its rights to treat a lone LF as not-a-line-break runs the paragraphs together, and
+ * the message that arrives is one block of text that the message on screen was not.
+ *
+ * SO THIS CONVERTS THE LINE ENDINGS AND NOTHING ELSE. Not a rewrite of the draft: no
+ * reflowing, no re-ordering, no characters added or removed, so the words that arrive are
+ * still the words the student read and vouched for. The alternation matches an existing CRLF
+ * whole before it can match either half, so a body whose lines already end correctly comes
+ * out unchanged rather than doubled.
+ *
+ * IT COSTS SIX CHARACTERS A BREAK INSTEAD OF THREE, which is real against a 2,000-character
+ * ceiling and is why the caller measures the budget on the string this returns.
+ */
+function encodeBody(body: string): string {
+	return encodeURIComponent(body.replace(/\r\n|\r|\n/g, '\r\n'));
+}
+
+/**
  * One draft as a mailto URL, with the budget already applied.
  *
  * The recipient is NOT percent-encoded: it is a plain address validated at synth
@@ -61,7 +85,7 @@ export function mailtoDraft(draft: EmailDraft): MailtoDraft {
 	const href =
 		`mailto:${draft.to}` +
 		`?subject=${encodeURIComponent(draft.subject)}` +
-		`&body=${encodeURIComponent(draft.body)}`;
+		`&body=${encodeBody(draft.body)}`;
 
 	if (href.length > MAILTO_MAX_CHARS) {
 		// Not a thrown error and not a silent null: this is a real state a real draft can
