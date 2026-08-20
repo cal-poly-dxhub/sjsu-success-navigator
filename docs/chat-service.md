@@ -698,6 +698,19 @@ nothing but whitespace. The address is stripped in the assembler as well as in
 **One server-authored line goes on every draft,** saying it was written with the Navigator's
 help, because staff open a message written with a machine's help and it should say so.
 
+**The mailto's line breaks are CRLF, and the draft's structure rides on it.** This is
+`<desc>` keeps its line breaks (docs/cards-v2.md) one layer further out. The server writes
+the draft with real newlines and the panel renders it in a `<pre>`, so the paragraphs and the
+model's `-` bullets are on screen. The link that opens the mail client is a URL, though, and
+RFC 6068 section 5, like RFC 2368 before it, says a line break in a `mailto` body MUST be
+encoded `%0D%0A`. `encodeURIComponent` on its own writes `%0A`, a client is within its rights
+to run the lines together, and what arrives is one block of text that the message on screen
+was not. `frontend/src/lib/mailtoDraft.ts` converts the line endings at the URL boundary and
+nowhere else: the stored bytes, the panel and the clipboard copy are untouched, so what is on
+screen is still what gets sent. It costs six encoded characters a break rather than three,
+spent out of the same ~2,000 budget, which is why the length that decides between the button
+and the copy path is measured after the conversion rather than on the text.
+
 ## Streaming
 
 `app/streaming.py` (the WebSocket routes) and `app/stream_worker.py` (the generation half).
