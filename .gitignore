@@ -44,6 +44,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+# draw.io desktop writes a .$<name>.bkp scratch file beside the diagram it has open
+.$*.bkp
 
 # Test / coverage
 coverage/
