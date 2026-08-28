@@ -160,7 +160,7 @@ export default function ChatApp() {
 	const [isLoading, setIsLoading] = useState(false);
 	const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 	/**
-	 * The reply as it arrives over the socket, and what the server says it is doing while
+	 * The reply as it arrives over the stream, and what the server says it is doing while
 	 * none has yet. Both are PREVIEW state: they live only for the length of one pending
 	 * exchange and are cleared the moment the authoritative payload lands, which is what
 	 * builds the turn. Nothing is ever rendered from them after that.
@@ -178,12 +178,6 @@ export default function ChatApp() {
 	 * set for the welcome turn, which opens the only bubble on a fresh screen.
 	 */
 	const [continuedTurnId, setContinuedTurnId] = useState<string | null>(null);
-	/**
-	 * Whether this deployment has a socket at all - i.e. whether the stack stamped
-	 * `streamingApiUrl` into config.json. False until config.json has been read, so the
-	 * first turn on a cold page uses POST /chat rather than waiting on a fetch to find out.
-	 */
-	const [streamingReady, setStreamingReady] = useState(false);
 	/**
 	 * Whether this deployment has a mailbox to escalate to (config.json's
 	 * escalationRecipient). False until config.json has been read, and false for good in a
@@ -212,16 +206,14 @@ export default function ChatApp() {
 			.then((config) => {
 				if (cancelled) return;
 				setCostModel(config.costModel ?? null);
-				// THE ABSENCE OF THE URL IS THE GATE. With streaming off the stack stamps no
-				// key, so there is nothing here to open and every turn takes POST /chat.
-				setStreamingReady(Boolean(config.streamingApiUrl));
-				// And again for the escalation path. The recipient itself is not used to
-				// address anything here - a draft carries its own destination, as it was
-				// addressed when the turn happened - so its PRESENCE is all this reads.
+				// THE ABSENCE OF THE KEY IS THE GATE for the escalation path. The recipient
+				// itself is not used to address anything here - a draft carries its own
+				// destination, as it was addressed when the turn happened - so its PRESENCE
+				// is all this reads.
 				setEscalationEnabled(Boolean(config.escalationRecipient));
 			})
 			.catch(() => {
-				/* No cost panel and no socket. The chat surfaces its own config failures. */
+				/* No cost panel. The chat surfaces its own config failures. */
 			});
 		return () => {
 			cancelled = true;
@@ -435,10 +427,16 @@ export default function ChatApp() {
 					// is recorded once and never overwritten: the server echoes the same id
 					// back for the life of the conversation, and it is absent on a guardrail
 					// block, where no turn was recorded to belong to.
-					if (!next.conversationId || metered.conversationId) return metered;
+					//
+					// ON A STREAMED TURN THE ID IS ALREADY HERE, put there by the `accepted`
+					// frame a whole reply ago. So the id is written only if it is missing
+					// and the TITLE is applied either way - folding them into one condition
+					// would mean a conversation that learned its id early never learned its
+					// name at all.
+					if (!next.conversationId) return metered;
 					return {
 						...metered,
-						conversationId: next.conversationId,
+						conversationId: metered.conversationId ?? next.conversationId,
 						// THE SERVER'S NAME FOR THIS CONVERSATION, present only on the turn
 						// that created it. It replaces the placeholder this component wrote
 						// from the same message a moment ago, so the row says what a reload
@@ -512,12 +510,19 @@ export default function ChatApp() {
 	 * (docs/accounts-and-storage.md, Turn lifecycle), and a client-supplied one would be a
 	 * way to put words in a previous turn's mouth rather than a memory shortcut.
 	 *
-	 * TWO TRANSPORTS, ONE OUTCOME. When the stack stamped a WebSocket URL into config.json
-	 * the turn goes over a socket and the prose arrives as it is written; otherwise, and on
-	 * any socket failure the server had not yet taken responsibility for, it goes over
-	 * POST /chat exactly as it always has. What gets RENDERED is the same object either
-	 * way - the streamed turn ends in one final payload that is byte-for-byte what
-	 * POST /chat would have returned - so nothing below this function knows which ran.
+	 * TWO TRANSPORTS, ONE OUTCOME. The turn goes to the streaming route on this page's own
+	 * origin and the prose arrives as it is written; on any failure the server had not yet
+	 * taken responsibility for, it goes over POST /chat exactly as it always has. What gets
+	 * RENDERED is the same object either way - the streamed turn ends in one final payload
+	 * that is byte-for-byte what POST /chat would have returned - so nothing below this
+	 * function knows which ran.
+	 *
+	 * NOTHING IS ASKED FIRST. The streaming route is a path on the same distribution that
+	 * served this bundle, so there is no URL to look up and no config key to read: a
+	 * deployment without it answers the POST and the turn falls back, which is the same
+	 * path a blocked request takes. Waiting on config.json to find out would put a fetch
+	 * in front of the first turn of every cold page to learn something the first turn
+	 * learns anyway.
 	 */
 	const sendTurn = (query: string, options?: { followup?: boolean }) => {
 		if (isLoading || isTransitioning || openingChatId) return;
@@ -557,6 +562,21 @@ export default function ChatApp() {
 			return streamChat(
 				{ query, followup: options?.followup, conversationId },
 				{
+					// THE FIRST FRAME, AND THE ID ON IT. The server mints the id and an
+					// absent one means a new conversation, so on a fresh chat this is the
+					// only place the browser can learn it before the reply finishes - and
+					// it needs it for both things that happen in the meantime: the sidebar
+					// row, and the id the NEXT turn is addressed with. Recorded once and
+					// never overwritten, exactly as applyChatResponse records it.
+					onAccepted: (id) => {
+						setChats((current) =>
+							current.map((chat) =>
+								chat.id === activeChatId && !chat.conversationId
+									? { ...chat, conversationId: id }
+									: chat,
+							),
+						);
+					},
 					onStatus: (next) => {
 						stage = next;
 						setPendingStage(next);
@@ -589,14 +609,17 @@ export default function ChatApp() {
 			});
 		};
 
-		void (streamingReady ? streamed() : buffered())
+		void streamed()
 			.catch((error: unknown) => {
-				// FALLING BACK IS NOT UNCONDITIONAL. StreamUnavailable means the socket
-				// failed BEFORE the server took the turn on - nothing written, nothing
-				// billed - which is what a blocked WebSocket port on campus wifi looks like,
-				// and asking the same question over HTTP is free of consequence. Anything
-				// else is the server having said something definite, or having already
-				// started work; retrying that would ask a question twice and bill it twice.
+				// FALLING BACK IS NOT UNCONDITIONAL, AND IT IS NARROW ON PURPOSE.
+				// StreamUnavailable means the stream failed before the server took the turn
+				// on AND the failure was the front door being absent - a deployment with no
+				// streaming route, or a request that never arrived. Asking the same question
+				// over POST /chat is free of consequence there. Anything else surfaces: a
+				// refused token, an edge that cannot invoke its origin, a server that said
+				// something definite or has already started work. The buffered path answers
+				// whether or not `/api` is alive, so a broader net here would quietly
+				// deliver every turn and leave a dead streaming deployment looking healthy.
 				if (!(error instanceof StreamUnavailable)) throw error;
 				setPendingPreview('');
 				setPendingStage(null);

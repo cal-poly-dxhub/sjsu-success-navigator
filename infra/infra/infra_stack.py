@@ -61,6 +61,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_s3_deployment as s3deploy,
     aws_s3vectors as s3vectors,
+    aws_ssm as ssm,
     triggers,
 )
 from constructs import Construct
@@ -85,7 +86,6 @@ from infra.config import (
     resolve_retrieval,
     resolve_scraper,
     resolve_seed_pages,
-    resolve_streaming,
     resolve_vector_store,
     validate_config,
 )
@@ -130,8 +130,8 @@ _LAMBDA_PY_TAG = "3.13"
 
 
 # THE LAMBDA WEB ADAPTER LAYER, published by AWS, and the whole reason a python3.13
-# function can stream a response body at all (app/stream_probe.py, and the probe section
-# near the end of this file). The layer holds two things: the adapter binary, registered as
+# function can stream a response body at all (app/streaming_app.py, and the streaming-app
+# section near the end of this file). The layer holds two things: the adapter binary, registered as
 # a Lambda extension, and /opt/bootstrap, the wrapper script that starts the app.
 #
 # THE PUBLISHER ACCOUNT IS AWS'S AND IS THE SAME IN EVERY COMMERCIAL REGION - it is a
@@ -164,6 +164,20 @@ _LWA_LAYER_VERSION = 28
 # up timing out against a readiness check on a port nothing is listening to.
 _LWA_PROBE_PORT = 8000
 
+# THE PATH THE EDGE CLAIMS, and the same string app/streaming_app.py binds its router to
+# (EDGE_PATH_PREFIX there) and frontend/src/lib/chatStream.ts calls (STREAM_PATH_PREFIX). CloudFront matches a behaviour on the viewer's path and
+# forwards that path to the origin UNCHANGED - there is no prefix-stripping short of a
+# rewrite function - so the two are one spelling on each side of a boundary neither file
+# can see across, and test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string
+# reads both off disk rather than trusting this comment. A mismatch synthesizes clean,
+# deploys clean, and is a 404 from FastAPI through a distribution behaving as configured.
+#
+# It is NOT in config.yaml: it names nothing this deployment owns and there is no install
+# that wants a different one - it is a contract between two files in this repo, and a knob
+# would be a way for them to disagree.
+_STREAM_EDGE_PATH_PREFIX = "/api"
+_STREAM_EDGE_PATH_PATTERN = f"{_STREAM_EDGE_PATH_PREFIX}/*"
+
 # The eval harness's MACHINE account username, spelled into the setup commands the stack
 # prints so they are copy-paste runnable. It is a NAME, not a credential - the password is
 # chosen by the deployer and never appears here or anywhere in the repo.
@@ -178,15 +192,6 @@ _EVAL_USERNAME = "eval-runner"
 # Placeholder standing in for a real person's account in the printed admin-create-user
 # command. Deliberately not a valid username shape anyone would leave in place.
 _HUMAN_USERNAME_PLACEHOLDER = "USERNAME-HERE"
-
-# The WebSocket streaming API's stage name. It is part of the URL the browser connects to
-# (wss://<apiId>.execute-api.<region>.amazonaws.com/<stage>), so it is spelled once here
-# rather than in config.yaml: it names nothing globally - it is scoped to an API that does
-# not exist until this stack creates it - and there is no deployment that wants a different
-# one. A config knob would be a value nobody has a reason to change and a second place the
-# frontend's URL could come from.
-_STREAMING_STAGE_NAME = "stream"
-
 
 def _astro_bundling() -> BundlingOptions:
     """Build frontend/ into static files INSIDE A CONTAINER, at synth.
@@ -1024,11 +1029,11 @@ class NavigatorStack(Stack):
                 )
             ],
         )
-        # THE CHAT TURN'S GRANTS, collected as they are added. The WebSocket generation
-        # worker runs the SAME turn - retrieve, invoke, screen, read and write the table -
-        # so it is given this exact list rather than a second hand-written copy that could
-        # come to differ. A streamed turn that could reach less than a buffered one would
-        # not fail loudly; it would fail somewhere inside an answer.
+        # THE CHAT TURN'S GRANTS, collected as they are added. The streaming app runs the
+        # SAME turn - retrieve, invoke, screen, read and write the table - so it is given
+        # this exact list rather than a second hand-written copy that could come to differ.
+        # A streamed turn that could reach less than a buffered one would not fail loudly;
+        # it would fail somewhere inside an answer.
         _chat_turn_statements = []
 
         def _grant_chat_turn(statement):
@@ -1237,10 +1242,10 @@ class NavigatorStack(Stack):
         )
 
         # The chat function's runtime wiring, hoisted out of the constructor because the
-        # WebSocket streaming functions in section 7 run the SAME application modules and
-        # therefore need the same values. Spelled once: two copies of this dict would drift,
-        # and the drift would be a streaming turn answering under a different cap or against
-        # a different table than the buffered one.
+        # streaming app below runs the SAME application modules and therefore needs the same
+        # values. Spelled once: two copies of this dict would drift, and the drift would be a
+        # streamed turn answering under a different cap or against a different table than the
+        # buffered one.
         chat_environment = {
             "KNOWLEDGE_BASE_ID": knowledge_base.attr_knowledge_base_id,
             "GENERATION_MODEL_ID": generation_model_id,
@@ -1977,460 +1982,17 @@ class NavigatorStack(Stack):
             ),
         )
 
-        # --- WebSocket streaming API (OPTIONAL, and off by default) --------------
-        #
-        # DELIBERATELY UNNUMBERED, like the chat history table above: it is not a gav pull,
-        # so putting it in a sequence that means "gav's section order" would be a lie. It
-        # sits HERE, between 5 and 6, for a mechanical reason - section 6 stamps config.json,
-        # and the browser's choice of transport is the presence of this API's URL in it.
-        #
-        # THE GATE IS THE WHOLE FEATURE (config.yaml `streaming`). resolve_streaming returns
-        # None when the block is absent or disabled, and then NOTHING below is synthesized:
-        # no API, no authorizer, no functions, no layer, and no `streamingApiUrl` in
-        # config.json - so the frontend has nothing to open and every student stays on
-        # POST /chat, which none of this touches.
-        #
-        # WHY A WEBSOCKET. API Gateway response streaming is REST-API only and this is an
-        # HTTP API; Lambda response streaming is Node.js/custom-runtime only and the agent
-        # loop is Python. In-band streaming means rewriting the loop in another language.
-        # This keeps the Python and moves the stream out of band: ConverseStream on the way
-        # in, post_to_connection on the way out.
-        streaming_cfg = resolve_streaming(config)
-        streaming_api_url = None
-
-        if streaming_cfg is not None:
-            # THE AUTHORIZER'S OWN DEPS LAYER, separate from the chat function's rather
-            # than a line added to it. Two reasons: PyJWT's `crypto` extra pulls in
-            # `cryptography`, a large compiled wheel the chat function has no use for, and
-            # POST /chat is under a hard "keeps working unchanged" constraint - changing
-            # its layer changes its deployed artifact for a feature it does not run.
-            #
-            # `_requirements_hash` folds the layer NAME into the asset hash, which is what
-            # keeps this out of the collision the chat layer's long note describes: three
-            # layers with the same image, command and platform would otherwise share a
-            # cache key and silently reuse each other's bundle.
-            connect_authorizer_layer = _lambda.LayerVersion(
-                self,
-                "ConnectAuthorizerDepsLayer",
-                description=(
-                    "PyJWT + cryptography (manylinux x86_64) for the WebSocket $connect "
-                    "authorizer's RS256 verification."
-                ),
-                compatible_runtimes=[_LAMBDA_PYTHON],
-                compatible_architectures=[_LAMBDA_ARCH],
-                code=_lambda.Code.from_asset(
-                    str(_APP_DIR),
-                    asset_hash=_requirements_hash(
-                        "connect-authorizer", _APP_DIR / "requirements-authorizer.txt"
-                    ),
-                    asset_hash_type=AssetHashType.CUSTOM,
-                    exclude=["*", ".*", "!requirements-authorizer.txt"],
-                    bundling=BundlingOptions(
-                        image=_LAMBDA_PYTHON.bundling_image,
-                        local=_PipManylinuxLayerBundler(
-                            _APP_DIR / "requirements-authorizer.txt"
-                        ),
-                        command=[
-                            "bash",
-                            "-c",
-                            "pip install -r requirements-authorizer.txt "
-                            "--target /asset-output/python",
-                        ],
-                        platform="linux/amd64",
-                    ),
-                ),
-            )
-
-            connect_authorizer_log_group = logs.LogGroup(
-                self,
-                "ConnectAuthorizerLogGroup",
-                retention=logs.RetentionDays.THREE_MONTHS,
-                removal_policy=RemovalPolicy.DESTROY,
-            )
-
-            # THE ONE PIECE OF OUR CODE IN AN AUTH DECISION ANYWHERE IN THIS STACK, and it
-            # exists only because a WebSocket API cannot use the native JWT authorizer the
-            # HTTP API uses: REQUEST (Lambda) is the only authorizer type it accepts, and
-            # `$connect` is the only route one can be attached to.
-            #
-            # NO IAM GRANTS BEYOND LOGGING. It reaches exactly one thing - the pool's public
-            # JWKS document over https - which needs no credentials. An authorizer that
-            # could read the history table would be an authorizer that could be made to.
-            connect_authorizer_lambda = _lambda.Function(
-                self,
-                "ConnectAuthorizerFunction",
-                runtime=_LAMBDA_PYTHON,
-                architecture=_LAMBDA_ARCH,
-                handler="ws_authorizer.lambda_handler",
-                # ONE FILE. It imports nothing from the rest of app/, which is the point:
-                # the module that decides who a caller is should not be able to reach the
-                # store, the model or the guardrail.
-                code=_lambda.Code.from_asset(
-                    str(_APP_DIR), exclude=["*", ".*", "!ws_authorizer.py"]
-                ),
-                layers=[connect_authorizer_layer],
-                # Short: it fetches a cached JWKS and verifies one signature. A slow
-                # authorizer is a slow handshake, in front of a student.
-                timeout=Duration.seconds(10),
-                memory_size=512,
-                log_group=connect_authorizer_log_group,
-                environment={
-                    "COGNITO_REGION": self.region,
-                    "USER_POOL_ID": auth_pool.user_pool_id,
-                    # THE SAME ALLOWLIST THE HTTP API'S AUTHORIZER CARRIES as its audience,
-                    # and deliberately the same rather than narrowed to the web client. Two
-                    # doors into one pool with two different answers to "which clients?" is
-                    # how one of them ends up wrong; the eval harness cannot reach a browser
-                    # socket anyway, and its token is a token from this pool either way.
-                    "ALLOWED_CLIENT_IDS": Fn.join(
-                        ",",
-                        [
-                            web_client.user_pool_client_id,
-                            eval_client.user_pool_client_id,
-                        ],
-                    ),
-                },
-            )
-
-            # THE TOKEN TRAVELS IN THE QUERY STRING, and that is measured rather than
-            # preferred. The better option is `Sec-WebSocket-Protocol`, which keeps the
-            # token out of URLs entirely and which API Gateway DOES accept as an identity
-            # source - but it never echoes the subprotocol back in its 101 response, and RFC
-            # 6455 says a client whose requested subprotocol is not echoed must fail the
-            # connection. Probed against a deployed WebSocket API on 2026-08-12: the 101
-            # came back with no `Sec-WebSocket-Protocol` header, and Chrome 151 and Node's
-            # WHATWG WebSocket both fired `error` without opening. Query string it is.
-            #
-            # THE IDENTITY SOURCE IS LOAD-BEARING IN A WAY THAT BITES: if it is ABSENT from
-            # the request, API Gateway does not invoke the authorizer at all. The handshake
-            # is still refused (probed: HTTP 401), but a browser cannot read the status of a
-            # failed upgrade, so in JS it surfaces as an opaque error and a 1006 close.
-            connect_authorizer = apigwv2_authorizers.WebSocketLambdaAuthorizer(
-                "ChatConnectAuthorizer",
-                connect_authorizer_lambda,
-                identity_source=["route.request.querystring.token"],
-            )
-
-            # The routes' own function: $connect and $disconnect record and clear the
-            # connection. It runs the SAME application modules as the chat function and
-            # therefore takes the same environment (see chat_environment above).
-            streaming_route_log_group = logs.LogGroup(
-                self,
-                "ChatStreamRouteLogGroup",
-                retention=logs.RetentionDays.THREE_MONTHS,
-                removal_policy=RemovalPolicy.DESTROY,
-            )
-
-            streaming_route_role = iam.Role(
-                self,
-                "ChatStreamRouteRole",
-                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-                description=(
-                    "Execution role for the WebSocket route function (connect/disconnect)."
-                ),
-                managed_policies=[
-                    iam.ManagedPolicy.from_aws_managed_policy_name(
-                        "service-role/AWSLambdaBasicExecutionRole"
-                    )
-                ],
-            )
-            # Exactly the two actions the connection record needs, scoped to the one table.
-            # Not the chat role's list: this function does not read a conversation, does not
-            # query, and must not be able to. Spelled out for the reason the chat role's
-            # note gives - `grant_read_write_data` would bring dynamodb:Scan, the one
-            # operation that takes no partition key.
-            streaming_route_role.add_to_policy(
-                iam.PolicyStatement(
-                    actions=["dynamodb:PutItem", "dynamodb:DeleteItem"],
-                    resources=[chat_history_table.table_arn],
-                )
-            )
-
-            # THE GENERATION WORKER: the half of a streamed turn that takes twenty seconds.
-            # It is a separate function because the route function is behind API Gateway and
-            # inherits the same 29-second integration ceiling POST /chat has, while the agent
-            # loop can use most of it. This one is invoked asynchronously and talks back down
-            # the connection, so the ceiling stops applying to it.
-            streaming_worker_log_group = logs.LogGroup(
-                self,
-                "ChatStreamWorkerLogGroup",
-                retention=logs.RetentionDays.THREE_MONTHS,
-                removal_policy=RemovalPolicy.DESTROY,
-            )
-
-            # It runs the same turn the chat function runs, so it holds the same grants -
-            # taken from the same role rather than a second copy, because a streamed turn
-            # that could reach less than a buffered one would fail somewhere subtle.
-            streaming_worker_role = iam.Role(
-                self,
-                "ChatStreamWorkerRole",
-                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-                description="Execution role for the WebSocket generation worker.",
-                managed_policies=[
-                    iam.ManagedPolicy.from_aws_managed_policy_name(
-                        "service-role/AWSLambdaBasicExecutionRole"
-                    )
-                ],
-            )
-            for statement in _chat_turn_statements:
-                streaming_worker_role.add_to_policy(statement)
-
-            streaming_worker_lambda = _lambda.Function(
-                self,
-                "ChatStreamWorkerFunction",
-                runtime=_LAMBDA_PYTHON,
-                architecture=_LAMBDA_ARCH,
-                handler="stream_worker.lambda_handler",
-                code=_lambda.Code.from_asset(
-                    str(_APP_DIR),
-                    exclude=[
-                        "*",
-                        ".*",
-                        "!stream_worker.py",
-                        "!streaming.py",
-                        # The preview's own bookkeeping - the offset, the batching and the
-                        # safe prefix - lifted out of streaming.py so the FastAPI app can
-                        # use the same one. streaming.py imports it at module scope.
-                        "!preview.py",
-                        "!settings.py",
-                        "!models.py",
-                        "!prompts.py",
-                        "!tools.py",
-                        "!retrieve.py",
-                        "!cards.py",
-                        "!safety.py",
-                        "!escalation.py",
-                        "!places.py",
-                        "!campus_data.py",
-                        "!orchestrator.py",
-                        "!campus_time.py",
-                        "!history.py",
-                        "!titles.py",
-                        "!usage.py",
-                        "!ratelimit.py",
-                    ],
-                ),
-                # Same pair as the chat function, and for the same reason: this one runs
-                # the agent loop too, so it imports places.py, safety.py and prompts.py.
-                layers=[chat_deps_layer, campus_data_layer],
-                role=streaming_worker_role,
-                # Longer than the chat function's 29 seconds because nothing is waiting on
-                # an HTTP response here - but the LOOP's budget is unchanged
-                # (chat.converse_deadline_seconds, read by stream_worker), so this is
-                # headroom for the writes, the title and the final push, not a longer answer.
-                timeout=Duration.seconds(60),
-                memory_size=1024,
-                log_group=streaming_worker_log_group,
-                environment=dict(chat_environment),
-            )
-            streaming_worker_lambda.node.add_dependency(chat_history_table)
-            streaming_worker_lambda.node.add_dependency(knowledge_base)
-
-            # ZERO RETRIES ON THE ASYNCHRONOUS INVOKE, and this is the single most important
-            # property of this resource. Lambda retries a failed async invocation TWICE by
-            # default, and a retried generation worker answers the same question again -
-            # down the same socket, billing a full agent loop each time, with the student
-            # watching a second reply type itself over the first. Nothing in the turn is
-            # idempotent enough to survive that.
-            streaming_worker_lambda.configure_async_invoke(retry_attempts=0)
-
-            streaming_route_lambda = _lambda.Function(
-                self,
-                "ChatStreamRouteFunction",
-                runtime=_LAMBDA_PYTHON,
-                architecture=_LAMBDA_ARCH,
-                handler="streaming.lambda_handler",
-                code=_lambda.Code.from_asset(
-                    str(_APP_DIR),
-                    exclude=[
-                        "*",
-                        ".*",
-                        "!streaming.py",
-                        # Same reason as the worker's: streaming.py's ConnectionSink is a
-                        # PreviewSink now, and it imports it at module scope.
-                        "!preview.py",
-                        "!settings.py",
-                        "!history.py",
-                        "!models.py",
-                        "!usage.py",
-                        "!ratelimit.py",
-                        "!cards.py",
-                        # cards.py imports retrieve.py at module scope. cards is here for
-                        # preview_safe_prefix ALONE - the stop rule that keeps markup off a
-                        # student's screen - and nothing on this function parses a card.
-                        "!retrieve.py",
-                    ],
-                ),
-                layers=[chat_deps_layer],
-                role=streaming_route_role,
-                # It writes one or two DynamoDB items and makes one guardrail call. The model
-                # is the worker's problem.
-                timeout=Duration.seconds(15),
-                memory_size=512,
-                log_group=streaming_route_log_group,
-                environment={
-                    **chat_environment,
-                    "STREAM_WORKER_FUNCTION_NAME": streaming_worker_lambda.function_name,
-                },
-            )
-            streaming_route_lambda.node.add_dependency(chat_history_table)
-
-            # The route function screens input with the same guardrail POST /chat uses, and
-            # starts the worker. Both grants are narrow and named.
-            streaming_route_role.add_to_policy(
-                iam.PolicyStatement(
-                    actions=["bedrock:ApplyGuardrail"],
-                    resources=[input_guardrail.attr_guardrail_arn],
-                )
-            )
-            streaming_route_role.add_to_policy(
-                iam.PolicyStatement(
-                    actions=["dynamodb:UpdateItem"],
-                    resources=[chat_history_table.table_arn],
-                )
-            )
-            streaming_worker_lambda.grant_invoke(streaming_route_lambda)
-
-            streaming_api = apigwv2.WebSocketApi(
-                self,
-                "ChatStreamingApi",
-                # The frame field that picks a route. `$request.body.action` is the
-                # convention API Gateway documents, and it is what makes a message route a
-                # named thing rather than everything falling into $default.
-                route_selection_expression="$request.body.action",
-                connect_route_options=apigwv2.WebSocketRouteOptions(
-                    integration=apigwv2_integrations.WebSocketLambdaIntegration(
-                        "ChatStreamConnectIntegration", streaming_route_lambda
-                    ),
-                    # $connect IS THE ONLY ROUTE THAT CAN CARRY AN AUTHORIZER, which is not
-                    # a gap: a WebSocket connection is authorized once, at the handshake,
-                    # and API Gateway carries this authorizer's `context` onto every later
-                    # route on that connection (verified against a deployed probe), so the
-                    # message route reads `sub` from a validated token rather than a frame.
-                    authorizer=connect_authorizer,
-                ),
-                disconnect_route_options=apigwv2.WebSocketRouteOptions(
-                    integration=apigwv2_integrations.WebSocketLambdaIntegration(
-                        "ChatStreamDisconnectIntegration", streaming_route_lambda
-                    ),
-                ),
-            )
-
-            # THE MESSAGE ROUTE, named rather than left to $default. The API's route
-            # selection expression is `$request.body.action`, so a frame saying
-            # {"action": "sendMessage", ...} lands here and a frame naming nothing lands on
-            # $default - which this API deliberately does not define, so an unrecognised
-            # frame is refused instead of falling into the billable path. That is the same
-            # instinct app/handler.py's unknown-routeKey 404 has.
-            #
-            # NO AUTHORIZER, because a WebSocket API cannot put one here - and does not need
-            # to. The connection was authorized at $connect and API Gateway carries that
-            # authorizer's context onto this route, so every frame arrives with a `sub` that
-            # came out of a verified token.
-            streaming_api.add_route(
-                "sendMessage",
-                integration=apigwv2_integrations.WebSocketLambdaIntegration(
-                    "ChatStreamMessageIntegration", streaming_route_lambda
-                ),
-            )
-
-            # NO ACCESS LOGGING, and with a token in the query string that is a decision
-            # rather than an omission. API Gateway access logs are built from an explicit
-            # `$context.*` format string, so a token could only appear in one by being put
-            # there - but the surest way for that not to happen is for there to be no log.
-            # The HTTP API alongside this one configures none either.
-            streaming_stage = apigwv2.WebSocketStage(
-                self,
-                "ChatStreamingStage",
-                web_socket_api=streaming_api,
-                stage_name=_STREAMING_STAGE_NAME,
-                auto_deploy=True,
-                # The same fence the HTTP stage carries, from the same config numbers: this
-                # endpoint reaches the same paid model calls, so it gets the same throttle
-                # rather than a second set of numbers to keep in step.
-                throttle=apigwv2.ThrottleSettings(
-                    rate_limit=http_api_cfg["throttling_rate_limit"],
-                    burst_limit=http_api_cfg["throttling_burst_limit"],
-                ),
-            )
-
-            # THERE IS NO AUTHORIZER RESULT CACHE TO CONFIGURE HERE, and the absence of the
-            # property IS the setting. `AuthorizerResultTtlInSeconds` is documented as
-            # "Supported only for HTTP API Lambda authorizers"
-            # (AWS::ApiGatewayV2::Authorizer, checked 2026-08-12), and API Gateway does not
-            # merely ignore it on this protocol - it refuses the resource:
-            #
-            #   AuthorizerResultTtlInSeconds cannot be set for WEBSOCKET protocol Apis.
-            #   (Service: AmazonApiGatewayV2; Status Code: 400; BadRequestException)
-            #
-            # That is a real CREATE_FAILED from a real deploy (2026-08-12), and it happens
-            # for the value 0 as loudly as for 300, so this cannot be a smaller number - it
-            # has to be no property at all. An earlier revision walked the construct tree
-            # and set it to 0 to disable caching; that is the line that failed to deploy.
-            # CDK itself never emits it here: WebSocketLambdaAuthorizer takes no TTL
-            # argument, only HttpLambdaAuthorizer does, so nothing is being suppressed by
-            # leaving it out. Whether API Gateway caches a WebSocket authorizer's answer at
-            # all is not documented either way; what is certain is that there is no knob,
-            # so the token in the identity source is not protected by one. What bounds the
-            # exposure instead is the connection model: the authorizer runs at the
-            # handshake, and app/ws_authorizer.py verifies the signature and the expiry on
-            # every one of them.
-
-            # PUSHING BACK DOWN THE CONNECTION. Both functions send frames - the route one
-            # for a guardrail block or a rate-limit refusal, the worker for the whole
-            # streamed reply - so both need ManageConnections on this API and both need the
-            # stage's callback endpoint.
-            #
-            # THE ENDPOINT COMES FROM THE STACK, never from the event. A WebSocket event
-            # carries `domainName` and `stage`, and assembling the URL a reply is sent to out
-            # of request data is how a request ends up choosing its own destination.
-            for function in (streaming_route_lambda, streaming_worker_lambda):
-                streaming_api.grant_manage_connections(function)
-                function.add_environment("STREAM_CALLBACK_URL", streaming_stage.callback_url)
-                function.add_environment(
-                    "STREAM_DELTA_MIN_CHARS", str(streaming_cfg["delta_min_chars"])
-                )
-                function.add_environment(
-                    "STREAM_DELTA_MAX_DELAY_MS", str(streaming_cfg["delta_max_delay_ms"])
-                )
-
-            # The route function applies the per-user daily cap, so it needs the same
-            # exemption list the chat function carries - and by reference to the same client,
-            # so the harness cannot be exempt on one transport and capped on the other.
-            streaming_route_lambda.add_environment(
-                "RATE_LIMIT_EXEMPT_CLIENT_IDS", eval_client.user_pool_client_id
-            )
-
-            # PRESENT ONLY WHEN IT IS ON, the same spelling of off the rest of this stack
-            # uses. When it is on, app/stream_worker.py can only build a `sync` guardrail
-            # config - `async` is not representable there - because async releases text to
-            # the student before it has been scanned.
-            if streaming_cfg["output_guardrail"]:
-                streaming_worker_lambda.add_environment("STREAM_OUTPUT_GUARDRAIL", "true")
-
-            streaming_api_url = streaming_stage.url
-
-            CfnOutput(
-                self,
-                "ChatStreamingApiUrl",
-                value=streaming_api_url,
-                description=(
-                    "WebSocket endpoint for progressive replies (requires a Cognito access "
-                    "token as ?token=). The frontend reads this from config.json; when the "
-                    "key is absent it uses POST /chat."
-                ),
-            )
-
         # --- The streaming app: FastAPI + Lambda Web Adapter + Function URL -----
         #
         # UNNUMBERED AND DELIBERATELY ALONE, like the history table above: it is not a gav
         # pull, so numbering it would put it in a sequence that means "gav's section
-        # order". It sits HERE, straight after the WebSocket section, because it is the
-        # mechanism that section exists to work around.
+        # order". It sits HERE, between 5 and 6, because section 6 is the distribution that
+        # serves it and section 5 is the pool whose tokens it verifies.
         #
-        # WHAT IT IS FOR. The banner above says "Lambda response streaming is
-        # Node.js/custom-runtime only and the agent loop is Python". That is true of the
-        # python3.13 MANAGED RUNTIME and false of Lambda. The Lambda Web Adapter is an
+        # WHAT IT IS FOR. This stack once said "Lambda response streaming is
+        # Node.js/custom-runtime only and the agent loop is Python", and moved the stream
+        # out of band onto a WebSocket API and three functions on the strength of it. That
+        # is true of the python3.13 MANAGED RUNTIME and false of Lambda. The Lambda Web Adapter is an
         # execution wrapper: AWS_LAMBDA_EXEC_WRAPPER points the runtime at /opt/bootstrap
         # from the layer, that script execs run.sh out of the bundle, run.sh starts
         # uvicorn, and the adapter - registered as an extension by the same layer - proxies
@@ -2446,12 +2008,19 @@ class NavigatorStack(Stack):
         # "transport, Bedrock, or the turn?", and /stream and /model answer the first two
         # without a deploy-and-guess cycle.
         #
-        # NOTHING ABOVE CHANGES, WHICH IS THE POINT OF THIS BEING A SEPARATE FUNCTION. The
-        # socket keeps its three functions, its authorizer, its connection table, its grants
-        # and its config.json key, and stays the live path the frontend opens. Removing any
-        # of it is a later step and not this one: until a front door is chosen, this
-        # endpoint answers 401 to everybody (see app/stream_probe.py, identity_from), so it
-        # cannot be what a student reaches.
+        # IT IS THE ONLY STREAMING TRANSPORT NOW. The WebSocket API, its three functions,
+        # its $connect authorizer, its connection records and its config.json key are gone -
+        # this function does in one process what they did across two, without a gateway
+        # ceiling to work around. `POST /chat` on the HTTP API is untouched and is still
+        # what the eval harness runs and what the browser falls back to.
+        #
+        # IT KNOWS WHO ITS CALLER IS. It used to answer 401 to everybody, because a
+        # Function URL behind IAM auth carries the SIGNER's identity - the edge's - and no
+        # student's claims, and there is no authorizer to attach to one. So the app verifies
+        # the Cognito access token itself (app/token_auth.py), off a request header of its
+        # own because origin access control's SigV4 signature owns `Authorization`. The
+        # three variables that decide which tokens it accepts are in the environment below.
+        # Anything without a verifiable token is the 401 it always was.
         #
         # ZIP PLUS THE LAYER, NEVER A CONTAINER IMAGE, and that is where the two upstream
         # examples get spliced. fastapi-backend-only-response-streaming is the one that
@@ -2462,18 +2031,21 @@ class NavigatorStack(Stack):
         # add an ECR repository to the account and an image build to CI for a binary AWS
         # already publishes as a layer.
         #
-        # UNGATED, unlike the socket, which is a judgement rather than an oversight. A gate
-        # would be a config.yaml key, a resolver, a validator, a second synth direction and
-        # a case in test_config.py - all guarding a function that costs nothing until it is
-        # invoked and that nobody can invoke without credentials. It is removed by deleting
-        # this block, which is the same edit turning its key off would have been.
+        # UNGATED, and that is a judgement rather than an oversight. A gate would be a
+        # config.yaml key, a resolver, a validator, a second synth direction and a case in
+        # test_config.py - all guarding a function that costs nothing until it is invoked
+        # and that nobody can invoke without credentials. It is removed by deleting this
+        # block. NOTE that config.yaml still carries a `streaming` block: its three values
+        # were the socket's batching and output-guardrail knobs and nothing reads them any
+        # more (this app pushes every delta - there is no per-frame charge on an HTTP body).
+        # It is left in place because removing it is a config-schema change with its own
+        # test surface, not part of removing a transport.
 
-        # ITS OWN DEPS LAYER, for the reason the authorizer's has one: the chat function
-        # and the stream worker are under a hard "keeps working unchanged" constraint, and
-        # FastAPI in their layer would change their deployed artifact for a function they
-        # do not run. `_requirements_hash` folds the layer NAME into the asset hash, which
-        # is what keeps this fourth pip-built layer out of the CDK asset-cache collision
-        # the chat layer's long note describes.
+        # ITS OWN DEPS LAYER: the chat function is under a hard "keeps working unchanged"
+        # constraint, and FastAPI in its layer would change its deployed artifact for a
+        # function it does not run. `_requirements_hash` folds the layer NAME into the asset
+        # hash, which is what keeps this pip-built layer out of the CDK asset-cache
+        # collision the chat layer's long note describes.
         stream_probe_deps_layer = _lambda.LayerVersion(
             self,
             "StreamProbeDepsLayer",
@@ -2539,6 +2111,65 @@ class NavigatorStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # THE CLIENT ALLOWLIST, AND WHY IT IS A PARAMETER RATHER THAN A VARIABLE.
+        #
+        # app/token_auth.py has to know which app clients' tokens count, and the obvious
+        # spelling - `Fn.join` of the two client ids into the function's environment, the
+        # way the $connect authorizer gets its list - IS A DEPENDENCY CYCLE. CDK refuses to
+        # synth it, and it is a real one rather than a construct's opinion:
+        #
+        #     ChatWebClient -> SiteDistribution    (its deployed callback URL is the
+        #                                           CloudFront domain, appended at the end
+        #                                           of section 6)
+        #     SiteDistribution -> StreamProbeFunctionUrl   (the /api/* behaviour's origin)
+        #     StreamProbeFunctionUrl -> StreamProbeFunction
+        #     StreamProbeFunction -> ChatWebClient          (the id, if it were here)
+        #
+        # Three of those four edges are load-bearing and none is ours to remove: Cognito
+        # only redirects to a REGISTERED callback URL, the site and the stream share one
+        # distribution so there is no CORS story, and a Function URL is an attribute of its
+        # function. The EVAL client alone would not cycle - it has no callback URLs, which
+        # is why RATE_LIMIT_EXEMPT_CLIENT_IDS below can name it directly - but an allowlist
+        # of one is exactly the narrowing that 401s every student.
+        #
+        # So the fourth edge is the one that goes. The value the function needs is the only
+        # one in that loop that is read by CODE rather than by CloudFormation, which means
+        # it is the only one that can be deferred past deploy: the parameter carries the
+        # ids, the function carries the parameter's NAME, and a name assembled from
+        # pseudo-parameters is a string rather than a reference. Nothing in the template
+        # points from the function at a client, and the cycle is gone.
+        #
+        # THE NAME IS THE STACK'S OWN, so two installs in one account do not share a
+        # parameter and neither has to be told about the other.
+        streaming_client_allowlist_name = (
+            f"/{self.stack_name}/streaming/allowed-client-ids"
+        )
+        ssm.StringParameter(
+            self,
+            "StreamingAllowedClientIds",
+            parameter_name=streaming_client_allowlist_name,
+            # BOTH CLIENTS, deliberately, and this is the value that would be easy to get
+            # wrong by narrowing. The browser client sends students' turns and the machine
+            # client sends the eval harness's, and both arrive at POST /api/chat; pinning a
+            # single audience would pass the students and 401 every eval run. It is the
+            # same pair the HTTP API's authorizer carries as its audience and the same pair
+            # the $connect authorizer verifies against - one pool, one answer to "whose
+            # tokens?".
+            string_value=Fn.join(
+                ",",
+                [
+                    web_client.user_pool_client_id,
+                    eval_client.user_pool_client_id,
+                ],
+            ),
+            description=(
+                "App clients whose Cognito access tokens the streaming chat app accepts. "
+                "Read once per container by app/token_auth.py; it is a parameter rather "
+                "than a Lambda environment variable because the direct reference is a "
+                "CloudFormation dependency cycle through the site distribution."
+            ),
+        )
+
         stream_probe_lambda = _lambda.Function(
             self,
             "StreamProbeFunction",
@@ -2562,11 +2193,13 @@ class NavigatorStack(Stack):
             # other bundle here, with ".*" for the dotfile trap the scraper section
             # documents - and pinned by
             # test_the_stream_probe_ships_every_module_it_imports, which walks
-            # stream_probe.py's import graph rather than trusting this list to be re-read.
+            # streaming_app.py's import graph rather than trusting this list to be re-read.
             #
-            # It is the chat function's list plus three: run.sh (the adapter's entry point),
-            # stream_probe.py (the app) and preview.py (the sink's bookkeeping, which the
-            # buffered handler has no use for). handler.py is deliberately NOT here: it is
+            # It is the chat function's list plus four: run.sh (the adapter's entry point),
+            # streaming_app.py (the app), preview.py (the sink's bookkeeping, which the
+            # buffered handler has no use for) and token_auth.py (the token verifier, which
+            # the buffered handler has no use for either - API Gateway's own authorizer
+            # does that job in front of it). handler.py is deliberately NOT here: it is
             # the API Gateway transport, and this function is a different one.
             code=_lambda.Code.from_asset(
                 str(_APP_DIR),
@@ -2574,8 +2207,11 @@ class NavigatorStack(Stack):
                     "*",
                     ".*",
                     "!run.sh",
-                    "!stream_probe.py",
+                    "!streaming_app.py",
                     "!preview.py",
+                    # The token verifier. This function has no authorizer in front of it,
+                    # so the module that decides who a caller is rides in its bundle.
+                    "!token_auth.py",
                     "!turn.py",
                     "!settings.py",
                     "!models.py",
@@ -2651,13 +2287,34 @@ class NavigatorStack(Stack):
                 # Read twice: by uvicorn in run.sh, and by the adapter as the traffic port
                 # it forwards to and readiness-checks.
                 "PORT": str(_LWA_PROBE_PORT),
+                # WHICH POOL THIS FUNCTION TRUSTS, and the reason it needs telling at all:
+                # a Lambda Function URL accepts no authorizer, so there is nothing in front
+                # of this endpoint that could validate a student's token. app/token_auth.py
+                # does it in process - signature against this pool's JWKS, issuer, expiry,
+                # `token_use` and `client_id` - and these are the three values that decide
+                # what it accepts. THE SAME THREE NAMES THE $connect AUTHORIZER READS, from
+                # the same pool and the same two clients, because two doors into one pool
+                # with two different answers to "whose tokens?" is how one of them ends up
+                # wrong.
+                #
+                # NOT HARDCODED, and not a config.yaml key either: the pool and both clients
+                # are created by this stack a few hundred lines up, so these are references
+                # CloudFormation resolves at deploy time. A fresh install trusts its own
+                # pool without anybody editing a file.
+                "COGNITO_REGION": self.region,
+                "USER_POOL_ID": auth_pool.user_pool_id,
+                # THE CLIENT ALLOWLIST ARRIVES BY NAME, NOT BY VALUE, and that is the one
+                # thing in this block that looks like indirection for its own sake and is
+                # not. See the parameter above: putting the web client's id in here is a
+                # CloudFormation dependency cycle, and this is the value that breaks it.
+                "ALLOWED_CLIENT_IDS_PARAMETER": streaming_client_allowlist_name,
             },
         )
-        # THE SAME EXEMPTION LIST THE OTHER TWO TRANSPORTS CARRY, and by reference to the
-        # same client. This function applies the per-user daily cap now (app/turn.py step
-        # 1), so the eval harness has to be exempt here exactly as it is on POST /chat and
-        # on the socket - a harness that is exempt on one transport and capped on another
-        # is a run that fails halfway for a reason nobody would look for.
+        # THE SAME EXEMPTION LIST THE BUFFERED TRANSPORT CARRIES, and by reference to the
+        # same client. This function applies the per-user daily cap (app/turn.py step 1), so
+        # the eval harness has to be exempt here exactly as it is on POST /chat - a harness
+        # that is exempt on one transport and capped on the other is a run that fails
+        # halfway for a reason nobody would look for.
         stream_probe_lambda.add_environment(
             "RATE_LIMIT_EXEMPT_CLIENT_IDS", eval_client.user_pool_client_id
         )
@@ -2668,8 +2325,8 @@ class NavigatorStack(Stack):
         stream_probe_lambda.node.add_dependency(knowledge_base)
         stream_probe_lambda.node.add_dependency(chat_history_table)
 
-        # THE CHAT TURN'S GRANTS, THE SAME LIST AND FROM THE SAME PLACE the WebSocket
-        # worker takes them (`_chat_turn_statements`): retrieve from the knowledge base,
+        # THE CHAT TURN'S GRANTS, THE SAME LIST AND FROM THE SAME PLACE the chat function
+        # takes them (`_chat_turn_statements`): retrieve from the knowledge base,
         # invoke the generation and titling models, apply the input guardrail, and read and
         # write the one conversation table. It runs the same turn, so it holds the same
         # grants - a streamed turn that could reach less than a buffered one would fail
@@ -2685,10 +2342,31 @@ class NavigatorStack(Stack):
         #
         # WHAT IT STILL DOES NOT HOLD, and must not: `lambda:InvokeFunction` (there is no
         # generation worker to start - the turn runs in this process) and
-        # `execute-api:ManageConnections` (nothing here pushes down a socket). Those are the
-        # two grants the WebSocket path needs and this one exists to make unnecessary.
+        # `execute-api:ManageConnections` (nothing pushes down a socket any more). Those
+        # were the WebSocket path's two grants, and this function is why it is not here.
         for statement in _chat_turn_statements:
             stream_probe_lambda.add_to_role_policy(statement)
+
+        # AND ONE GRANT THAT IS NOT THE TURN'S: reading the client allowlist above. It is
+        # the door rather than the turn, which is why it is written here on its own rather
+        # than folded into `_chat_turn_statements` - the worker and the chat function run
+        # the same turn and must not grow this.
+        #
+        # THE ARN IS ASSEMBLED BY HAND rather than taken from the parameter construct, and
+        # that is the whole point of the exercise above: `parameter.grant_read(fn)` would
+        # put a Ref to the parameter in this policy, the parameter references the web
+        # client, and the cycle would come straight back through the policy instead of
+        # through the environment. Every piece of this ARN is a pseudo-parameter or the
+        # name string itself, so it references no resource.
+        stream_probe_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:{self.partition}:ssm:{self.region}:{self.account}"
+                    f":parameter{streaming_client_allowlist_name}"
+                ],
+            )
+        )
 
         # THE OTHER HALF OF THE STREAMING SWITCH. InvokeMode is a property of the URL, not
         # of the function, and Lambda buffers the whole body without it no matter what the
@@ -2701,12 +2379,25 @@ class NavigatorStack(Stack):
         # lambda:InvokeFunctionUrl for this ARN. It also decides what is NOT in the
         # template: CDK attaches the anonymous lambda:InvokeFunctionUrl permission only
         # when AuthType is NONE, so no AWS::Lambda::Permission is emitted for this URL at
-        # all, and test_the_stream_probe_url_is_iam_signed_and_open_to_nobody pins that.
+        # all, and test_the_stream_probe_url_is_iam_signed_and_open_to_nobody_but_the_edge
+        # pins that.
         #
-        # WHAT THE BROWSER EVENTUALLY TALKS TO IS UNDECIDED and out of scope. A student's
-        # browser holds a Cognito token, not SigV4 credentials, so this URL is not yet a
-        # front door - it is a thing the deployer and the eval harness can sign a request
-        # to, which is all a probe needs.
+        # WHAT AUTHENTICATES A CALLER IS NOW TWO THINGS, ONE PER LAYER, and keeping them
+        # apart is the whole design. SigV4 says the REQUEST may reach this function - the
+        # edge holds those credentials, and a student's browser never does. The Cognito
+        # access token on the app's own header says WHO the request is for, and the app
+        # verifies it in process (app/token_auth.py) because a Function URL takes no
+        # authorizer. Neither substitutes for the other: a signed request with no token is a
+        # 401, and a token with no signature never arrives. Through the edge exactly as
+        # directly - CloudFront forwards every viewer header except Host, so the token
+        # survives the hop and the signature is applied over it.
+        #
+        # WHAT DID CHANGE is that section 6 now puts this URL behind the site's CloudFront
+        # distribution, on the /api/* behaviour, with origin access control. THIS URL STAYS
+        # OPEN AND STAYS THE CONTROL: the whole question is whether a body that streams out
+        # of here still streams after the edge, and a measurement with nothing to compare
+        # against answers nothing. Taking the direct URL away - or fencing it behind the
+        # distribution with an OAC signing rule - would remove the only baseline.
         stream_probe_url = stream_probe_lambda.add_function_url(
             auth_type=_lambda.FunctionUrlAuthType.AWS_IAM,
             invoke_mode=_lambda.InvokeMode.RESPONSE_STREAM,
@@ -2717,16 +2408,24 @@ class NavigatorStack(Stack):
             "StreamProbeFunctionUrl",
             value=stream_probe_url.url,
             description=(
-                "IAM-signed Function URL for the streaming chat app. POST /chat streams a "
-                "full turn as NDJSON frames; GET /stream and GET /model are the transport "
-                "and Bedrock probes. Every request must be SigV4-signed for service "
-                "'lambda', and POST /chat additionally needs a validated JWT sub in the "
-                "request context - which an IAM Function URL does not carry, so it answers "
-                "401 until a front door is chosen. Nothing else in this stack references it."
+                "IAM-signed Function URL for the streaming chat app, and the CONTROL for "
+                "the edge measurement - curl this and StreamEdgeUrl on the same route and "
+                "compare time_starttransfer against time_total. POST /api/chat streams a "
+                "full turn as NDJSON frames; GET /api/stream and GET /api/model are the "
+                "transport and Bedrock probes. Every request must be SigV4-signed for "
+                "service 'lambda', and POST /api/chat additionally needs a Cognito ACCESS "
+                "token from this pool on the app's own auth header - the one name in "
+                "app/token_auth.py's AUTH_HEADER_NAME, which is the only place it is "
+                "spelled - and the app verifies it in process; without one it answers 401. "
+                "The only other thing in this stack that references it is the site "
+                "distribution's /api/* behaviour."
             ),
         )
 
         # --- 6. Site delivery: S3 + CloudFront (OAC) + Astro + config.json -------
+        #       ...and, at the end of it, the streaming endpoint on the same
+        #       distribution: one origin for the browser, one path pattern for the
+        #       stream, and the Function URL from section 5 as its origin.
         #
         # THE BUILD: the Astro app in frontend/ is compiled IN A CONTAINER at synth (see
         # _astro_bundling) and its dist/ is what lands in the bucket. dist/ is gitignored
@@ -2788,6 +2487,35 @@ function handler(event) {
             ),
         )
 
+        # THE STREAMING ENDPOINT RIDES THIS DISTRIBUTION, and section 5's Function URL is
+        # its origin. Everything about that is below; this is the piece that has to exist
+        # before the distribution does.
+        #
+        # WHY THIS DISTRIBUTION AND NOT ONE OF ITS OWN. The browser gets ONE origin for the
+        # whole app - the site and the stream come off the same domain - so there is no
+        # CORS story to write later, no second allowlist entry to keep in step with the HTTP
+        # API's, and no preflight sitting in front of a request whose entire value is time
+        # to first byte. A second distribution would be a second domain and all three.
+        #
+        # WHAT IT IS FOR. Whether a streamed response SURVIVES CloudFront or is buffered at
+        # the edge is not stated in the CloudFront developer guide, and the answer decides
+        # the browser client and the auth header both. It cannot be had locally: uvicorn
+        # streams (verified with curl -N against the app), Lambda's InvokeMode is a
+        # deploy-time property of the URL, and the edge is a third hop again. So this is
+        # built to be measured, direct against edge, on the one route that cannot be
+        # Bedrock's fault.
+        stream_edge_oac = cloudfront.FunctionUrlOriginAccessControl(
+            self,
+            "StreamEdgeOriginAccessControl",
+            # SIGV4_ALWAYS is CDK's default and is spelled out because it is one half of a
+            # contract whose other half is the Function URL's AuthType. AWS_IAM with
+            # anything weaker here is an endpoint the edge cannot reach and a 403 with
+            # nothing in the template to explain it. CDK checks this pair at synth
+            # (ValidationError FunctionUrlAuthTypeMustBeAwsIam), which makes it the one
+            # part of this section that does not need a deploy to find out about.
+            signing=cloudfront.Signing.SIGV4_ALWAYS,
+        )
+
         site_distribution = cloudfront.Distribution(
             self,
             "SiteDistribution",
@@ -2804,23 +2532,107 @@ function handler(event) {
                     )
                 ],
             ),
-            # A missing key on a REST origin comes back as 403 (the bucket policy grants
-            # GetObject only, so S3 cannot distinguish "absent" from "forbidden" without
-            # ListBucket). Both are mapped to a real 404 STATUS - deliberately NOT to
-            # index.html with a 200, which is the blanket-fallback anti-pattern: it would
-            # make every typo look like a working page that failed to render.
-            # BOTH response_http_status AND response_page_path, always. CloudFront
+            additional_behaviors={
+                # ONE PATTERN, AND THE APP AGREES WITH IT (_STREAM_EDGE_PATH_PREFIX above).
+                # Everything not under it - "/", /login/, /auth/callback/, /_astro/* - still
+                # falls to the default behaviour and the S3 origin, which is also what keeps
+                # the adapter's readiness route off the public domain: it lives at the app's
+                # own root, this pattern does not claim the root, so "/" here is the site's
+                # index.html and the readiness poll stays on 127.0.0.1 where it belongs.
+                #
+                # The directory-index CloudFront Function is on the DEFAULT behaviour only.
+                # Attached here it would rewrite /api/stream to /api/stream/index.html and
+                # every route would 404.
+                _STREAM_EDGE_PATH_PATTERN: cloudfront.BehaviorOptions(
+                    origin=origins.FunctionUrlOrigin.with_origin_access_control(
+                        stream_probe_url, origin_access_control=stream_edge_oac
+                    ),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    # CACHING DISABLED, and not as a default anyone can quietly change.
+                    # Every route under this prefix is a stream: a cached turn is one
+                    # student's answer served to another, and a cached probe answers the
+                    # question this endpoint exists to ask with a copy of last run's
+                    # timings.
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    # ALL_VIEWER **EXCEPT HOST HEADER**, and the exception is the whole
+                    # reason this line is not ALL_VIEWER. OAC signs each origin request with
+                    # SigV4 over the ORIGIN's host - the lambda-url domain - so forwarding
+                    # the viewer's Host, which is this distribution's domain, makes every
+                    # signature fail to validate at Lambda. The rest is needed rather than
+                    # tolerated: content-type and the x-amz-content-sha256 body hash on
+                    # POST /api/chat (Lambda does not accept an unsigned payload, so a
+                    # client sending a body has to compute it), and the query string
+                    # /api/model reads its question out of.
+                    origin_request_policy=(
+                        cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER
+                    ),
+                    # POST is here for /api/chat, and ALLOW_ALL is the only AllowedMethods
+                    # value that carries it - CloudFront has no POST-without-DELETE option.
+                    # The app is the thing that decides a method is not a route: DELETE on
+                    # any of these paths is a FastAPI 405.
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    # COMPRESSION OFF, against a CDK default of ON, because compressing is
+                    # holding bytes in order to compress them. CloudFront in practice does
+                    # not compress a chunked response with no Content-Length, so this is
+                    # probably not load-bearing - but "probably" is the wrong word to have
+                    # anywhere near an endpoint whose only job is to measure whether the
+                    # edge buffers. Off, so the answer is about the edge.
+                    compress=False,
+                ),
+            },
+            # THIS MAPPING IS DISTRIBUTION-WIDE AND CANNOT BE SCOPED TO A BEHAVIOUR, which
+            # is the whole reason the list below is the shape it is. CustomErrorResponses
+            # lives on DistributionConfig; AWS::CloudFront::Distribution CacheBehavior has
+            # no error-response property of any kind, so every entry here applies to
+            # /api/* exactly as much as it applies to the site. The only lever left is
+            # WHICH STATUS each entry claims, and the two origins have to divide them.
+            #
+            # 403 IS THE SITE'S, AND IT IS THE S3 REST ORIGIN'S OWN "no such page" SIGNAL.
+            # A missing key comes back as 403 rather than 404 because the bucket policy
+            # grants GetObject only - without s3:ListBucket, S3 will not distinguish
+            # "absent" from "forbidden" - so 403 is the only status a page miss can
+            # arrive on. That coupling is load-bearing now rather than incidental, and
+            # test_the_site_origin_signals_a_missing_page_with_403 pins it: grant
+            # ListBucket and misses become 404, which is the API's status, and the two
+            # halves of this list would silently swap meanings.
+            #
+            # 404 IS THE API'S, AND IT PASSES THROUGH UNTOUCHED. A deployment with nothing
+            # behind /api answers 404 - from FastAPI on a prefix that does not match
+            # (EDGE_PATH_PREFIX), or from a route that is not there - and that 404 is the
+            # single clearest signal that the streaming front door is dead. Mapped to
+            # /404.html it arrived as the site's error page instead: a curl got HTML, the
+            # browser got a non-2xx and fell back to buffered POST /chat, and a broken
+            # deploy read as a working product from both instruments at once. The entry
+            # stays, with neither response_http_status nor response_page_path, because an
+            # explicit pass-through says "404 is deliberately not the site's page" in the
+            # deployed config, where an absent entry would only look like an oversight.
+            # ttl=0 is the other half: CloudFront caches a 404 for ten seconds by default,
+            # and a cached front-door failure outlives the fix that repaired it.
+            #
+            # BOTH response_http_status AND response_page_path, or NEITHER. CloudFront
             # rejects a status without a page outright - "Both or neither of ResponseCode
             # and ResponsePagePath must be specified" - and it rejects it at CREATE time,
             # not at synth, so this cost a failed deploy and a rollback before it was
             # caught. The L1 does not validate it and neither did the first version of
             # test_a_missing_page_is_a_404_and_not_a_blanket_spa_fallback, which asserted
-            # ResponsePagePath was ABSENT and so pinned the broken shape in place.
+            # ResponsePagePath was ABSENT and so pinned the broken shape in place. The
+            # pass-through entry below is the "neither" case and is legal for that reason;
+            # CDK still requires one of the three to be set, which ttl is.
             #
             # /404.html is a real page Astro builds (frontend/src/pages/404.astro), served
-            # WITH a 404 status. That is still not the blanket fallback: the distinction
-            # that matters is the status code, not whether a page is named. Serving
-            # index.html with a 200 would tell the browser the typo'd URL is a real page.
+            # WITH a 404 status - deliberately NOT index.html with a 200, which is the
+            # blanket-fallback anti-pattern: it would make every typo look like a working
+            # page that failed to render. The distinction that matters is the status code,
+            # not whether a page is named.
+            #
+            # WHAT THIS STILL CANNOT REACH: a 403 raised on /api/* - the edge failing to
+            # invoke the origin, or an origin request whose payload hash is missing - is
+            # covered by the site's entry and arrives as /404.html. There is no way to
+            # separate it inside one distribution, and a second distribution is a second
+            # domain, which is CORS and a preflight in front of the one request whose
+            # entire value is time to first byte. The instrument for that failure is the
+            # direct Function URL (StreamProbeFunctionUrl), which is the control the
+            # measurement already keeps for exactly this kind of question.
             error_responses=[
                 cloudfront.ErrorResponse(
                     http_status=403,
@@ -2830,14 +2642,40 @@ function handler(event) {
                 ),
                 cloudfront.ErrorResponse(
                     http_status=404,
-                    response_http_status=404,
-                    response_page_path="/404.html",
-                    ttl=Duration.minutes(5),
+                    ttl=Duration.seconds(0),
                 ),
             ],
         )
 
         site_url = f"https://{site_distribution.distribution_domain_name}"
+
+        # THE HALF OF THE GRANT CDK DOES NOT WRITE, and the reason this is a hand-built L1
+        # next to an L2 that looks like it already did the job.
+        # FunctionUrlOrigin.withOriginAccessControl emits exactly ONE
+        # AWS::Lambda::Permission, for `lambda:InvokeFunctionUrl`. Invoking a Function URL
+        # has needed BOTH that and `lambda:InvokeFunction` since October 2025, and the
+        # CloudFront developer guide's own OAC setup is two `aws lambda add-permission`
+        # calls for precisely that reason. With one of them the edge answers 403
+        # AccessDenied - which reads like a signing mistake, is not one, and is invisible
+        # until a deploy. (aws/aws-cdk#35872. Lambda's grace period for the single-action
+        # form runs to 2026-11-01, so a stack that synthesized clean in the meantime would
+        # break on a date rather than on a change.)
+        _lambda.CfnPermission(
+            self,
+            "StreamEdgeInvokeFunctionPermission",
+            action="lambda:InvokeFunction",
+            function_name=stream_probe_lambda.function_arn,
+            principal="cloudfront.amazonaws.com",
+            # SCOPED TO THIS DISTRIBUTION, never to the service principal at large: the
+            # principal is a service every AWS customer has, so without the condition the
+            # grant reads "any CloudFront distribution in any account may invoke this
+            # function". Assembled from stack tokens - the same ARN shape CDK builds for the
+            # other action - so a fresh install in another account scopes to its own.
+            source_arn=(
+                f"arn:{self.partition}:cloudfront::{self.account}"
+                f":distribution/{site_distribution.distribution_id}"
+            ),
+        )
 
         # TWO DEPLOYMENTS INTO ONE BUCKET, and the split is load-bearing rather than tidy.
         #
@@ -2927,19 +2765,11 @@ function handler(event) {
                             if (cost_model := resolve_cost_model(config)) is not None
                             else {}
                         ),
-                        # The WebSocket endpoint for progressive replies, or the key
-                        # omitted entirely when streaming is off. THE OMISSION IS THE GATE
-                        # again, and here it does something stronger than hide a control:
-                        # the frontend picks its TRANSPORT from whether this key is present
-                        # (frontend/src/lib/chatStream.ts), so a build that never receives
-                        # it cannot open a socket at all - there is no URL for it to guess.
-                        # Turning streaming off is a config edit, and what it turns off is
-                        # the whole path rather than a branch inside it.
-                        **(
-                            {"streamingApiUrl": streaming_api_url}
-                            if streaming_api_url is not None
-                            else {}
-                        ),
+                        # THERE IS NO STREAMING ENDPOINT KEY HERE, and its absence is not
+                        # an omission. The stream is `/api/*` on this same distribution, so
+                        # the browser sends a relative path and has nothing to be told
+                        # (frontend/src/lib/chatStream.ts). The key that used to be here
+                        # named the WebSocket API, which is gone.
                         # Where an escalation draft is addressed, or the key omitted
                         # entirely when no recipient is configured. THE OMISSION IS THE
                         # GATE a third time, and what it gates here is whether the
@@ -3009,4 +2839,18 @@ function handler(event) {
             "SiteUrl",
             value=site_url,
             description="CloudFront URL for the web app.",
+        )
+
+        CfnOutput(
+            self,
+            "StreamEdgeUrl",
+            value=f"{site_url}{_STREAM_EDGE_PATH_PREFIX}",
+            description=(
+                "The streaming app through the edge: same routes as StreamProbeFunctionUrl "
+                "hung off this prefix (/stream, /model, /chat). NO SIGNATURE IS NEEDED - "
+                "origin access control signs the origin request, so this is the same "
+                "endpoint reachable two ways, which is what makes the pair a measurement. "
+                "A client sending a body must add x-amz-content-sha256 for it: Lambda does "
+                "not accept an unsigned payload from an OAC-signed origin request."
+            ),
         )

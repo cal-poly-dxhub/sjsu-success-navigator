@@ -16,7 +16,7 @@
 # PYTHONPATH IS NOT OPTIONAL. This is a fresh `python` process, not the managed runtime's
 # own bootstrap, so nothing has put the layer or the bundle on sys.path for it:
 #   /opt/python           - where the deps layer installs (fastapi, uvicorn, pydantic)
-#   $LAMBDA_TASK_ROOT     - where stream_probe.py sits. `python -m` prepends the working
+#   $LAMBDA_TASK_ROOT     - where streaming_app.py sits. `python -m` prepends the working
 #                           directory too, but naming it is a line rather than a
 #                           dependency on Lambda's choice of cwd.
 #   $LAMBDA_RUNTIME_DIR   - /var/runtime, where the runtime's own boto3 lives.
@@ -30,4 +30,4 @@
 # disagree about which port the app is on.
 PATH=$PATH:$LAMBDA_TASK_ROOT/bin \
     PYTHONPATH=$PYTHONPATH:/opt/python:$LAMBDA_TASK_ROOT:$LAMBDA_RUNTIME_DIR \
-    exec python -m uvicorn --port=$PORT stream_probe:app
+    exec python -m uvicorn --port=$PORT streaming_app:app

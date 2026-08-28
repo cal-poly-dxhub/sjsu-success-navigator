@@ -1,4 +1,4 @@
-# Deps for the Lambda Web Adapter response-streaming probe (app/stream_probe.py) ONLY.
+# Deps for the Lambda Web Adapter streaming chat app (app/streaming_app.py) ONLY.
 #
 # ITS OWN FILE, not a line in requirements.txt, for the reason requirements-authorizer.txt
 # gives: POST /chat and the WebSocket worker are under a "keeps working unchanged"
@@ -17,6 +17,18 @@
 # pydantic-core lands as the cp313 manylinux2014_x86_64 build).
 fastapi>=0.115,<1
 uvicorn>=0.32,<1
+
+# PyJWT WITH THE `crypto` EXTRA, because this function now decides who its caller is.
+# There is no authorizer in front of a Function URL, so app/token_auth.py verifies the
+# Cognito access token in process (RS256 against the pool's JWKS), and without the extra
+# PyJWT cannot verify RS256 at all - the failure would be at runtime, on a student's first
+# request. `cryptography` is a compiled wheel, which is the same manylinux treatment
+# pydantic-core already needs from the bundler below.
+#
+# THE SAME PIN THE $connect AUTHORIZER CARRIES (requirements-authorizer.txt). Two doors
+# into one pool verifying with two different versions of one library is a difference nobody
+# would choose on purpose; a third copy of the reasoning is in that file.
+pyjwt[crypto]>=2.8,<3
 
 # THE APP'S OWN RUNTIME DEPS, by reference rather than by a second copy of the pin. This
 # function serves the real turn now (app/turn.py and everything under it), so it needs

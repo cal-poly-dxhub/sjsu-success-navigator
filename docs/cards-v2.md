@@ -400,7 +400,7 @@ nowhere left to hide text.
 - **The silence between the prose and the cards says what it is.** The preview
   stops at the first tag, so the reply appears to end and nothing tells the
   student whether anything else is coming. The server sends a `status` frame the
-  instant `<card` appears in the model's own output (`app/streaming.py`,
+  instant `<card` appears in the model's own output (`app/preview.py`,
   `CARDS_STAGE`), and the pending exchange answers it with the shuffling deck and
   a line naming what it is. NEVER A TIMER: a reply with no cards emits no frame
   and shows nothing at all, which is the case that matters - about one reply in

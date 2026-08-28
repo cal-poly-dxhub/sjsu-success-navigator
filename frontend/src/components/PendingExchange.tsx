@@ -11,7 +11,7 @@ import './ConversationTurnView.css';
 type PendingExchangeProps = {
 	prompt: string;
 	/**
-	 * The reply so far, when it is arriving over a socket. Prose only, and a PREVIEW: the
+	 * The reply so far, while it is still arriving. Prose only, and a PREVIEW: the
 	 * authoritative payload replaces this whole exchange when the turn finishes, cards and
 	 * all. Empty on the buffered path, where there is nothing to show until the reply lands.
 	 */

@@ -304,20 +304,17 @@ export function authorizationHeader(): Record<string, string> {
 }
 
 /**
- * The access token itself, checked for expiry exactly as the header is.
+ * The access token itself, checked for expiry exactly as the header above is.
  *
- * FOR THE WEBSOCKET, WHICH CANNOT SEND A HEADER. A browser gives no way to set
- * `Authorization` on a WebSocket handshake, so the token goes in the query string, where
- * API Gateway's $connect authorizer reads it as its identity source. The nicer-looking
- * option - carrying it in `Sec-WebSocket-Protocol` - is not available: API Gateway accepts
- * it as an identity source but never echoes the subprotocol back in its 101, and RFC 6455
- * says a client whose requested subprotocol is not echoed must fail the connection.
- * Measured against a deployed API, not assumed: Chrome fired `error` and never opened.
+ * FOR THE STREAMING ROUTE, WHICH CANNOT USE `Authorization`. That header carries origin
+ * access control's SigV4 signature by the time the request reaches Lambda, so a token put
+ * there is a token CloudFront overwrites on its way past. The streaming client sends it on
+ * a header of the app's own instead (lib/chatStream.ts), which the `/api/*` behaviour
+ * forwards untouched and app/token_auth.py verifies in process.
  *
- * The expiry check matters MORE here than on a fetch, not less. A rejected handshake gives
- * JavaScript nothing to read - no status, no body, just an error event and a 1006 close -
- * so a doomed connection is indistinguishable from a blocked port. Not opening it is the
- * only way to tell the student something true.
+ * The expiry check is the same one and for the same reason: a request we already know will
+ * be refused is never sent, so the student is told something true rather than watching a
+ * turn fail for a reason the browser cannot read back.
  */
 export function currentAccessToken(): string {
 	if (!session) {

@@ -4,10 +4,10 @@ WHAT THIS IS. Every step a student's question goes through between "the caller h
 identified" and "there is a ChatResponse to send": the daily cap, the input guardrail, the
 student's message written, the previous messages read back, the agent loop, the reply
 written, and - on a conversation that did not exist a moment ago - the title. It was
-app/handler.py's, in the same order, and it is here now because it is about to have a
-SECOND caller (the FastAPI app under the Lambda Web Adapter) and this repo already knows
-what a second copy of this sequence costs: app/streaming.py and app/stream_worker.py hold
-one between them, and every ordering argument below had to be re-made in its docstring.
+app/handler.py's, in the same order, and it is here now because it has a SECOND caller
+(the FastAPI app under the Lambda Web Adapter) and this repo already knew what a second
+copy of this sequence costs: the WebSocket transport held one across two functions, and
+every ordering argument below had to be re-made in its docstring until that went.
 
 THE ORDER IS THE WHOLE FILE, and each position was argued for:
 
@@ -18,7 +18,8 @@ THE ORDER IS THE WHOLE FILE, and each position was argued for:
      the screen that just caught it.
   3. write the student's message - BEFORE the model call, so a disclosure that then times
      out is still on record. That ordering is the whole reason this is not one write at the
-     end.
+     end. A STREAMED turn announces the conversation id here, the instant the message is on
+     record under it and before the loop can emit a byte.
   4. read the previous N back  - one descending, limited, strongly consistent query,
      excluding the message just written (the orchestrator appends the current turn in
      memory, so reading it back would say it twice).
@@ -70,7 +71,7 @@ class TurnRefused(Exception):
     AN EXCEPTION RATHER THAN A RETURN VALUE, because a refusal is the one exit from
     `run_turn` that is not a ChatResponse: it carries a limit, a reset instant and a
     retry-after, and each transport renders those its own way - POST /chat as a 429 with a
-    Retry-After header, the socket as an `error` frame. Folding it into the response model
+    Retry-After header, the stream as an `error` frame. Folding it into the response model
     would put a shape on the wire that no client asks for; returning a two-field result
     object would make every caller unpack a tuple whose second half is almost always None.
 
@@ -244,6 +245,11 @@ def run_turn(
     an injected callable, and the handler's suite injects stand-ins with the signature
     run_chat had before streaming existed; handing them a keyword they never accepted would
     fail every one of those tests for a feature POST /chat does not use.
+
+    A sink is also the only thing STEP 3B needs. A client that is watching is told the
+    conversation id the moment the student's message is on record under it; a caller with no
+    sink is told the same thing by the response it is already waiting for, which is why that
+    step is the one position in the order a buffered turn passes straight through.
     """
     # STEP 1 - the per-user daily cap, before the guardrail screen and before the loop.
     #
@@ -298,6 +304,21 @@ def run_turn(
         # orchestrator's consecutive-role merge folds it into the copy it appends, so the
         # worst case is one sentence said twice rather than a rejected Converse call.
         logger.exception("Could not record the student's message; answering anyway")
+
+    # STEP 3b - the id, told to a client that is watching. AHEAD OF EVERY BYTE OF THE
+    # REPLY, because the server mints it and an absent one means a new conversation, so a
+    # browser on a fresh conversation has no other way to learn it in time to place the
+    # sidebar row or to address its next turn. It is sent on a continuing conversation too,
+    # echoing the id that arrived, so the client never has to know which case it is in.
+    #
+    # ONE METHOD ON THE SINK (app/preview.py), which is why this is one line rather than a
+    # wire format spelled out here. The frame's own argument lives there, so a second
+    # transport arriving later inherits it rather than re-deciding it.
+    #
+    # A BUFFERED TURN HAS NO SINK and sends nothing: POST /chat carries the id in the
+    # response, which for a caller that waits for the whole reply is the same instant.
+    if stream is not None:
+        stream.accepted(conversation_id)
 
     # STEP 4 - the context read.
     try:

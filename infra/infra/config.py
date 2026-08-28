@@ -1073,17 +1073,23 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The `streaming` block: the WebSocket API that streams a reply as it is written.
+    """The `streaming` block: the WebSocket API that streamed a reply as it was written.
 
-    Returns None when the block is absent or `enabled` is false, and the stack then
-    synthesizes NO WebSocket API, no connect authorizer, no streaming functions and no
-    `streamingApiUrl` in config.json - so the frontend never opens a socket and every
-    student stays on POST /chat. Same gate as resolve_cost_model, for the same reason: off
-    should be one state with one spelling, and the absence of the URL in config.json is
-    what makes the browser's choice of transport a config decision rather than a code one.
+    NOTHING READS THIS ANY MORE, and that is stated here rather than left to be discovered.
+    The WebSocket transport is gone - the API, its three functions, its `$connect`
+    authorizer and its connection records - and the streaming app that replaced it pushes
+    every delta (there is no per-frame charge on a response-streamed HTTP body) and attaches
+    no output guardrail. So `enabled`, the two batching numbers and `output_guardrail` all
+    configure a thing that is not built. `validate_config` still calls this, so a malformed
+    block is still a synth failure rather than a silent one, and the shapes below are still
+    the shapes; what is missing is a consumer.
 
-    OFF IS NOT AN ERROR, and off is the shipped default: this lands dark so it can be
-    turned on deliberately rather than by merging.
+    IT IS LEFT HERE ON PURPOSE. Removing it is a config-SCHEMA change with its own test
+    surface and its own argument about what happens to a deployment whose config.yaml still
+    carries the key - a different commit from removing a transport.
+
+    Returns None when the block is absent or `enabled` is false. Same gate shape as
+    resolve_cost_model: off should be one state with one spelling.
 
     THE BATCHING NUMBERS ARE HERE BECAUSE THEY ARE A COST CONTROL, not a feel knob. Every
     push down a WebSocket is a billable API Gateway message, so a naive one-message-per-

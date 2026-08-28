@@ -1,19 +1,19 @@
-"""The response-streaming probe: a FastAPI app run by the Lambda Web Adapter.
+"""The streaming chat app: a FastAPI app run by the Lambda Web Adapter.
 
-WHY IT EXISTS. The WebSocket section of infra_stack.py says, correctly, that "Lambda
-response streaming is Node.js/custom-runtime only and the agent loop is Python" - so the
-stream was moved out of band, onto a socket and three functions. That sentence is true of
-the PYTHON MANAGED RUNTIME and false of Lambda: the AWS Lambda Web Adapter runs an
+WHY IT EXISTS. This repo once said, and the stack once repeated, that "Lambda response
+streaming is Node.js/custom-runtime only and the agent loop is Python" - which is why the
+stream was first moved out of band, onto a WebSocket and three functions. That sentence is
+true of the PYTHON MANAGED RUNTIME and false of Lambda: the AWS Lambda Web Adapter runs an
 ordinary ASGI app as an execution wrapper and streams its response body out through a
 Function URL, which is the supported way to get in-band streaming out of Python
-(aws/aws-lambda-web-adapter, examples/fastapi-response-streaming-zip). This module is that
-example morphed onto this repo's zip-from-source pipeline, and it exists so the commit
-that moves real logic onto the mechanism is a move rather than a bring-up.
+(aws/aws-lambda-web-adapter, examples/fastapi-response-streaming-zip and
+fastapi-backend-only-response-streaming). This module is those examples morphed onto this
+repo's zip-from-source pipeline. The socket is gone; this is the only streaming transport.
 
 TWO ROUTES THAT STREAM, AND KEEPING BOTH IS THE POINT.
 
-    GET /stream   ten timed chunks, no AWS call at all - pure transport
-    GET /model    one ConverseStream turn against the configured generation model
+    GET /api/stream   ten timed chunks, no AWS call at all - pure transport
+    GET /api/model    one ConverseStream turn against the configured generation model
 
 They are a DIFFERENTIAL. When a stream arrives in one lump, the question is always
 "transport or Bedrock?", and the only way to answer it without a deploy-and-guess cycle is
@@ -29,8 +29,9 @@ incrementally through this transport.
 
 AND THE ROUTE THAT IS NOT A PROBE.
 
-    POST /chat    the real turn - guardrail, retrieval, tools, cards, safety, storage,
-                  titling - streamed as it is written
+    POST /api/chat    the real turn - guardrail, retrieval, tools, cards, safety, storage,
+                      titling - streamed as it is written, the conversation id announced
+                      first
 
 It is the SAME turn POST /chat runs, because it is literally the same function: app/turn.py
 holds the sequence and this route hands it a sink. There is no second loop here, no second
@@ -39,14 +40,33 @@ identical ChatResponse the API Gateway handler would have returned. That propert
 structural rather than tested-for, and the acceptance check is still to send one question
 down both paths and diff the payloads.
 
-THE MODULE NAME IS NOW A LIE and is left alone deliberately. run.sh names `stream_probe:app`
-and the stack's bundle names the file; renaming is a rename commit, and deleting or renaming
-anything is a later step and the captain's call.
+WHO THE CALLER IS, AND WHY IT IS DECIDED IN HERE. The other transport in this repo is
+handed an identity by something in front of it - API Gateway's native JWT authorizer for
+POST /chat. A Lambda Function URL takes none, and behind IAM auth with origin access control the request context carries the
+EDGE's principal rather than a student's claims. So POST /api/chat verifies the token
+itself: app/token_auth.py checks a Cognito ACCESS token's signature against the pool's
+JWKS, its issuer, its expiry, its `token_use` and its `client_id` against the two app
+clients the stack configures, and the `sub` that comes out is the only identity on this
+path. The token rides its own request header because origin access control's SigV4
+signature owns `Authorization`. Anything that does not present a verifiable token is the
+same 401 this route has always answered.
 
 TWO ROUTES THAT DO NOT STREAM. `/` is the adapter's readiness target, cheap on purpose:
 the adapter polls AWS_LWA_READINESS_CHECK_PATH (default "/") before forwarding the first
 request, and the upstream example puts its stream there, paying for the whole stream at
 every cold start.
+
+WHY EVERY REAL ROUTE SITS UNDER A PREFIX AND THE READINESS ROUTE DOES NOT. This app is
+reached two ways: directly on its Function URL, and through the CloudFront distribution
+that already serves the site, on a path-pattern behaviour (infra_stack.py section 6).
+CloudFront matches a behaviour on the viewer's path and forwards that path to the origin
+UNCHANGED - there is no prefix-stripping short of a rewrite function - so the pattern at
+the edge and the paths in here have to be the same string, and EDGE_PATH_PREFIX below is
+this side of it. `/` stays outside the router because the two things that reach it are the
+adapter's own readiness poll on 127.0.0.1 and a direct curl at the Function URL's root;
+moving it under the prefix would mean a readiness check answering 404 at every cold start
+and a function that never starts. It is also the reason the site keeps `/`: the edge
+behaviour claims one prefix and nothing else, so the Astro app still owns the root.
 
 NOTHING HERE PROVES THE FUNCTION URL. Uvicorn plus curl proves the app emits chunks
 incrementally, which is the half that can be checked without an account. Whether Lambda
@@ -63,13 +83,14 @@ import time
 
 import boto3
 from botocore.config import Config
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from history import ConversationStore
 from models import ChatRequest
 from preview import PreviewSink
 from settings import SettingsError, load_settings
+from token_auth import Identity, Unauthorized, verifier, verifier_error
 from turn import TurnRefused, run_turn
 
 logger = logging.getLogger()
@@ -88,14 +109,31 @@ CHUNK_INTERVAL_SECONDS = 0.5
 PROBE_MAX_TOKENS = 512
 
 # THE PREVIEW IS NOT BATCHED HERE, and that is a measured difference from the socket rather
-# than an oversight. app/streaming.py batches because every push down a WebSocket is a
-# billable API Gateway message; a response-streamed HTTP body has no per-frame charge, so
-# the same thresholds would buy nothing and cost up to STREAM_DELTA_MAX_DELAY_MS of latency
-# on the last words of a sentence. `min_chars=1` pushes every delta the model produces.
+# than an oversight. The socket batched because every push down a WebSocket was a billable
+# API Gateway message; a response-streamed HTTP body has no per-frame charge, so the same
+# thresholds would buy nothing and cost up to a batching delay of latency on the last words
+# of a sentence. `min_chars=1` pushes every delta the model produces.
 STREAM_MIN_CHARS = 1
 STREAM_MAX_DELAY_MS = 0
 
 app = FastAPI()
+
+# THE PREFIX THE EDGE MATCHES ON, and the reason it is a constant rather than typed into
+# three decorators: it has to equal the CloudFront behaviour's path pattern
+# (infra_stack.py's _STREAM_EDGE_PATH_PREFIX) letter for letter, and the infra suite's
+# test_the_edge_path_pattern_and_the_apps_own_routes_are_one_string reads BOTH off disk
+# and compares them. A mismatch is not a synth error or a test failure anywhere else - it
+# is a deployed 404 from FastAPI, served through a distribution working as configured.
+#
+# "/api" rather than something this repo made up: it is the prefix the upstream example
+# this app is morphed from uses (aws/aws-lambda-web-adapter,
+# examples/fastapi-backend-only-response-streaming, GET /api/stream), and the site it now
+# shares a domain with has no page under it.
+EDGE_PATH_PREFIX = "/api"
+
+# Every route the outside world calls hangs off this; `/` does not (see the module
+# docstring). include_router is at the BOTTOM of the file, after the last route is defined.
+router = APIRouter(prefix=EDGE_PATH_PREFIX)
 
 _SETTINGS = None
 _SETTINGS_ERROR = None
@@ -168,7 +206,7 @@ async def _timed_chunks():
         await asyncio.sleep(CHUNK_INTERVAL_SECONDS)
 
 
-@app.get("/stream")
+@router.get("/stream")
 async def stream() -> StreamingResponse:
     """The transport control.
 
@@ -239,7 +277,7 @@ def _model_deltas(question: str):
     yield f"\n[deltas={deltas} elapsed={elapsed:.3f}s]\n"
 
 
-@app.get("/model")
+@router.get("/model")
 async def model(q: str = "Say hello and name one thing SJSU students ask about.") -> StreamingResponse:
     """One real Bedrock turn, streamed. The default question exists so the route can be
     curled with no arguments at all - the first thing anyone does to a probe."""
@@ -265,44 +303,49 @@ def store():
     return _STORE
 
 
-def identity_from(request: Request):
-    """The caller's `sub` and `client_id`, out of the Lambda request context. Or (None, None).
+def identity_from(request: Request) -> Identity | None:
+    """The caller, out of the Cognito access token on their own request header. Or None.
 
-    THE HEADER IS THE ADAPTER'S, NOT THE CLIENT'S, and that is the whole reason this is
-    allowed to be an identity at all. The Lambda Web Adapter serialises the invocation's
-    request context into `x-amzn-request-context` with an `insert`, which REPLACES whatever
-    the caller sent (aws-lambda-web-adapter src/lib.rs, and its changelog entry "Override
-    user-set x-amzn-{lambda,request}-context headers to prevent spoofing"). So a browser
-    cannot put a `sub` in here any more than it can put one in an API Gateway event.
+    THIS ENDPOINT HAS NO AUTHORIZER IN FRONT OF IT, and that is why the verification is
+    here rather than a claim read off an event. `POST /chat` is gated by API Gateway's
+    native JWT authorizer; a Lambda Function URL takes none. Behind IAM auth and origin access control the request
+    context carries `authorizer.iam` - the EDGE's principal, a CloudFront service principal
+    shared by every AWS customer - and no `jwt` block at all, so there has never been
+    anything on this transport that could identify a student. app/token_auth.py is that
+    thing: signature against the pool's JWKS, issuer, expiry, `token_use` and `client_id`
+    against the two app clients the stack configures.
 
-    IT READS THE SAME CLAIMS APP/HANDLER.PY READS, from the same place: an HTTP API payload
-    2.0 request context puts them at `authorizer.jwt.claims`, and that is what arrives here
-    when this function sits behind the JWT authorizer POST /chat already uses.
+    WHAT THIS USED TO READ, and why it does not any more. It read `sub` out of
+    `x-amzn-request-context`, the header the Lambda Web Adapter fills in with the
+    invocation's request context. That was a sound thing to trust - the adapter INSERTS it,
+    replacing whatever the caller sent - and it was also always empty here, for the reason
+    above, so the route answered 401 to everybody. Keeping it beside the verifier would
+    leave two ways to become a `sub` on one transport, one of which is only reachable
+    behind a front door nobody has built; a second identity source is exactly the thing
+    that is right until the day it is not.
 
-    IT FAILS CLOSED TODAY, ON PURPOSE. Behind the IAM-authenticated Function URL this stack
-    creates, the request context carries `authorizer.iam` - the signing principal - and no
-    `jwt` block at all, so this returns None and the route answers 401 to everybody. That is
-    the honest state of things: WHICH front door this endpoint gets, and what authenticates
-    a browser to it, is undecided and out of scope. Inventing a header to trust in the
-    meantime would be deciding it by accident, in the direction nobody would choose.
+    NOTHING ELSE IS AN IDENTITY. Not a body field, not a query parameter, not a header
+    asserting a user id - there is no such header and no flag that makes one work. A
+    caller who does not present a verifiable token is refused, which is the same answer
+    `POST /chat` gives for the same reason: every DynamoDB partition key is built from this
+    claim, so a request without one has nowhere to put the turn and nobody to attribute it
+    to.
     """
-    raw = request.headers.get("x-amzn-request-context")
-    if not raw:
-        return None, None
+    resolved = verifier()
+    if resolved is None:
+        # A half-configured deploy, not a caller's mistake - but the answer is the same 401,
+        # because a function that does not know which pool to trust must not decide who
+        # anybody is. Logged as ERROR because it names a variable somebody has to fix.
+        logger.error("The streaming chat route cannot verify tokens: %s", verifier_error())
+        return None
+
     try:
-        context = json.loads(raw)
-    except ValueError:
-        logger.warning("x-amzn-request-context was not JSON; refusing the request")
-        return None, None
-    if not isinstance(context, dict):
-        return None, None
-    claims = (((context.get("authorizer") or {}).get("jwt") or {}).get("claims")) or {}
-
-    def claim(name):
-        value = claims.get(name)
-        return value.strip() if isinstance(value, str) and value.strip() else None
-
-    return claim("sub"), claim("client_id")
+        return resolved.identity_from_headers(request.headers)
+    except Unauthorized as refused:
+        # The exception's OWN message and nothing else: not the chain, not the header, not
+        # any part of the token. See app/token_auth.py on what may reach a log line.
+        logger.warning("Refusing a streamed chat request: %s", refused)
+        return None
 
 
 class _ResponseSink(PreviewSink):
@@ -316,9 +359,9 @@ class _ResponseSink(PreviewSink):
 
     `_post` ALWAYS SUCCEEDS. There is no 410 to detect: a client that hangs up is noticed by
     the ASGI server when the generator's next chunk cannot be written, and the turn behind
-    it finishes and is persisted regardless - the same posture app/streaming.py takes for
-    the same reason (the model call is already paid for, and a user message with no
-    assistant reply is a dangling turn the next one would have to merge).
+    it finishes and is persisted regardless, for the reason the socket took the same
+    posture (the model call is already paid for, and a user message with no assistant reply
+    is a dangling turn the next one would have to merge).
     """
 
     def __init__(self, frames: "queue.Queue"):
@@ -338,16 +381,25 @@ _DONE = object()
 
 
 def _turn_frames(chat_request: ChatRequest, *, user_id: str, client_id: str | None):
-    """NDJSON frames for one streamed turn: status, delta, then exactly one final or error.
+    """NDJSON frames for one streamed turn: accepted, status, delta, then one final or error.
 
-    NDJSON RATHER THAN SSE, and it is not a front-door decision - it is the smallest framing
-    that carries the socket's existing frame types unchanged (`status`, `delta`, `final`,
-    `error`), so whatever ends up in front of this can translate one line into one message.
-    SSE's `event:`/`data:` framing would be a second spelling of the same thing, chosen for
-    a browser API nobody has committed to.
+    NDJSON RATHER THAN SSE, and the browser is the reason it stays that way. SSE's
+    `event:`/`data:` framing exists to be read by `EventSource`, and `EventSource` can only
+    issue a GET with no body - a turn carries one, so that API was never available here.
+    What is left is a `fetch` and a stream reader, which reads newline-delimited JSON with
+    no framing library at all (frontend/src/lib/chatStream.ts). The five frame types
+    (`accepted`, `status`, `delta`, `final`, `error`) are the socket's, kept because they
+    were right, not because anything still speaks them.
+
+    `accepted` COMES FIRST AND CARRIES THE CONVERSATION ID, and on this transport it is
+    app/turn.py that sends it, the instant the student's message is on record under that id
+    and before the loop can produce a byte. Nothing in this file arranges that or could:
+    the id is minted inside the turn, and a frame assembled out here would either precede
+    the write it claims or trail the first delta. What the queue below guarantees is only
+    that the order the sink posted in is the order the body is written in.
 
     THE DEADLINE IS THE CONFIGURED ONE, unchanged: chat.converse_deadline_seconds, 22
-    seconds, the same number app/handler.py and app/stream_worker.py both use. It is not
+    seconds, the same number app/handler.py uses. It is not
     narrowed against Lambda's remaining time the way the handler narrows it, because there
     is no context object here - the adapter does forward one in `x-amzn-lambda-context`, and
     reading it is a real improvement that belongs with the function timeout it would be
@@ -419,7 +471,7 @@ def _turn_frames(chat_request: ChatRequest, *, user_id: str, client_id: str | No
         yield json.dumps(frame) + "\n"
 
 
-@app.post("/chat")
+@router.post("/chat")
 async def chat(request: Request):
     """One turn, streamed. The same order, the same loop and the same payload as POST /chat.
 
@@ -427,7 +479,7 @@ async def chat(request: Request):
     refused before the first byte of the body leaves, because after that Starlette has
     already sent 200 and the only way to say no is a frame. What is left inside the stream
     is the daily cap, which lives in app/turn.py where its position in the order is argued
-    for - the socket refuses it the same way, as an `error` frame.
+    for, and where it goes out as an `error` frame.
     """
     resolved = settings()
     if resolved is None:
@@ -463,15 +515,24 @@ async def chat(request: Request):
         logger.exception("Invalid streaming chat request body")
         return JSONResponse({"error": "Invalid request body."}, status_code=400)
 
-    # Identity, and failing closed. Every partition key is built from this claim, so a
-    # request without one has nowhere to put the turn and nobody to attribute it to - the
-    # same 401 POST /chat gives, for the same reason.
-    user_id, client_id = identity_from(request)
-    if user_id is None:
-        logger.error("A streamed chat request carried no JWT sub claim; refusing it")
+    # Identity, and failing closed. Every partition key is built from the `sub` claim, so a
+    # request without a verifiable token has nowhere to put the turn and nobody to
+    # attribute it to - the same 401 POST /chat gives, for the same reason. One status for
+    # every way a token can fail to verify, and no detail on the wire: identity_from has
+    # already logged which check said no.
+    identity = identity_from(request)
+    if identity is None:
         return JSONResponse({"error": "Unauthenticated."}, status_code=401)
 
     return StreamingResponse(
-        _turn_frames(chat_request, user_id=user_id, client_id=client_id),
+        _turn_frames(
+            chat_request, user_id=identity.sub, client_id=identity.client_id
+        ),
         media_type="application/x-ndjson",
     )
+
+
+# The routes above are declared on the router, so nothing is served until this line runs.
+# It is last because include_router copies the routes it finds AT CALL TIME - called any
+# earlier and the ones defined below it would be silently absent from the app.
+app.include_router(router)
