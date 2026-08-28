@@ -32,6 +32,14 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 		const previousOverflow = document.body.style.overflow;
 		document.body.style.overflow = 'hidden';
 
+		// Move focus into the dialog so the focus trap works from the first Tab press.
+		window.requestAnimationFrame(() => {
+			const root = panelRef.current;
+			const first = root?.querySelector<HTMLElement>(
+				'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+			);
+			first?.focus();
+		});
 		const handleKeyDown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') {
 				onClose();
