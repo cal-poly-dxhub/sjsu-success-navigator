@@ -1,7 +1,6 @@
 """One small model call that names a conversation, and the rules for distrusting it.
 
-It can never delay or fail a turn, and an unusable reply is rejected rather than
-repaired; see docs/chat-service.md, Conversation titling.
+It can never delay or fail a turn, and an unusable reply is rejected, never repaired.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from usage import TurnUsage
 
 logger = logging.getLogger(__name__)
 
-# Short on purpose, and dash-free; see docs/chat-service.md, Conversation titling.
 TITLE_SYSTEM_PROMPT = (
     "You name conversations for a university student services chat sidebar.\n\n"
     "Reply with the title and nothing else. No preamble, no quotation marks, no trailing "
@@ -35,7 +33,7 @@ TITLE_SYSTEM_PROMPT = (
 # Enough for a six-word title and nothing like enough for a paragraph.
 _MAX_TOKENS = 32
 
-# Openings that mean the model answered ABOUT the task instead of doing it.
+# Openings that mean the model answered about the task instead of doing it.
 _PREAMBLE_RE = re.compile(
     r"^(sure|here|okay|ok|certainly|absolutely|of course|title|got it|understood|i\b)",
     re.IGNORECASE,
@@ -50,7 +48,6 @@ _BEDROCK_CLIENT = None
 
 
 def _bedrock_client(settings: Settings):
-    """The titling client, built once per container: short read timeout, no retries."""
     global _BEDROCK_CLIENT
     if _BEDROCK_CLIENT is None:
         _BEDROCK_CLIENT = boto3.client(
@@ -66,7 +63,7 @@ def _bedrock_client(settings: Settings):
 
 
 def usable_title(raw: str | None, cap: int) -> str | None:
-    """The model's reply as a title, or None if it is not one. Never repaired, only rejected."""
+    """The model's reply as a title, or None. Rejected, never repaired."""
     title = _WHITESPACE_RE.sub(" ", normalise_dashes(raw or "")).strip()
 
     if not title:
@@ -103,7 +100,7 @@ def generate_title(
     deadline: float,
     usage: TurnUsage | None = None,
 ) -> str | None:
-    """A title for one exchange, or None. NEVER RAISES, and never delays the turn."""
+    """A title for one exchange, or None. Never raises, never delays the turn."""
     if time.monotonic() >= deadline:
         logger.info("Skipping conversation titling: no time left in this invocation.")
         return None
@@ -125,7 +122,7 @@ def generate_title(
             inferenceConfig={"maxTokens": _MAX_TOKENS, "temperature": 0},
         )
     except Exception:
-        # Includes the read timeout, which is the ordinary shape of "this took too long".
+        # Includes the read timeout, the ordinary shape of taking too long.
         logger.warning(
             "Could not generate a conversation title; keeping the first-message title.",
             exc_info=True,
@@ -133,7 +130,7 @@ def generate_title(
         return None
 
     if usage is not None:
-        # Its OWN fields: a different model wrote this and is not billed at the same rate.
+        # Its own fields: a different model wrote this and is billed at another rate.
         usage.record_title_call(response)
 
     parts = [

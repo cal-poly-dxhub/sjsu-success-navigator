@@ -1,28 +1,4 @@
-/**
- * The cost panel's arithmetic: published AWS list rates x usage.
- *
- * TWO KINDS OF USAGE, and the panel keeps them apart because they are not equally
- * trustworthy about any particular conversation:
- *
- *   - MEASURED, this conversation. `conversationCost` prices the tokens the server counted
- *     on the turns actually sent in this tab (app/usage.py), so it is the real bill for the
- *     chat in front of the reader.
- *   - MEASURED, a sample. `perMessage` and `fixedMonthly` price a projection from the
- *     40-question average and the deployed baseline in config.yaml, which is the only
- *     honest way to answer "what would a month of this cost".
- *
- * The same rate table prices both, so the two halves of the panel can never disagree about
- * what a token costs.
- *
- * Kept out of the component so the numbers can be read - and argued with - without reading
- * JSX. Nothing here fetches anything; every input arrives in the CostModel that the stack
- * stamped into config.json (see infra/infra/config.py, resolve_cost_model).
- *
- * WHAT THIS IS NOT: a bill. No Cost Explorer call, no billing API, no account spend. That
- * is a correctness property as much as a scoping one - the AWS account this stack lives in
- * also runs other projects, so an account total would silently blend somebody else's spend
- * into a figure labelled as this system's. Rate x usage cannot.
- */
+/** The cost panel's arithmetic: published AWS list rates x usage. */
 
 import type { ConversationUsage, TurnUsage } from '../types/chat';
 import type { CostBaseline, CostMeasured, CostRates } from './runtimeConfig';
@@ -68,13 +44,7 @@ export const NO_CONVERSATION_USAGE: ConversationUsage = {
 	retrievals: 0,
 };
 
-/**
- * Fold one reply's usage into the conversation's running total.
- *
- * `messages` counts TURNS, not model calls, and the difference is the thing the panel is
- * there to show: a message that made the model search again billed two calls. A blocked
- * turn counts too - it billed a guardrail screen and the student sent it.
- */
+/** Fold one reply's usage into the conversation's running total. */
 export function addTurnUsage(
 	current: ConversationUsage | undefined,
 	turn: TurnUsage,
@@ -92,24 +62,13 @@ export function addTurnUsage(
 	};
 }
 
-/**
- * What this conversation has actually cost.
- *
- * Every token term is measured. The per-message plumbing term is not, and cannot be from
- * inside the request: a Lambda's billed duration is reported after the invocation ends, so
- * the panel prices it from the same measured constant the projection uses, multiplied by
- * the number of messages this conversation really sent. That is the one estimated component
- * of an otherwise measured figure, and it is well under a tenth of a cent per message.
- */
+/** What this conversation has actually cost. */
 export function conversationCost(
 	rates: CostRates,
 	measured: CostMeasured,
 	usage: ConversationUsage,
 ): number {
-	// TWO MODELS, TWO RATES. The turn that opens a conversation also pays for a small call
-	// to the titling model, which is not the model that answered and is not billed like it.
-	// Priced together on one line because the panel shows one "model" figure, added apart
-	// because adding them together is exactly the bug this replaced.
+	// Two models, two rates.
 	const model =
 		(usage.inputTokens / PER_MILLION) * rates.generation_input_per_1m +
 		(usage.outputTokens / PER_MILLION) * rates.generation_output_per_1m +
@@ -127,12 +86,7 @@ export function conversationCost(
 	return model + guardrail + retrieval + usage.messages * plumbingPerMessage(rates, measured);
 }
 
-/**
- * The per-request lines that bill on invocation rather than on tokens.
- *
- * Shared by the measured conversation and the projected month, so a message costs the same
- * to plumb on both halves of the panel.
- */
+/** The per-request lines that bill on invocation rather than on tokens. */
 function plumbingPerMessage(rates: CostRates, measured: CostMeasured): number {
 	return (
 		rates.api_requests_per_1m / PER_MILLION +
@@ -144,13 +98,7 @@ function plumbingPerMessage(rates: CostRates, measured: CostMeasured): number {
 	);
 }
 
-/**
- * What one message costs on average, from the sample.
- *
- * This is what the monthly projection multiplies, and it is deliberately NOT what the panel
- * shows for the conversation on screen: an average over 40 questions answers "what will a
- * month cost", never "what did this chat cost".
- */
+/** What one message costs on average, from the sample. */
 export function perMessage(rates: CostRates, measured: CostMeasured): PerMessageCost {
 	const inputTokens = measured.model_calls_avg * measured.context_tokens_per_call_base;
 	const outputTokens = measured.output_tokens_avg;
@@ -159,8 +107,7 @@ export function perMessage(rates: CostRates, measured: CostMeasured): PerMessage
 		(inputTokens / PER_MILLION) * rates.generation_input_per_1m +
 		(outputTokens / PER_MILLION) * rates.generation_output_per_1m;
 
-	// One content-filter screen on the student's bare question. There is no PII policy and
-	// no answer-side guardrail on this stack, so this is the whole guardrail line.
+	// One content-filter screen on the student's bare question.
 	const guardrail =
 		(measured.guardrail_content_units_avg / 1000) * rates.guardrail_content_per_1k_units;
 
@@ -184,9 +131,7 @@ export function perMessage(rates: CostRates, measured: CostMeasured): PerMessage
 
 /** What runs whether or not anybody asks anything. Every line is rate x measured quantity. */
 export function fixedMonthly(rates: CostRates, baseline: CostBaseline): FixedMonthlyCost {
-	// Two different counts, because the scraper runs far more often than it changes
-	// anything. Every run costs Lambda time; only a run that finds new content re-embeds
-	// and re-writes vectors. A deploy can re-fire the scraper, so it lands in both.
+	// Two different counts, because the scraper runs far more often than it changes anything.
 	const runs = baseline.scrapes_per_month + baseline.deploys_per_month;
 	const ingests = baseline.reindexes_per_month + baseline.deploys_per_month;
 
@@ -219,13 +164,7 @@ export function fixedMonthly(rates: CostRates, baseline: CostBaseline): FixedMon
 	};
 }
 
-/**
- * Money, at a precision that fits the magnitude.
- *
- * A conversation costs fractions of a cent and a month costs dollars; one format cannot
- * show both without either rounding a real figure to $0.00 or printing a monthly total to
- * four decimals.
- */
+/** Money, at a precision that fits the magnitude. */
 export function money(value: number, digits: number): string {
 	return `$${value.toLocaleString('en-US', {
 		minimumFractionDigits: digits,

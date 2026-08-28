@@ -6,13 +6,8 @@ type TalkToPersonPillProps = {
 	onClick: () => void;
 };
 
-/**
- * The handoff to a human stands for an SJSU office rather than for the assistant, so it
- * keeps its own identity - the blue seal in a gold ring, and the SJSU Cares attribution
- * above the label. That identity now sits inside the app's shared button shape instead of
- * replacing it: this used to be a bare floating pill, which read as a control borrowed
- * from somewhere else.
- */
+/** The handoff stands for an SJSU office rather than for the assistant, so it keeps its own
+ * identity and its own attribution. */
 export function TalkToPersonPill({ onClick }: TalkToPersonPillProps) {
 	const t = useStrings();
 	return (

@@ -1,19 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * French. MACHINE-AUTHORED, NOT REVIEWED BY A FRENCH SPEAKER. See es.ts for why a file in
- * this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the
- * student in the settings panel.
- *
- * REVIEWER'S NOTES. "tu" throughout, which is the call es.ts made and for the same reason: a
- * student talking to a campus assistant, not an institution addressing a citizen. This is the
- * likeliest line to be overturned - French university writing reaches for "vous" by default -
- * and overturning it is this file alone. Typographic apostrophes (’) rather than straight
- * ones, which is correct French typography and incidentally what keeps these single-quoted
- * strings free of escapes. Proper nouns stay in English on purpose - SJSU Cares, Spartan Food
- * Pantry, CalFresh, Sammy, the product name - because they are what the student will see on
- * signs and on SJSU's own pages.
- */
+/** French. */
 export const fr: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'Connecte-toi avec ton compte SJSU pour continuer.',

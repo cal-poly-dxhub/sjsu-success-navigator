@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
 
 export function usePrefersReducedMotion(): boolean {
-	// Read on the first render, not in the effect. Every consumer is a `client:only`
-	// island, so there is no server render to mismatch, and a component that decides
-	// whether to animate at mount - the card deck does - would otherwise paint one
-	// animated frame before the effect corrected it.
+	// Read on the first render, not in the effect.
 	const [reduced, setReduced] = useState(
 		() =>
 			typeof window !== 'undefined' &&

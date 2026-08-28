@@ -1,17 +1,4 @@
-/*
- * The draft reads as a piece of mail, not as another card.
- *
- * The card treatment beside it (StatementCard.css) is a warm, tactile tile: gradient, gold
- * light, rounded like something to pick up. This is deliberately flatter and cooler - a
- * white sheet with ruled field rows and a monospaced-feeling body block - because the two
- * are different KINDS of thing. A card is somewhere to go; this is a message about to go out
- * over the student's name, and it should look like the thing it will become.
- *
- * NOTHING HERE CLIPS. No max-height, no line-clamp, no ellipsis and no inner scroller on the
- * body: the student is being asked to vouch for this text, so all of it is on screen. That
- * is the same rule the cards hold, one step stronger - a clipped card is a clipped answer,
- * and a clipped draft is a message somebody sends without having read the end of it.
- */
+/* The draft reads as a piece of mail, not as another card. */
 .escalation-draft {
 	display: flex;
 	flex-direction: column;
@@ -78,20 +65,18 @@
 	font-size: 0.92rem;
 	line-height: 1.4;
 	color: var(--text-primary);
-	/* An address is one long unbroken token. Without this it either widens the panel or
-	   runs under its own edge on a 320px viewport. */
+	/* An address is one long unbroken token. */
 	overflow-wrap: anywhere;
 }
 
 .escalation-draft__body {
 	margin: 0;
-	/* The draft's own paragraph breaks, kept, because a <pre> is what makes the text on
-	   screen the text in the mail client. `pre-wrap` and not `pre`: long lines wrap rather
-	   than opening a horizontal scroller inside a message. */
+	/* The draft's own paragraph breaks, kept, because a <pre> is what makes the text on screen
+	 * the text in the mail client. */
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
-	/* The page's own family rather than a monospace stack: this is a letter a person will
-	   read, not code, and the ruled fields above already say "email" without it. */
+	/* The page's own family rather than a monospace stack: this is a letter a person will read,
+	 * not code, and the ruled fields above already say "email" without it. */
 	font: inherit;
 	font-size: 0.95rem;
 	line-height: 1.55;
@@ -101,7 +86,7 @@
 	border-radius: 12px;
 	padding: 0.85rem 0.9rem;
 	/* Selectable and obviously so: the copy button is the convenience, and this is the
-	   guarantee behind it. */
+	 * guarantee behind it. */
 	user-select: text;
 }
 
@@ -128,7 +113,7 @@
 	}
 
 	/* The label column stops paying for itself at this width: the address gets more room
-	   stacked under its own label than beside it. */
+	 * stacked under its own label than beside it. */
 	.escalation-draft__field {
 		flex-direction: column;
 		gap: 0.15rem;

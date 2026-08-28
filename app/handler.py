@@ -1,7 +1,6 @@
 """Chat Lambda entrypoint: bare handler, HTTP API payload 2.0. No FastAPI, no Mangum.
 
-Five routes on one function, and on POST /chat the step order is load-bearing; see
-docs/chat-service.md, The request path.
+Five routes on one function, and on POST /chat the step order is load-bearing.
 """
 
 import base64
@@ -14,10 +13,7 @@ import boto3
 from botocore.config import Config
 
 from cards import normalise_dashes
-# `new_conversation_id` is not called in this file any more - the turn that mints one moved
-# to app/turn.py. It stays imported because it is part of this module's surface: the id
-# format is the handler's contract with the client (models.CONVERSATION_ID_PATTERN validates
-# what comes back in), and the suite mints ids through it.
+# `new_conversation_id` is unused here and re-exported: the suite mints ids through it.
 from history import ConversationStore, new_conversation_id
 from models import (
     CONVERSATION_ID_PATTERN,
@@ -36,10 +32,7 @@ from models import (
 from orchestrator import replay_stored_reply, run_chat
 from settings import load_settings
 from titles import generate_title
-# The turn, lifted out of this file: everything between an identified caller and a
-# ChatResponse. `run_chat` and `generate_title` above are imported for the same reason
-# they always were - they are handed to it, so this module stays the place they are
-# named and therefore the place the test suite patches them.
+# The turn itself. `run_chat` and `generate_title` above are handed to it.
 from turn import TurnRefused, run_turn
 
 logger = logging.getLogger()
@@ -57,7 +50,7 @@ _BEDROCK_CLIENT = None
 
 
 def _bedrock_client():
-    """The bedrock-runtime client used for ApplyGuardrail, built once per container."""
+    """Used for ApplyGuardrail, built once per container."""
     global _BEDROCK_CLIENT
     if _BEDROCK_CLIENT is None:
         _BEDROCK_CLIENT = boto3.client(
@@ -116,7 +109,7 @@ def title_deadline(context):
 
 
 def _parse_body(event):
-    """The JSON object body of an HTTP API event, or None if it is absent or not an object."""
+    """The JSON object body, or None when it is absent or not an object."""
     body = event.get("body")
     if body is None:
         return None
@@ -143,12 +136,11 @@ def user_id_from(event):
 
 
 def client_id_from(event):
-    """The `client_id` claim: which app client the caller signed in through, or None."""
+    """Which app client the caller signed in through, or None."""
     return _claim(event, "client_id")
 
 
 def _claim(event, name):
-    """One claim from the JWT the authorizer validated, or None if missing or blank."""
     request_context = (event or {}).get("requestContext") or {}
     authorizer = request_context.get("authorizer") or {}
     claims = (authorizer.get("jwt") or {}).get("claims") or {}
@@ -159,7 +151,7 @@ def _claim(event, name):
 
 
 def _chat_response(response):
-    """Serialise a ChatResponse through its aliases: the camelCase wire contract."""
+    """Through the aliases, which is the camelCase wire contract."""
     return _response(200, response.model_dump(by_alias=True))
 
 
@@ -191,71 +183,48 @@ def post_chat(event, context):
         logger.error("A /chat request carried no JWT sub claim; refusing it")
         return _response(401, {"error": "Unauthenticated."})
 
-    # STEPS 3 TO 5 - THE TURN ITSELF, and it is no longer in this file. Rate limit,
-    # guardrail, write the student's message, read the previous ones back, call the model,
-    # write the reply, name a new conversation: all of it moved to app/turn.py, in the same
-    # order, doing the same things and logging the same line. What stays here is the part
-    # that is about HTTP - the shapes the two non-answer exits take on the wire.
-    #
-    # IT MOVED BECAUSE IT HAS A SECOND CALLER, the streaming app under the Lambda Web
-    # Adapter. The WebSocket transport that used to be the third held its own copy of this
-    # sequence across two functions, and every ordering argument below had to be made twice
-    # until it did not.
-    #
-    # EVERY DEPENDENCY IS PASSED BY NAME OUT OF THIS MODULE'S GLOBALS, which is deliberate
-    # rather than ceremonial. SETTINGS, STORE, _bedrock_client, run_chat and generate_title
-    # are the seams this function's own test suite patches; resolving them HERE, at call
-    # time, is what keeps a monkeypatch on this module reaching the step it always reached.
+    # Dependencies pass by name so this module stays the seam the suite patches.
     try:
         response = run_turn(
             request,
             user_id=user_id,
-            # The app client the token was issued to, from the same validated claims as
-            # `sub`. The eval harness's machine client is exempt from the daily cap; a
-            # browser cannot claim that.
+            # The eval harness's client is exempt from the daily cap; a browser cannot claim it.
             client_id=client_id_from(event),
             settings=SETTINGS,
             store=STORE,
-            # The FACTORY, not a client: a turn refused by the daily cap must not build one.
+            # The factory, not a client: a turn refused by the cap must not build one.
             bedrock_client=_bedrock_client,
             deadline=loop_deadline(context),
-            # A CALLABLE, evaluated after the model returns. Both are time.monotonic()
-            # stamps, so a title deadline computed here would already be in the past by the
-            # time the title needed it, and every new conversation would keep its fallback.
+            # A callable: a monotonic stamp taken here would already be past by the time it is read.
             title_deadline_at=lambda: title_deadline(context),
             converse=run_chat,
             make_title=generate_title,
         )
     except TurnRefused as refused:
-        # THE DAILY CAP, spelled as HTTP. Nothing was written, nothing was billed and no
-        # usage is returned - a refused turn is not a turn. The conversation id is not
-        # echoed either: no turn was recorded under it.
+        # Nothing was written or billed, so no usage and no conversation id come back.
         refusal = refused.refusal
         return _response(
             429,
             {
                 "error": refusal.message,
                 "limit": refusal.limit,
-                # The reset INSTANT; the browser renders it in the student's own clock.
+                # The instant; the browser renders it in the student's own clock.
                 "resetAt": refusal.reset_at_iso,
                 "retryAfterSeconds": refusal.retry_after_seconds,
             },
             headers={"Retry-After": str(refusal.retry_after_seconds)},
         )
     except Exception:
-        # Logged, not returned: a botocore message can quote the request, and the request
-        # here is the student's own words.
+        # Logged, not returned: a botocore message can quote the student's own words.
         logger.exception("Chat orchestration failed")
         return _response(502, {"error": "The assistant is unavailable right now."})
 
-    # A GUARDRAIL BLOCK ARRIVES HERE TOO, as an ordinary ChatResponse carrying the
-    # guardrail's replacement text and the usage that screen billed. It is a 200: the
-    # server answered, and what it answered with is the refusal.
+    # A guardrail block arrives here too, as a 200: the server answered, with a refusal.
     return _chat_response(response)
 
 
 def _display_cards(stored):
-    """Stored cards, re-validated through the live contract. One that no longer fits is dropped."""
+    """Re-validated through the live contract. One that no longer fits is dropped."""
     cards = []
     for raw in stored or []:
         try:
@@ -266,7 +235,7 @@ def _display_cards(stored):
 
 
 def _display_escalation(stored):
-    """A stored email draft, re-validated. None if it no longer fits the live contract."""
+    """Re-validated. None if it no longer fits the live contract."""
     if not stored:
         return None
     try:
@@ -277,7 +246,7 @@ def _display_escalation(stored):
 
 
 def _display_place(stored):
-    """A stored location card, re-validated. None if it no longer fits the live contract."""
+    """Re-validated. None if it no longer fits the live contract."""
     if not stored:
         return None
     try:
@@ -299,8 +268,7 @@ def get_conversations(event):
             user_id=user_id, limit=SETTINGS.max_conversations_listed
         )
     except Exception:
-        # A read failure IS the whole response here, so a 502 rather than an empty list:
-        # "you have no conversations" is a worse lie than "this did not load".
+        # A 502, not an empty list: "you have none" is a worse lie than "this did not load".
         logger.exception("Could not list conversations")
         return _response(502, {"error": "Could not load your conversations."})
 
@@ -320,7 +288,7 @@ def get_conversations(event):
 
 
 def get_conversation(event):
-    """GET /conversations/{conversationId}: one conversation, in the DISPLAY projection."""
+    """GET /conversations/{conversationId}: one conversation, in the display projection."""
     user_id = user_id_from(event)
     if user_id is None:
         logger.error("A /conversations request carried no JWT sub claim; refusing it")
@@ -350,8 +318,7 @@ def get_conversation(event):
 
 
 def _rendered_messages(messages):
-    """Stored rows as the browser renders them, oldest first. The question travels with
-    the answer, because that is what a card group is labelled with."""
+    """Oldest first. The question travels with the answer: it labels the card group."""
     rendered = []
     question = ""
 
@@ -361,8 +328,7 @@ def _rendered_messages(messages):
             rendered.append(
                 ConversationMessage(
                     role="user",
-                    # The student's own words, untouched: this server never wrote a
-                    # contract for what a student may type.
+                    # Untouched: this server never wrote a contract for what a student types.
                     text=message.text,
                     createdAt=message.created_at,
                 )
@@ -376,8 +342,7 @@ def _rendered_messages(messages):
 
 
 def _rendered_reply(message, question):
-    """One stored assistant message, rendered. A row carrying `cards` is the legacy shape
-    and is handed back as it always was; everything else is re-parsed."""
+    """A row carrying `cards` is the legacy shape, handed back as it stands."""
     if message.cards:
         return ConversationMessage(
             role="assistant",
@@ -402,8 +367,7 @@ def _rendered_reply(message, question):
         trailingText=replayed.trailing_text,
         cards=_display_cards_from(replayed),
         safetyHandoff=replayed.safety_handoff,
-        # The RECORDED card, not `replayed.place`: a reopened turn must say where the
-        # student was sent. The panel above goes the other way deliberately.
+        # The recorded card, not `replayed.place`: say where the student was actually sent.
         place=_display_place(message.place),
         escalation=replayed.escalation,
         createdAt=message.created_at,
@@ -411,7 +375,7 @@ def _rendered_reply(message, question):
 
 
 def _conversation_id_from(event):
-    """The validated `conversationId` path parameter, or None. It composes a sort-key prefix."""
+    """Validated because it composes a sort-key prefix."""
     conversation_id = ((event or {}).get("pathParameters") or {}).get("conversationId")
     if not isinstance(conversation_id, str) or not re.match(
         CONVERSATION_ID_PATTERN, conversation_id
@@ -488,8 +452,7 @@ def delete_conversation(event):
     return _response(200, payload.model_dump(by_alias=True))
 
 
-# The routes this function serves. The stack creates exactly these five
-# (infra/infra/infra_stack.py, section 5) and points all of them at this function.
+# The stack creates exactly these five and points all of them at this function.
 _CHAT_ROUTE = "POST /chat"
 _CONVERSATIONS_ROUTE = "GET /conversations"
 _CONVERSATION_ROUTE = "GET /conversations/{conversationId}"

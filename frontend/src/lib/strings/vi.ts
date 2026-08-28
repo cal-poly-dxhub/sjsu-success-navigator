@@ -1,16 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Vietnamese. MACHINE-AUTHORED, NOT REVIEWED BY A VIETNAMESE SPEAKER. See es.ts for why a
- * file in this state ships at all; the short version is that it is marked everywhere it
- * matters - `reviewed: false` in lib/i18n.ts, this comment, and a line in the settings panel
- * the student reads.
- *
- * REVIEWER'S NOTES. "bạn" throughout for the student, which is the register a campus service
- * would use with an undergraduate rather than the formal "quý vị". Proper nouns are left in
- * English on purpose - SJSU Cares, Spartan Food Pantry, CalFresh, Sammy, the product name -
- * because they are what the student will see on signs and on SJSU's own pages.
- */
+/** Vietnamese. */
 export const vi: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'Đăng nhập bằng tài khoản SJSU của bạn để tiếp tục.',

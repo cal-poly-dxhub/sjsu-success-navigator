@@ -1,15 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Telugu. MACHINE-AUTHORED, NOT REVIEWED BY A TELUGU SPEAKER. See es.ts for why a file in
- * this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the
- * student in the settings panel.
- *
- * REVIEWER'S NOTES. "మీరు" throughout - the polite form a campus service would use with a
- * student. Proper nouns are left in Latin script on purpose: SJSU Cares, Spartan Food Pantry,
- * CalFresh, Sammy and the product name are what the student will see on signs and on SJSU's
- * own pages.
- */
+/** Telugu. */
 export const te: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'కొనసాగించడానికి మీ SJSU ఖాతాతో సైన్ ఇన్ చేయండి.',

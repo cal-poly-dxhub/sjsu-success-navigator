@@ -39,22 +39,8 @@ import type { CostModel } from '../lib/runtimeConfig';
 import { inferSjsuCaresServiceTheme } from '../lib/sjsuCares';
 import './ChatApp.css';
 
-/**
- * How many cards this reply will actually put on screen, which is what the waiting deck
- * compresses to.
- *
- * THE LAST BATCH, because that is the one the active turn shows - `turnsFromResponse` gives
- * the reply's own prose to the final batch and the deck on screen belongs to it. A streamed
- * reply carries exactly one in practice.
- *
- * CAPPED AT THE GRID'S OWN CEILING rather than reported raw. `RagGrid` trims to `MAX_CARDS`,
- * so a reply carrying more would otherwise square the deck up to a count the grid then
- * throws away, and the stack and the group would disagree again for a different reason.
- *
- * Zero is a real answer here, not a missing one: a safety turn has its cards dropped after
- * the model wrote them, so the deck can be up with none coming. The deck declines to
- * compress to nothing - see settleAndCompress.
- */
+/** How many cards this reply will actually put on screen, which is what the waiting deck
+ * compresses to. */
 function cardCountOf(response: ChatResponse): number {
 	const batches = response.statementBatches ?? [];
 	const last = batches[batches.length - 1];
@@ -68,16 +54,7 @@ const CHAT_WIPE_MS = 620;
 const SPEECH_INTRO_DELAY_MS = 1100;
 const BG_TILE_PX = 480;
 
-/**
- * Whether the desktop rail is collapsed, remembered across reloads.
- *
- * A UI preference and nothing else - it is the one thing in this app that is allowed in
- * localStorage. The access token deliberately is not (lib/auth.ts), and this is not a
- * loophole in that: it says how wide a panel is, it is not read by anything that talks to
- * the server, and a shared campus machine handing the next student a narrow sidebar is
- * not a disclosure. A read failure (Safari private mode throws on access) means the rail
- * simply starts open.
- */
+/** Whether the desktop rail is collapsed, remembered across reloads. */
 const NAV_COLLAPSED_KEY = 'ssn.nav.collapsed';
 
 function readNavCollapsed(): boolean {
@@ -104,13 +81,7 @@ function tileAlignedSlideDistance(): number {
 	return Math.max(BG_TILE_PX, Math.ceil(vw / BG_TILE_PX) * BG_TILE_PX);
 }
 
-/**
- * The opening greeting. This is REAL UI COPY, not fixture data - it was the one thing in
- * camp's chatFixtures.ts worth keeping, so it moved here when that file was deleted along
- * with the four fake conversations it also held. Being UI copy is exactly why it lives in
- * the string catalogue now and is read at the moment a chat is created rather than being a
- * module constant fixed at import.
- */
+/** The opening greeting. */
 function welcomeResponse(): ChatResponse {
 	return {
 		conversationalText: strings().welcome,
@@ -119,21 +90,13 @@ function welcomeResponse(): ChatResponse {
 	};
 }
 
-/**
- * The unsent chat at the top of the sidebar. It holds the welcome turn and NO conversation
- * id: the server mints one on the first reply (docs/accounts-and-storage.md, Turn
- * lifecycle), and until then there is nothing stored to point at.
- *
- * Camp shipped four canned conversations (MOCK_CHAT_SESSIONS) whose fabricated answers were
- * indistinguishable from real ones. The rest of this list now comes from the server, which
- * is the only thing that ever knew what a student actually asked.
- */
+/** The unsent chat at the top of the sidebar. */
 function newChatSession(): ChatSession {
 	return {
 		id: `new-${Date.now()}`,
 		title: UNSENT_CHAT_TITLE,
-		// Flagged so the feed can keep re-rendering it in the chosen language until this
-		// chat is used - see `shownTurns` below, which is where that actually happens.
+		// Flagged so the feed can keep re-rendering it in the chosen language until this chat
+		// is used, see `shownTurns` below, which is where that actually happens.
 		turns: turnsFromResponse(welcomeResponse()).map((turn) => ({ ...turn, welcome: true })),
 	};
 }
@@ -159,45 +122,17 @@ export default function ChatApp() {
 	const [panelSwappedHidden, setPanelSwappedHidden] = useState(false);
 	const [isLoading, setIsLoading] = useState(false);
 	const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
-	/**
-	 * The reply as it arrives over the stream, and what the server says it is doing while
-	 * none has yet. Both are PREVIEW state: they live only for the length of one pending
-	 * exchange and are cleared the moment the authoritative payload lands, which is what
-	 * builds the turn. Nothing is ever rendered from them after that.
-	 */
+	/** The reply as it arrives over the stream, and what the server says it is doing while none
+	 * has yet. */
 	const [pendingPreview, setPendingPreview] = useState('');
 	const [pendingStage, setPendingStage] = useState<string | null>(null);
-	/**
-	 * The turn that replaced a pending exchange, so the feed knows its bubble is not a new
-	 * one. A pending exchange holds a bubble from the moment it opens - the indicator lives
-	 * in it - and the turn built from the reply renders in its place, in the same commit. The
-	 * turn is still arriving and still types itself out; what this records is that its bubble
-	 * has already made its entrance and must not make another over prose already on screen.
-	 *
-	 * Set for every turn that resolves one, streamed or buffered, including a failure. Never
-	 * set for the welcome turn, which opens the only bubble on a fresh screen.
-	 */
+	/** The turn that replaced a pending exchange, so the feed knows its bubble is not a new one. */
 	const [continuedTurnId, setContinuedTurnId] = useState<string | null>(null);
-	/**
-	 * Whether this deployment has a mailbox to escalate to (config.json's
-	 * escalationRecipient). False until config.json has been read, and false for good in a
-	 * deployment that configured none - which is what keeps the component out of the page
-	 * rather than out of view. The server holds the other end of the same gate: with no
-	 * recipient the system prompt never mentions the tag, so no reply carries a draft.
-	 */
+	/** Whether this deployment has a mailbox to escalate to (config.json's escalationRecipient). */
 	const [escalationEnabled, setEscalationEnabled] = useState(false);
 	const [showSjsuCaresModal, setShowSjsuCaresModal] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
-	/**
-	 * The cost model, or null when the stack did not stamp one.
-	 *
-	 * Loaded on mount rather than at build time for the same reason the API URL is: it does
-	 * not exist until `cdk deploy` writes config.json. Null covers both "the section is off"
-	 * and "config.json could not be read at all" - the cost section simply does not render
-	 * inside settings, which is the right outcome for both. A failure here must never break
-	 * the chat, so the fetch swallows its error: this is a demo instrument, not part of
-	 * answering a student. Settings itself does not wait on any of it.
-	 */
+	/** The cost model, or null when the stack did not stamp one. */
 	const [costModel, setCostModel] = useState<CostModel | null>(null);
 
 	useEffect(() => {
@@ -206,10 +141,7 @@ export default function ChatApp() {
 			.then((config) => {
 				if (cancelled) return;
 				setCostModel(config.costModel ?? null);
-				// THE ABSENCE OF THE KEY IS THE GATE for the escalation path. The recipient
-				// itself is not used to address anything here - a draft carries its own
-				// destination, as it was addressed when the turn happened - so its PRESENCE
-				// is all this reads.
+				// The absence of the key is the gate for the escalation path.
 				setEscalationEnabled(Boolean(config.escalationRecipient));
 			})
 			.catch(() => {
@@ -219,9 +151,7 @@ export default function ChatApp() {
 			cancelled = true;
 		};
 	}, []);
-	// Straight off the last reply's `talkToPersonAvailable`, defaulting to shown. It used to
-	// be read back out of a ChatResponse this component rebuilt from its own turns, which
-	// could only ever return the default - the turns never carried the field.
+	// Straight off the last reply's `talkToPersonAvailable`, defaulting to shown.
 	const [talkToPersonAvailable, setTalkToPersonAvailable] = useState(true);
 	const [lastUserQuery, setLastUserQuery] = useState<string | null>(null);
 	const [userEmail] = useState(() => currentUsername());
@@ -231,11 +161,7 @@ export default function ChatApp() {
 	const hasContent = turns.length > 0;
 	const activeChat = chats.find((chat) => chat.id === activeChatId);
 
-	/**
-	 * The conversation list, on load. This is the whole reason the sidebar is not a lie any
-	 * more: it is read from the server under the signed-in student's own JWT, so it lists
-	 * their conversations and cannot be asked for anyone else's.
-	 */
+	/** The conversation list, on load. */
 	useEffect(() => {
 		let cancelled = false;
 
@@ -243,9 +169,8 @@ export default function ChatApp() {
 			.then((conversations) => {
 				if (cancelled) return;
 				setChats((current) => [
-					// The unsent chats stay at the top - they are not stored yet, so a fetch
-					// cannot have returned them, and dropping them would take the welcome
-					// screen out from under the student mid-read.
+					// The unsent chats stay on top: a fetch cannot return them, and dropping
+					// one takes the welcome screen out from under the student mid-read.
 					...current.filter((chat) => !chat.conversationId),
 					...conversations.map((conversation) => ({
 						id: conversation.conversationId,
@@ -271,25 +196,11 @@ export default function ChatApp() {
 		};
 	}, []);
 
-	/**
-	 * Landing vs active chat, and the only thing the mobile layout switches on. A turn
-	 * carries a `query` only once the student has actually asked something, so this reads
-	 * the real conversation rather than a flag anyone has to remember to set - including
-	 * after "New chat", which returns to the welcome turn and therefore to the landing.
-	 */
+	/** Landing vs active chat, and the only thing the mobile layout switches on. */
 	const conversationStarted = Boolean(pendingPrompt) || turns.some((turn) => Boolean(turn.query));
 
-	/**
-	 * The turns as they are shown, which differs from what is stored in exactly one case: an
-	 * UNUSED chat's greeting is rendered in the language chosen right now. Switching to
-	 * Tiếng Việt on the landing screen should change the sentence on the landing screen -
-	 * it is the app's own copy and nobody has asked anything yet.
-	 *
-	 * Once `conversationStarted` is true this passes `turns` straight through, so the frozen
-	 * text written by beginPendingExchange is what stays on screen. The Typewriter treats a
-	 * REPLACED string as a new message and re-types it (components/Typewriter.tsx), which is
-	 * the right behaviour here: the greeting is being said again, in another language.
-	 */
+	/** The turns as they are shown, which differs from what is stored in exactly one case: an
+	 * unused chat's greeting is rendered in the language chosen right now. */
 	const shownTurns = useMemo(
 		() =>
 			conversationStarted
@@ -310,20 +221,7 @@ export default function ChatApp() {
 		window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
 	}, [reduceMotion]);
 
-	/**
-	 * Keep the sidebar's copy of a conversation in step with the feed.
-	 *
-	 * This is a CACHE of what is on screen, not a record: it exists so switching away and
-	 * back does not re-fetch, and every line of it is either something the server sent or
-	 * something the server was just told. A reload throws all of it away and asks again.
-	 *
-	 * What it stores is SETTLED, and that is the whole difference between the feed and the
-	 * cache. The feed holds a turn that is arriving and types it out; the cache holds the
-	 * same turn once it has arrived, so coming back to this conversation shows the answer
-	 * rather than performing it a second time. A turn read from here is in exactly the state
-	 * one read from the server is (turnsFromStoredMessages), which is why the two ways back
-	 * into a conversation look the same.
-	 */
+	/** Keep the sidebar's copy of a conversation in step with the feed. */
 	const updateChat = useCallback((id: string, nextTurns: ConversationTurn[]) => {
 		const settled = settleTurns(nextTurns);
 		setChats((current) =>
@@ -359,11 +257,8 @@ export default function ChatApp() {
 	const beginPendingExchange = useCallback(
 		(query: string) => {
 			setTurns((current) => {
-				// THE GREETING IS FROZEN HERE, in the language it was being read in, because
-				// this is the instant the chat stops being new. After this the conversation
-				// has a language of its own - the student's first message set it and the
-				// model answers in kind - and a greeting that kept following the picker
-				// would be the one line in the thread rewriting itself under them.
+				// The greeting is frozen here, in the language it was being read in, because
+				// this is the instant the chat stops being new.
 				const archived = archiveActiveTurns(current).map((turn) =>
 					turn.welcome ? { ...turn, text: strings().welcome } : turn,
 				);
@@ -383,66 +278,36 @@ export default function ChatApp() {
 				cards: incomingCards,
 				trailingText: next.trailingText,
 				safetyHandoff: next.safetyHandoff,
-				// The draft the server assembled for THIS turn, carried straight onto it. The
-				// component renders these bytes; nothing here builds, edits or addresses one.
+				// The draft the server assembled for this turn, carried straight onto it.
 				escalation: next.escalation,
-				// The location the server resolved for THIS turn, carried straight onto it.
-				// Nothing here builds an address or a map link; the panel renders these bytes.
+				// The location the server resolved for this turn, carried straight onto it.
 				place: next.place,
 				query,
 				// What a streamed preview already typed out, so the finished turn picks up
-				// where it stopped instead of replaying prose the student has read. This is
-				// the ONLY thing the preview leaves behind: the turn itself is built from the
-				// authoritative payload, exactly as it is on the buffered path.
+				// where it stopped instead of replaying prose the student has read.
 				revealedChars,
 			});
 
-			// THE ID THE SERVER MINTED, kept so the NEXT turn can say which conversation it
-			// belongs to. Without this the client posts no id, the server mints a fresh one
-			// every time, and the model is handed an empty history on every message - which
-			// is exactly the bug this replaces. It is recorded once and never overwritten:
-			// the server echoes the same id back for the life of the conversation, and it is
-			// absent on a guardrail block, where no turn was recorded to belong to.
-			// One pass over the sidebar for both things this reply can add to the active
-			// chat: the id the server minted, and what the turn billed. Usage is folded in
-			// whatever else the reply carried - a guardrail block has no conversation id and
-			// still spent money on the screen that blocked it.
+			// The ID the server minted, kept so the next turn can say which conversation it
+			// belongs to.
 			setChats((current) =>
 				current.map((chat) => {
 					if (chat.id !== activeChatId) return chat;
 
-					// THE CONVERSATION'S RUNNING METER, accrued from what the server counted
-					// on each reply (app/usage.py). Held per chat rather than per tab, so
-					// switching conversations switches the figure with it, and never written
-					// anywhere: a chat reopened from history has no meter, because stored
-					// messages do not carry what they cost.
+					// The conversation's running meter, accrued from what the server counted on
+					// each reply (app/usage.py).
 					const metered = next.usage
 						? { ...chat, usage: addTurnUsage(chat.usage, next.usage) }
 						: chat;
 
-					// THE ID THE SERVER MINTED, kept so the NEXT turn can say which
-					// conversation it belongs to. Without this the client posts no id, the
-					// server mints a fresh one every time, and the model is handed an empty
-					// history on every message - which is exactly the bug this replaces. It
-					// is recorded once and never overwritten: the server echoes the same id
-					// back for the life of the conversation, and it is absent on a guardrail
-					// block, where no turn was recorded to belong to.
-					//
-					// ON A STREAMED TURN THE ID IS ALREADY HERE, put there by the `accepted`
-					// frame a whole reply ago. So the id is written only if it is missing
-					// and the TITLE is applied either way - folding them into one condition
-					// would mean a conversation that learned its id early never learned its
-					// name at all.
+					// The ID the server minted, kept so the next turn can say which
+					// conversation it belongs to.
 					if (!next.conversationId) return metered;
 					return {
 						...metered,
 						conversationId: metered.conversationId ?? next.conversationId,
-						// THE SERVER'S NAME FOR THIS CONVERSATION, present only on the turn
-						// that created it. It replaces the placeholder this component wrote
-						// from the same message a moment ago, so the row says what a reload
-						// would say. Absent when the server's titling produced nothing usable,
-						// in which case the placeholder and the stored fallback title are the
-						// same truncation of the same sentence.
+						// The server's name for this conversation, present only on the turn
+						// that created it.
 						title: next.title ?? metered.title,
 					};
 				}),
@@ -504,26 +369,7 @@ export default function ChatApp() {
 		[activeChatId, bgOffsetX, isTransitioning, reduceMotion, settleBackground, showChat],
 	);
 
-	/**
-	 * One turn. The request carries the query, the follow-up flag and THE CONVERSATION ID
-	 * THE SERVER GAVE US - and nothing else. No transcript: the server holds that
-	 * (docs/accounts-and-storage.md, Turn lifecycle), and a client-supplied one would be a
-	 * way to put words in a previous turn's mouth rather than a memory shortcut.
-	 *
-	 * TWO TRANSPORTS, ONE OUTCOME. The turn goes to the streaming route on this page's own
-	 * origin and the prose arrives as it is written; on any failure the server had not yet
-	 * taken responsibility for, it goes over POST /chat exactly as it always has. What gets
-	 * RENDERED is the same object either way - the streamed turn ends in one final payload
-	 * that is byte-for-byte what POST /chat would have returned - so nothing below this
-	 * function knows which ran.
-	 *
-	 * NOTHING IS ASKED FIRST. The streaming route is a path on the same distribution that
-	 * served this bundle, so there is no URL to look up and no config key to read: a
-	 * deployment without it answers the POST and the turn falls back, which is the same
-	 * path a blocked request takes. Waiting on config.json to find out would put a fetch
-	 * in front of the first turn of every cold page to learn something the first turn
-	 * learns anyway.
-	 */
+	/** One turn. */
 	const sendTurn = (query: string, options?: { followup?: boolean }) => {
 		if (isLoading || isTransitioning || openingChatId) return;
 
@@ -555,19 +401,14 @@ export default function ChatApp() {
 			);
 
 		const streamed = () => {
-			// Held in locals rather than read back out of state: the final payload arrives
-			// in the same tick as the last delta, and a state read there would be stale.
+			// Held in locals rather than read back out of state: the final payload arrives in
+			// the same tick as the last delta, and a state read there would be stale.
 			let previewed = 0;
 			let stage: string | null = null;
 			return streamChat(
 				{ query, followup: options?.followup, conversationId },
 				{
-					// THE FIRST FRAME, AND THE ID ON IT. The server mints the id and an
-					// absent one means a new conversation, so on a fresh chat this is the
-					// only place the browser can learn it before the reply finishes - and
-					// it needs it for both things that happen in the meantime: the sidebar
-					// row, and the id the NEXT turn is addressed with. Recorded once and
-					// never overwritten, exactly as applyChatResponse records it.
+					// The first frame, and the ID on it.
 					onAccepted: (id) => {
 						setChats((current) =>
 							current.map((chat) =>
@@ -589,17 +430,7 @@ export default function ChatApp() {
 					},
 				},
 			).then(async (next) => {
-				// THE HAND-OFF WAITS FOR THE DECK TO STAND SQUARE, AND AT THE RIGHT COUNT.
-				// While the model was writing its cards the pending exchange has been
-				// showing them as a cycling stack of four - four because nobody knew yet
-				// how many were coming. This payload is the first thing that does know, so
-				// it hands the number back and waits while the deck sheds the surplus
-				// (lib/waitingDeck.ts). Two waits in one: for a rest, because a card cannot
-				// be pulled out of a stack that is mid-cycle, and then for the compress, so
-				// the stack the deal comes out of is the size the group will be.
-				//
-				// Nothing the student is reading waits on this: the prose is already typed
-				// and on screen, and a turn that never showed a deck resolves immediately.
+				// The hand-off waits for the deck to stand square, and at the right count.
 				if (stage === CARDS_STAGE && !reduceMotion) {
 					await waitingDeck.settleAndCompress(cardCountOf(next));
 				}
@@ -611,15 +442,7 @@ export default function ChatApp() {
 
 		void streamed()
 			.catch((error: unknown) => {
-				// FALLING BACK IS NOT UNCONDITIONAL, AND IT IS NARROW ON PURPOSE.
-				// StreamUnavailable means the stream failed before the server took the turn
-				// on AND the failure was the front door being absent - a deployment with no
-				// streaming route, or a request that never arrived. Asking the same question
-				// over POST /chat is free of consequence there. Anything else surfaces: a
-				// refused token, an edge that cannot invoke its origin, a server that said
-				// something definite or has already started work. The buffered path answers
-				// whether or not `/api` is alive, so a broader net here would quietly
-				// deliver every turn and leave a dead streaming deployment looking healthy.
+				// Falling back is not unconditional, and it is narrow on purpose.
 				if (!(error instanceof StreamUnavailable)) throw error;
 				setPendingPreview('');
 				setPendingStage(null);
@@ -632,10 +455,8 @@ export default function ChatApp() {
 	const handleSubmit = (query: string) => {
 		if (isLoading || isTransitioning || openingChatId) return;
 
-		// The sidebar's own label for an unsent chat, so the row stops saying "New chat"
-		// while the first reply is in flight. The server titles the conversation from the
-		// same message (its own first-message title, 80 characters), so this is the same
-		// name arriving sooner rather than a second source of truth.
+		// The sidebar's own label for an unsent chat, so the row stops saying "New chat" while
+		// the first reply is in flight.
 		setChats((current) =>
 			current.map((chat) =>
 				chat.id === activeChatId && chat.title === UNSENT_CHAT_TITLE
@@ -651,14 +472,7 @@ export default function ChatApp() {
 		sendTurn(prompt, { followup: true });
 	};
 
-	/**
-	 * Open a conversation from the sidebar.
-	 *
-	 * Its messages are FETCHED THE FIRST TIME, from the server, and only then is the
-	 * transition started - the panel wipes onto real content instead of onto a blank one
-	 * that fills in later. A conversation already opened in this tab is in `turns` and is
-	 * shown straight away.
-	 */
+	/** Open a conversation from the sidebar. */
 	const handleSelectChat = (id: string) => {
 		if (openingChatId || isLoading) return;
 		const chat = chats.find((item) => item.id === id);
@@ -697,21 +511,12 @@ export default function ChatApp() {
 	};
 
 	const handleSignOut = () => {
-		// Dropping the in-memory token is NOT the whole sign-out, which is why this
-		// redirects instead of reloading. Cognito keeps its own session cookie on the
-		// managed login domain, so a reload would bounce through /oauth2/authorize and
-		// come back signed in as the same person without ever asking - on a shared campus
-		// machine, handing the next student the previous one's account. signOut() goes to
-		// /logout, which clears that cookie and returns the browser here.
+		// Dropping the in-memory token is not the whole sign-out, which is why this redirects
+		// instead of reloading.
 		void signOut();
 	};
 
-	/**
-	 * Rename one conversation. The sidebar's copy is updated only AFTER the server agrees,
-	 * and to the title the server stored rather than the one that was typed: the server
-	 * normalises it, so rendering the typed string would put a name on screen that a reload
-	 * disagrees with.
-	 */
+	/** Rename one conversation. */
 	const handleRenameChat = async (id: string, title: string) => {
 		const chat = chats.find((item) => item.id === id);
 		if (!chat?.conversationId) return;
@@ -722,13 +527,7 @@ export default function ChatApp() {
 		);
 	};
 
-	/**
-	 * Delete one conversation, server first.
-	 *
-	 * If the deleted chat was the one on screen there is nothing left to show, so this lands
-	 * on a fresh welcome chat rather than an emptied one. The transition is skipped
-	 * deliberately: the row the animation would slide away from no longer exists.
-	 */
+	/** Delete one conversation, server first. */
 	const handleDeleteChat = async (id: string) => {
 		const chat = chats.find((item) => item.id === id);
 		if (!chat?.conversationId) return;
@@ -799,9 +598,8 @@ export default function ChatApp() {
 				historyError={historyError}
 				userEmail={userEmail}
 				onLogout={handleSignOut}
-				// Unconditional. The gear used to be handed this only when a cost model was
-				// stamped, so a deployment with the cost panel off had no gear; settings now
-				// holds the language picker, which every student has a reason to open.
+				// Unconditional, because settings holds the language picker as well as the cost
+				// panel.
 				onOpenSettings={() => setShowSettings(true)}
 				collapsed={navCollapsed}
 				onExpand={() => setNavCollapsedPersisted(false)}
@@ -813,9 +611,8 @@ export default function ChatApp() {
 				onDeleteChat={handleDeleteChat}
 			/>
 
-			{/* Mobile only (display:none above the breakpoint): the two header controls are
-			    fixed over a scrolling thread, so the band behind them fades the paper out
-			    rather than letting prose run under a floating button. */}
+			{/* Mobile only: the two header controls are fixed over a scrolling thread, so the
+			 * band behind them fades the paper out. */}
 			<div className="chat-app__header-veil" aria-hidden="true" />
 
 			<button
@@ -897,9 +694,8 @@ export default function ChatApp() {
 				highlightedServiceTheme={inferSjsuCaresServiceTheme(lastUserQuery)}
 			/>
 
-			{/* Always rendered, cost model or not - the language picker inside is the reason
-			    the gear exists now. `costModel` being null is what removes the cost section
-			    within it, and nothing else changes. */}
+			{/* Always rendered: the language picker inside is why the gear exists, cost model or
+			 * not. */}
 			<SettingsPanel
 				open={showSettings}
 				costModel={costModel}

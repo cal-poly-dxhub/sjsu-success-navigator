@@ -1,7 +1,6 @@
 """The campus clock: one instant, formatted into the one line the model is shown.
 
-Lambda runs on UTC and an unresolvable zone costs the line rather than the turn; see
-docs/chat-service.md, The campus clock.
+Lambda runs on UTC, and an unresolvable zone costs the line rather than the turn.
 """
 
 from __future__ import annotations
@@ -32,7 +31,6 @@ def _campus_zone() -> ZoneInfo | None:
 
 
 def campus_now() -> datetime | None:
-    """The current instant, in campus time. None when the zone will not resolve."""
     zone = _campus_zone()
     if zone is None:
         return None
@@ -40,7 +38,6 @@ def campus_now() -> datetime | None:
 
 
 def campus_context_line(moment: datetime | None = None) -> str:
-    """Return the one line of time the model is given, or "" when there is no clock."""
     if moment is None:
         moment = campus_now()
         if moment is None:

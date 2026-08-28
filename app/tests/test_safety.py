@@ -1,7 +1,6 @@
 """Model-triage safety: the model emits resource keys, this module owns every digit.
 
-Failure direction is always toward showing help, and there is no pre-model phrase gate;
-see docs/chat-service.md, Safety.
+Failure always leans toward showing help, and there is no pre-model phrase gate.
 """
 
 import json
@@ -20,9 +19,6 @@ def _plain_response(text):
         statementBatches=None,
         talkToPersonAvailable=True,
     )
-
-
-# --- key resolution ----------------------------------------------------------------------
 
 
 def test_every_key_the_prompt_teaches_resolves():
@@ -67,9 +63,6 @@ def test_every_contact_is_authored_in_the_table_never_by_the_model():
         assert key in safety.SAFETY_RESOURCES
 
 
-# --- attaching the panel to a response ---------------------------------------------------
-
-
 def test_emitted_keys_choose_the_panel_and_drop_the_cards():
     result = safety.apply_safety_handoff_to_response(
         _plain_response("You deserve support right now."),
@@ -93,8 +86,7 @@ def test_the_output_scanner_attaches_the_default_panel_when_prose_cites_a_hotlin
 
 
 def test_the_panel_takes_a_location_card_with_it():
-    """The other route into a safety turn, and the one that can carry a map. It takes
-    everything else with it: this turn is a phone call, not an errand."""
+    """It takes everything else with it: this turn is a phone call, not an errand."""
     from models import PlaceCard
 
     response = _plain_response("Please call 988. The Wellness Center is open too.")
@@ -124,12 +116,8 @@ def test_plain_answers_pass_through_untouched():
     assert result.safety_handoff is None
 
 
-# --- the pipeline: no pre-model gate -----------------------------------------------------
-
-
 def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch, store):
-    """Triage belongs to the model: the guardrail screens a crisis phrase and the loop
-    answers it, with the panel coming out of the model's own <safety> block."""
+    """Triage belongs to the model: the panel comes out of its own <safety> block."""
 
     class _PassingGuardrail:
         def __init__(self):
@@ -171,10 +159,7 @@ def test_a_crisis_message_flows_through_the_guardrail_into_the_loop(monkeypatch,
     assert [c["id"] for c in body["safetyHandoff"]["contacts"]] == ["crisis-988"]
 
 
-# --- the table is data/contacts.csv, and a bad row stops the process ------------------------
-#
-# These run against a written-out file, because what needs pinning is the failure: every one of
-# these malformations would otherwise produce a panel that renders and is missing a number.
+# Written-out files, because each malformation would otherwise render a panel missing a number.
 
 
 @pytest.fixture
@@ -194,7 +179,7 @@ def contacts(tmp_path, monkeypatch):
 
 
 def test_the_committed_table_is_the_one_the_module_loaded():
-    """The assertion that the FILE is what the resolver answers from, not a hardcoded dict."""
+    """The file is what the resolver answers from, not a hardcoded dict."""
     from campus_data import load_rows
 
     rows = [

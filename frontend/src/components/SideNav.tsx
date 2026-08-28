@@ -7,29 +7,14 @@ import { useStrings } from '../lib/i18n';
 import { PressableButton } from './PressableButton';
 import './SideNav.css';
 
-/**
- * The longest name a student may give a conversation. The SERVER's cap
- * (chat.title_max_chars) is the real one and rejects anything longer with a 400; this is the
- * same number spelled where the input can stop them reaching it, so the ordinary way to hit
- * the limit is a field that stops accepting characters rather than an error after the fact.
- */
+/** The longest name a student may give a conversation. */
 const TITLE_MAX_CHARS = 80;
 
-/**
- * Sammy's face, cut out of the SAME artboard the chat stage animates (public/sammy.riv)
- * and shipped as a still. The .riv is a 960 KB vector animation that needs the Rive
- * runtime and a canvas to show anything; the header wants a 24 KB picture, so the crop
- * was taken once, offline, from a rendered frame - the pixels are his own line art rather
- * than a redrawing of it, and the header costs no Rive at runtime.
- *
- * A FAILED LOAD REMOVES HIM FROM THE LAYOUT. Left alone, a broken <img> is a torn-page
- * glyph and the alt text sitting where the face should be, which is worse than never
- * having put a picture there. Rendering nothing puts the header back to exactly the text
- * it used to be.
- */
+/** Sammy's face, cut out of the same artboard the chat stage animates (public/sammy.riv) and
+ * shipped as a still. */
 function SammyMark({ className }: { className: string }) {
-	// Above the early return, or the second render of a failed image would call one hook
-	// fewer than the first.
+	// Above the early return, or the second render of a failed image would call one hook fewer
+	// than the first.
 	const t = useStrings();
 	const [failed, setFailed] = useState(false);
 	if (failed) return null;
@@ -48,12 +33,7 @@ function SammyMark({ className }: { className: string }) {
 	);
 }
 
-/**
- * The rail control, and the collapse control. A panel whose NARROW PANE IS FILLED, drawn
- * once and mirrored between the two states (see .side-nav__collapse in the stylesheet):
- * the solid bar sits on the side the sidebar is about to be, so the glyph says which way
- * the click goes rather than being the same picture twice.
- */
+/** The rail control, and the collapse control. */
 function PanelIcon() {
 	return (
 		<svg
@@ -69,10 +49,8 @@ function PanelIcon() {
 		>
 			<rect x="3" y="4" width="18" height="16" rx="3" />
 			<path d="M9.5 4v16" />
-			{/* Inset to the INNER edge of the 1.9 stroke (x 4, y 5 to 19) with its own 2.1
-			    corner radius rather than the outer 3, so it hugs the frame instead of
-			    leaving a sliver of paper in the curve. It runs to the divider's centre
-			    line, which paints over the join. */}
+			{/* Inset to the inner edge of the stroke with its own corner radius, so it hugs the
+			 * frame. */}
 			<path
 				d="M4 7.1A2.1 2.1 0 0 1 6.1 5h2.5v14H6.1A2.1 2.1 0 0 1 4 16.9z"
 				fill="currentColor"
@@ -95,38 +73,18 @@ type SideNavProps = {
 	historyError?: string | null;
 	userEmail?: string;
 	onLogout?: () => void;
-	/**
-	 * Opens settings. NOT OPTIONAL, and that is the change: the gear used to be handed an
-	 * `onOpenCost` that was undefined unless the stack stamped a cost model into config.json,
-	 * so a deployment with the cost panel off had no gear at all. Settings now holds the
-	 * language picker, which is for the student rather than for a sponsor, so it is always
-	 * there; what the cost model's absence hides is the section inside it (SettingsPanel).
-	 */
+	/** Opens settings. */
 	onOpenSettings: () => void;
-	/**
-	 * DESKTOP ONLY. The rail is collapsed to its icon width; the mobile drawer is always
-	 * given `false`, because it is already a thing you open and dismiss and a drawer that
-	 * opened to a 3.5rem strip would be a drawer that opened to nothing.
-	 */
+	/** Desktop only. */
 	collapsed?: boolean;
-	/**
-	 * Idempotent on purpose. Both ways of expanding - the brand button and a click anywhere
-	 * on the rail - call this, and the button's click bubbles to the rail, so "expand" has
-	 * to survive being asked for twice in one gesture. A toggle would collapse straight
-	 * back again.
-	 */
+	/** Idempotent on purpose. */
 	onExpand?: () => void;
 	/** Absent on the mobile drawer, which is what keeps the collapse control off it. */
 	onCollapse?: () => void;
 	onClose: () => void;
 	onNewChat: () => void;
 	onSelectChat: (id: string) => void;
-	/**
-	 * Rename and delete, both resolving only once the SERVER has agreed. They are async
-	 * because the row stays disabled until then: a title that appeared instantly and then
-	 * reverted, or a row that vanished and came back, would be the sidebar lying about what
-	 * is stored - which is the one thing this component is not allowed to do.
-	 */
+	/** Rename and delete, both resolving only once the server has agreed. */
 	onRenameChat: (id: string, title: string) => Promise<void>;
 	onDeleteChat: (id: string) => Promise<void>;
 };
@@ -150,9 +108,7 @@ function NavContent({
 	onDeleteChat,
 }: Omit<SideNavProps, 'open' | 'onClose'>) {
 	const t = useStrings();
-	// Which row is mid-rename, mid-delete-confirm, or waiting on the server. Local to the
-	// sidebar because none of it is data: it is what this panel is currently showing, and it
-	// is thrown away the moment the server answers.
+	// Which row is mid-rename, mid-delete-confirm, or waiting on the server.
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const [draft, setDraft] = useState('');
 	const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -174,8 +130,7 @@ function NavContent({
 
 	const commitRename = (chat: ChatSession) => {
 		const title = draft.trim();
-		// An unchanged or emptied name is not a rename. Closing without a request is the
-		// honest outcome: nothing was asked for, so nothing is claimed.
+		// An unchanged or emptied name is not a rename.
 		if (!title || title === chat.title) {
 			closeRowUi();
 			return;
@@ -199,17 +154,12 @@ function NavContent({
 			.finally(() => setPendingId(null));
 	};
 
-	// A chat with no conversation id is one started in this tab that has not been sent yet,
-	// so it is not "history" - it is the only thing in the list on a first visit, and saying
-	// "no past chats" beneath it would be wrong the moment the student presses send.
+	// A chat with no conversation id was started in this tab and never sent, so it is not
+	// history, and "no past chats" beneath it would be wrong the moment the student sends.
 	const stored = chats.filter((chat) => chat.conversationId);
 
-	/**
-	 * The collapsed rail: his face at the top, the signed-in student at the bottom, nothing
-	 * else. This is a SEPARATE TREE rather than the full sidebar with most of it hidden -
-	 * a rail built by display:none would still be laying out chat titles inside a 3.5rem
-	 * strip, and every one of them would flash as an ellipsis on the way open.
-	 */
+	/** The collapsed rail: his face at the top, the signed-in student at the bottom, nothing
+	 * else. */
 	if (collapsed) {
 		return (
 			<div className="side-nav__rail">
@@ -221,10 +171,8 @@ function NavContent({
 					aria-expanded={false}
 					title={t.expandSidebar}
 				>
-					{/* Both live in one grid cell and cross-fade: hovering ANYWHERE on the rail
-					    turns his face into the control (see SideNav.css), which is the whole
-					    trick - the mark is the button, rather than a button appearing next to a
-					    mark and making the rail feel crowded. */}
+					{/* Both live in one grid cell and cross-fade, so the mark is the button rather than
+					    a button appearing beside it. */}
 					<SammyMark className="side-nav__mark side-nav__mark--rail" />
 					<span className="side-nav__rail-icon">
 						<PanelIcon />
@@ -232,9 +180,8 @@ function NavContent({
 				</button>
 
 				{userEmail ? (
-					// Not a button. The rail's own click expands, so a second control here would
-					// be a second thing to tab to that does what the first one does; the initial
-					// is identity, and the title says whose.
+					// Not a button: the rail's own click expands, so a second control adds a
+					// tab stop.
 					<span className="side-nav__rail-avatar" title={userEmail} aria-hidden="true">
 						{userEmail.trim().charAt(0).toUpperCase()}
 					</span>
@@ -247,11 +194,7 @@ function NavContent({
 		<>
 			<div className="side-nav__header">
 				<div className="side-nav__brand">
-					{/* Sammy, then the name. A rounded blue tile holding an "S" used to sit here; it
-					    stood for nothing and read as a placeholder logo, and his actual face is the
-					    thing the tile was pretending to be. The wrapper's aria-label is gone with
-					    the second line it existed to join: the image carries its own alt and the
-					    name is one string, so there is nothing left to fix into a single reading. */}
+					{/* Sammy, then the name.  */}
 					<SammyMark className="side-nav__mark" />
 					<span className="side-nav__brand-copy">
 						<strong>{t.brandName}</strong>
@@ -286,9 +229,8 @@ function NavContent({
 						const active = chat.id === activeChatId;
 						const opening = chat.id === openingChatId;
 						const pending = chat.id === pendingId;
-						// A chat with no conversation id has never been sent, so there is nothing
-						// on the server to rename or delete. That row is the welcome screen, and it
-						// stops being one the moment the student asks something.
+						// A chat with no conversation id has never been sent, so there is
+						// nothing on the server to rename or delete.
 						const stored = Boolean(chat.conversationId);
 
 						if (chat.id === editingId) {
@@ -310,8 +252,8 @@ function NavContent({
 											disabled={pending}
 											onChange={(event) => setDraft(event.target.value)}
 											onKeyDown={(event) => {
-												// Escape abandons the edit. Backing out of a rename is a
-												// small, reversible thing and should not cost a click.
+												// Escape abandons the edit: backing out
+												// should not cost a click.
 												if (event.key === 'Escape') closeRowUi();
 											}}
 										/>
@@ -335,9 +277,7 @@ function NavContent({
 							return (
 								<li key={chat.id} className="side-nav__row">
 									<div className="side-nav__confirm" role="group" aria-label={t.deleteChat(chat.title)}>
-										{/* Named, and named as permanent. The server hard deletes the
-										    conversation and every message under it, so this sentence is
-										    the last point at which that is still a choice. */}
+										{/* Named, and named as permanent.  */}
 										<p className="side-nav__confirm-copy">{t.deleteConfirm(chat.title)}</p>
 										<div className="side-nav__confirm-actions">
 											<button
@@ -372,19 +312,15 @@ function NavContent({
 									aria-current={active ? 'page' : undefined}
 									aria-busy={opening ? 'true' : undefined}
 								>
-									{/* The unsent chat's placeholder is chrome, not a name the server
-									    gave anything, so it reads in the student's language. Every
-									    other title here was typed by a student or written by the
-									    server and is left exactly as it is stored. */}
+									{/* The placeholder is chrome, not a stored name, so it reads
+									 * in the student's language. */}
 									<span>{chat.title === UNSENT_CHAT_TITLE ? t.newChat : chat.title}</span>
 									{opening ? <span className="side-nav__chat-status">{t.opening}</span> : null}
 								</button>
 
 								{stored && !opening ? (
-									// Revealed on hover and on FOCUS-WITHIN, so both controls are reachable
-									// by keyboard rather than only by mouse. They sit over the end of the
-									// title rather than beside it: a column reserved for them would narrow
-									// every row for the sake of two buttons most rows never show.
+									// Revealed on hover and on focus-within, so both controls
+									// are reachable by keyboard rather than only by mouse.
 									<div className="side-nav__row-actions">
 										<button
 											type="button"
@@ -439,9 +375,7 @@ function NavContent({
 					</p>
 				) : null}
 
-				{/* A failed rename or delete, said where it happened. The row is left as it
-				    was rather than optimistically changed and reverted, so this note is the
-				    only thing that changes: what is on screen still matches what is stored. */}
+				{/* A failed rename or delete, said where it happened.  */}
 				{rowError ? (
 					<p className="side-nav__history-note side-nav__history-note--error" role="status">
 						{rowError}
@@ -465,15 +399,7 @@ function NavContent({
 							>
 								{t.signOut}
 							</PressableButton>
-							{/*
-							  A gear, and now it means what a gear means. It was drawn as one already
-							  - a dollar sign in a student's sidebar advertises that this app has a
-							  price, which is the opposite of what this surface should say to the
-							  student it is for - and behind it there is a settings panel rather than
-							  a single sponsor instrument. It is UNCONDITIONAL: the language picker
-							  inside belongs to the student, so a deployment with the cost model
-							  switched off still has settings, minus that section.
-							*/}
+							{/* A gear, and now it means what a gear means.  */}
 							<button
 								type="button"
 								className="side-nav__settings"
@@ -509,18 +435,8 @@ function NavContent({
 const SWIPE_CLOSE_PX = 56;
 const SWIPE_CLOSE_VELOCITY = 380;
 
-/**
- * The mobile surface is the standard modal navigation drawer: it covers four fifths of the
- * viewport, the remaining sliver of chat stays visible under a scrim, and it is dismissed
- * by tapping that sliver or by dragging left. There is no close button - the drawer's own
- * mock does not have one, and the scrim is the affordance.
- *
- * Reduced motion is read from the OS query only (there is no in-app motion setting): the
- * slide and the scrim fade both collapse to zero duration, so the drawer is simply there
- * on the first frame. The DRAG is left alone under that preference on purpose - it is the
- * student's own finger moving the panel, which is direct manipulation rather than motion
- * the interface decided to play at them.
- */
+/** The standard modal drawer: a scrim over the remaining sliver of chat, dismissed by tapping it
+ * or by dragging left. */
 export function SideNav(props: SideNavProps) {
 	const t = useStrings();
 	const reduceMotion = usePrefersReducedMotion();
@@ -530,14 +446,7 @@ export function SideNav(props: SideNavProps) {
 
 	return (
 		<>
-			{/*
-			  THE SECOND WAY TO EXPAND. The whole collapsed strip is a click target, which is
-			  the behaviour a thin rail invites - you aim at the bar, not at the 28px picture
-			  on it. It is deliberately mouse-only affordance layered over a real control: the
-			  brand button inside is what a keyboard reaches, and it does the same thing, so
-			  nothing here is reachable only by pointer. onExpand is idempotent, which is why
-			  the button's click bubbling into this handler is harmless.
-			*/}
+			{/* THE SECOND WAY TO EXPAND.  */}
 			<aside
 				className={`side-nav side-nav--desktop${props.collapsed ? ' side-nav--collapsed' : ''}`}
 				onClick={props.collapsed ? props.onExpand : undefined}
@@ -567,8 +476,8 @@ export function SideNav(props: SideNavProps) {
 							drag="x"
 							dragDirectionLock
 							dragMomentum={false}
-							// Left of the open position is free travel; right of it is pinned, so
-							// the drawer cannot be dragged wider than it is.
+							// Left of the open position is free travel; right of it is pinned,
+							// so the drawer cannot be dragged wider than it is.
 							dragConstraints={{ left: 0, right: 0 }}
 							dragElastic={{ left: 1, right: 0 }}
 							onDragEnd={(_event, info) => {
@@ -577,8 +486,8 @@ export function SideNav(props: SideNavProps) {
 								}
 							}}
 						>
-							{/* Never collapsed, and no collapse control: this one is already a panel
-							    you open and dismiss, and the rail is a desktop idea. */}
+							{/* Never collapsed, and no collapse control: this one is already a
+							 * panel you open and dismiss, and the rail is a desktop idea. */}
 							<NavContent {...props} collapsed={false} onCollapse={undefined} />
 						</motion.aside>
 					</>

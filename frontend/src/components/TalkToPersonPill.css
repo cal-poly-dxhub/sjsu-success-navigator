@@ -1,10 +1,4 @@
-/*
- * Positioning only, plus the seal and the two-line copy. The shape, the bottom edge and the
- * press come from .pressable (ghost) - this control is in the same family as the source and
- * follow-up buttons, not a floating pill of its own.
- *
- * Brand colours come only from the theme tokens; tints are derived with color-mix.
- */
+/* Positioning only, plus the seal and the two-line copy. */
 .talk-pill {
 	position: fixed;
 	right: 1rem;
@@ -70,12 +64,8 @@
 	background: color-mix(in srgb, var(--accent-blue) 5%, #fff);
 }
 
-/*
- * On mobile this is the right-hand half of the header, opposite the menu control, so it
- * moves off the bottom-right corner it holds on desktop. The max-width is what keeps it
- * off the menu button at a 320px viewport: 1rem + the 2.65rem button + a 0.5rem gap on
- * the left, 0.85rem on the right.
- */
+/* On mobile this is the right-hand half of the header, opposite the menu control, so it moves
+ * off the bottom-right corner it holds on desktop. */
 @media (max-width: 860px) {
 	.talk-pill {
 		top: 1rem;

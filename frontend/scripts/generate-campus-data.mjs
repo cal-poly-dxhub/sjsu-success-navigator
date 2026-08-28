@@ -1,26 +1,4 @@
-/**
- * Turn the repo-root `data/` CSVs into a TypeScript module the site imports.
- *
- * WHY A GENERATED MODULE AND NOT A FETCH. The facts are known when the site is built, and a
- * student reading an answer should not wait on a second request - or get a page that renders
- * without its address because that request failed. So the CSVs are read at BUILD time and the
- * values are compiled into the bundle, exactly as the hand-written constants they replace
- * were. Nothing about the runtime changes.
- *
- * WHY IT CANNOT GO STALE. The output is gitignored, so it cannot be committed, and npm's
- * `prebuild`/`predev` hooks run this before `astro` ever starts - so every build regenerates
- * it from the CSVs on disk. A hand-edit survives until the next build and no further, and the
- * file says so at the top of itself. This is the half of the job that makes `data/` the single
- * source rather than the first of two.
- *
- * WHAT IS DELIBERATELY LEFT OUT: the `safety` rows of contacts.csv. The crisis panel is
- * assembled by the SERVER, from that same table, and the label, number and link a student in
- * danger reads are table-authored on purpose (app/safety.py). Shipping those rows to the
- * browser would put a second copy in reach of the next person who needs a contact on screen,
- * and the whole point of that design is that there is one.
- *
- * Run by hand while developing: `node scripts/generate-campus-data.mjs`.
- */
+/** Turn the repo-root `data/` CSVs into a TypeScript module the site imports. */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -28,23 +6,15 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FRONTEND = resolve(HERE, '..');
-// `data/` sits at the repo root, one level above frontend/. The Docker build that runs at
-// `cdk synth` copies it to the same relative place (see _astro_bundling in
-// infra/infra/infra_stack.py), so this one path is correct in a checkout, in CI and in the
-// container.
+// `data/` sits at the repo root, one level above frontend/.
 const DATA_DIR = process.env.CAMPUS_DATA_DIR ?? resolve(FRONTEND, '..', 'data');
 const OUT_FILE = join(FRONTEND, 'src', 'lib', 'generated', 'campusData.ts');
 
-/** Fatal, and every failure in this file uses it: see the loud-or-nothing rule in data/README.md. */
+/** Fatal, and every failure in this file uses it: see the loud-or-nothing rule in
+ * data/README.md. */
 class DataError extends Error {}
 
-/**
- * Minimal RFC 4180 reader: quoted fields, embedded commas, doubled quotes, CRLF.
- *
- * Hand-rolled rather than a dependency because this runs before `npm ci` has any say in what
- * the build needs, and because the alternative is adding a package to the site's lockfile for
- * eleven lines of parsing.
- */
+/** Minimal RFC 4180 reader: quoted fields, embedded commas, doubled quotes, CRLF. */
 function parseCsv(text, file) {
 	const rows = [];
 	let row = [];
@@ -108,10 +78,7 @@ function readTable(file, { required, optional = [] }) {
 		throw new DataError(`${file} is missing required column(s): ${missing.join(', ')}.`);
 	}
 	const rows = body.map((cells, index) => {
-		// The row's SHAPE, checked before any of its cells, and the same pair of checks
-		// app/campus_data.py makes - both catch a corruption where every cell that is read
-		// looks perfectly well formed. Too many cells is a stray comma inside a value, which
-		// shifts everything after it one column left; too few is a file that was cut off.
+		// The row's shape, checked first and exactly as app/campus_data.py checks it.
 		if (cells.length !== columns.length) {
 			throw new DataError(
 				`${file} line ${index + 2}: ${cells.length} cells against the header's ` +
@@ -168,7 +135,7 @@ const contactRows = readTable('contacts.csv', {
 });
 const contacts = keyBy(contactRows, 'id', 'contacts.csv');
 
-// The rows the browser is allowed to see. `safety` is absent on purpose - see the header.
+// The rows the browser is allowed to see. `safety` is absent on purpose, see the header.
 const BROWSER_KINDS = new Set(['cares', 'escalation']);
 
 /** A required cell, or a DataError that names the row a person has to go and fix. */
@@ -196,15 +163,12 @@ function place(key) {
 	return row;
 }
 
-// Read every value the site needs BEFORE writing anything, so a bad row leaves the previous
+// Read every value the site needs before writing anything, so a bad row leaves the previous
 // generated file in place rather than a half-written one.
 const caresLocation = place('sjsu-cares').address;
 const browserContacts = contactRows.filter((row) => BROWSER_KINDS.has(row.kind));
 
-// Every row the SJSU Cares modal reads, and the cell it reads out of it. Checked here so a
-// renamed or emptied row fails the BUILD with the id in the message, rather than rendering a
-// panel with a blank where the phone number goes. lib/sjsuCares.ts is the only consumer and
-// this list mirrors it.
+// Every row the SJSU Cares modal reads, and the cell it reads out of it.
 const REQUIRED_CARES_CELLS = {
 	'sjsu-cares': 'detail',
 	'sjsu-cares-phone': 'detail',

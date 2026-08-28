@@ -1,7 +1,6 @@
 """The campus location card: what the model may say, and what it can never say.
 
-An unlisted place yields no card and no request leaves for a third party. The tables are
-data/places.csv and data/buildings.csv; see docs/chat-service.md, Campus location cards.
+An unlisted place yields no card, and no request leaves for a third party.
 """
 
 import logging
@@ -25,9 +24,6 @@ _IMAGE_DIR = Path(__file__).resolve().parents[2] / "frontend" / "public" / "plac
 
 # The SJSU main campus and its immediate edge, generously drawn.
 _CAMPUS_BOX = (37.3300, 37.3410, -121.8880, -121.8750)  # south, north, west, east
-
-
-# --- the two tables ------------------------------------------------------------------------
 
 
 def test_every_place_names_a_building_that_exists():
@@ -72,9 +68,6 @@ def test_the_roster_is_the_resolvers_own_table():
         assert resolve_place(key) is not None
 
 
-# --- the coordinates ------------------------------------------------------------------------
-
-
 def test_every_building_coordinate_is_on_campus():
     """The failure an automated geocode produces is a plausible building in the wrong place."""
     south, north, west, east = _CAMPUS_BOX
@@ -92,11 +85,8 @@ def test_no_two_buildings_share_a_coordinate():
         seen[point] = key
 
 
-# --- the committed maps ---------------------------------------------------------------------
-
-
 def test_every_building_has_a_committed_map_image():
-    """THE IMAGES ARE COMMITTED, NOT BUILT, so nothing at deploy time would notice one missing."""
+    """The images are committed, not built, so nothing at deploy time would notice one gone."""
     for key in CAMPUS_BUILDINGS:
         path = _IMAGE_DIR / f"{key}.webp"
         assert path.exists(), f"{path} is missing; run scripts/render_place_maps.py"
@@ -110,7 +100,7 @@ def test_no_committed_image_is_orphaned():
 
 
 def test_the_map_url_is_served_from_our_own_origin():
-    """A ROOT-RELATIVE PATH, never a URL: the map comes off the same distribution as the page."""
+    """A root-relative path, never a URL: the map comes off the page's own distribution."""
     for key, place in CAMPUS_PLACES.items():
         url = map_image_url(place)
         assert url is not None, key
@@ -133,9 +123,6 @@ def test_a_place_in_an_unrendered_building_still_makes_a_card(caplog):
     assert "not-rendered-yet" in caplog.text
 
 
-# --- resolution -----------------------------------------------------------------------------
-
-
 def test_a_listed_place_resolves_to_the_tables_own_strings():
     card = resolve_place("career-center")
     entry = CAMPUS_PLACES["career-center"]
@@ -153,12 +140,12 @@ def test_offices_in_one_building_share_its_map():
     assert clark == {"career-center", "title-ix-office", "eop", "guardian-scholars"}
     images = {resolve_place(key).map_image_url for key in clark}
     assert images == {"/places/clark-hall.webp"}
-    # The addresses still differ - that is the half the shared image does not cover.
+    # The addresses still differ, which is the half the shared image does not cover.
     assert len({resolve_place(key).address for key in clark}) > 1
 
 
 def test_an_unlisted_place_yields_no_card_and_says_so(caplog):
-    """THE RULE THE WHOLE FEATURE RESTS ON: no guessed card, and the drop is logged."""
+    """The rule the whole feature rests on: no guessed card, and the drop is logged."""
     with caplog.at_level(logging.WARNING, logger="places"):
         assert resolve_place("student-union-bowling-alley") is None
     assert "student-union-bowling-alley" in caplog.text
@@ -172,9 +159,6 @@ def test_no_block_is_the_quiet_case():
 def test_a_key_resolves_regardless_of_case_and_stray_space():
     assert resolve_place("  Career-Center  ") is not None
     assert resolve_place("CAREER-CENTER").key == "career-center"
-
-
-# --- the directions link: keyless, and provably so -------------------------------------------
 
 
 def test_the_directions_link_is_a_plain_maps_url():
@@ -207,11 +191,8 @@ def test_the_directions_url_is_built_only_from_the_table():
     )
 
 
-# --- no cap ever touches an address ----------------------------------------------------------
-
-
 def test_an_address_is_never_shortened_however_long_it_runs(monkeypatch):
-    """LENGTH CAPS MUST NEVER TRUNCATE AN ADDRESS, and no cap is applied on this path."""
+    """No cap is applied on this path: half an address is worse than none."""
     long_address = "Clark Hall, " + "first floor past the stairs, " * 60 + "room 140"
     assert len(long_address) > 1000
     monkeypatch.setitem(
@@ -230,10 +211,7 @@ def test_an_address_is_never_shortened_however_long_it_runs(monkeypatch):
     assert "…" not in card.address
 
 
-# --- the tables are data/places.csv and data/buildings.csv -------------------------------------
-#
-# Everything above would pass against two hardcoded dicts. These say the FILES are what got
-# loaded, and that a bad row stops the process rather than dropping an office.
+# Everything above would pass against two hardcoded dicts. These say the files are what loaded.
 
 
 @pytest.fixture

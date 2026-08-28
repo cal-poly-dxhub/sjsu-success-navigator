@@ -1,8 +1,4 @@
-"""The escalate-to-human draft: what the server assembles, and every reason it refuses to.
-
-Nothing sends from here and an over-cap draft is dropped rather than trimmed; see
-docs/chat-service.md, Escalation.
-"""
+"""The escalate-to-human draft: what the server assembles, and every reason it refuses to."""
 
 import logging
 
@@ -41,8 +37,7 @@ def test_the_draft_is_the_prose_and_the_provenance_line():
     assert draft is not None
     assert draft.to == "sjsucares@sjsu.edu"
     assert draft.subject == "A student would like to talk with someone"
-    # The whole body, in order, and nothing else in it. An equality, not a substring check:
-    # a line added here reaches a member of staff's inbox.
+    # An equality, not a substring check: a line added here reaches a staff inbox.
     assert draft.body == f"{_PROSE}\n\n{PROVENANCE_LINE}"
 
 

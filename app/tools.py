@@ -1,7 +1,4 @@
-"""The Converse tool config: retrieval, and nothing else.
-
-The model writes its whole turn as text and cards.py reads it; see docs/cards-v2.md.
-"""
+"""The Converse tool config: retrieval, and nothing else."""
 
 TOOL_CONFIG = {
     "tools": [

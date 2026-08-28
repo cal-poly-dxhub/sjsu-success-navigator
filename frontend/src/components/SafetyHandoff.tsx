@@ -7,14 +7,7 @@ type SafetyHandoffProps = {
 	handoff: SafetyHandoffData;
 };
 
-/**
- * THE LABEL IS THE ONLY THING THIS COMPONENT SAYS. Everything inside - the headline, the
- * body, and every contact's label, detail and href - arrives resolved from the server, where
- * app/safety.py holds the numbers in a table. That split is deliberate and it is why the
- * language work stops at the region's name: a crisis line is the one thing on this screen
- * that must be identical in every language, and there is no code path here that could reword
- * one even by accident.
- */
+/** The label is the only thing this component says. */
 export function SafetyHandoff({ handoff }: SafetyHandoffProps) {
 	const t = useStrings();
 

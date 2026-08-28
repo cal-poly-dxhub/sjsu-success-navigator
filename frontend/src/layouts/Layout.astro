@@ -11,16 +11,7 @@ const { title = 'Student Success Navigator' } = Astro.props;
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width" />
-		<!--
-			Sammy's head, cut down from the SAME public/sammy-head.png the side nav shows.
-			TWO EXACT SIZES rather than one file the browser resamples: a tab strip asks for
-			16 CSS px, which is 16 device px at 1x and 32 at 2x, and both are the sizes the
-			art was fitted to offline - a mild sharpen at 16, where the eyes are two pixels
-			and a box reduction loses them, and none at 32, where it fringed the helmet.
-			Transparent, and no plate behind it, because the strip it sits on is light in one
-			theme and near-black in the other: the black linework carries the shape on light,
-			the gold crest and the face carry it on dark.
-		-->
+		<!-- Two exact sizes rather than one the browser resamples, both fitted offline. -->
 		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
 		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
 		<meta name="generator" content={Astro.generator} />
@@ -50,20 +41,8 @@ const { title = 'Student Success Navigator' } = Astro.props;
 		font-family: 'Nunito Sans', Verdana, sans-serif;
 	}
 
-	/*
-	 * Large-monitor scaling, and the reason the avatar stops being a doll in an empty field.
-	 *
-	 * Measured before this existed: the stage, its two columns and the avatar came out at
-	 * exactly 1120 / 588 / 532 / 399px at 1600px, 1920px AND 2560px - the composition
-	 * stopped growing around 1360px and everything past that was margin. This app is
-	 * rem-driven almost everywhere (column caps, the bubble's measure, the card grid's
-	 * track floor, type, spacing, the side nav), so growing the root grows all of it
-	 * together and keeps every proportion the layout was designed with.
-	 *
-	 * Gated at 1440px and starting at exactly 16px there, so nothing at or below the
-	 * desktop breakpoint - and nothing on mobile - changes by a single pixel. The px
-	 * breakpoints elsewhere are unaffected by root size, so there is no feedback loop.
-	 */
+	/* This app is rem-driven, so growing the root grows the whole composition together.
+	 * It starts at exactly 16px, so nothing at or below the desktop breakpoint moves. */
 	@media (min-width: 1440px) {
 		html {
 			font-size: clamp(16px, calc(16px + 4 * (100vw - 1440px) / 1120), 20px);

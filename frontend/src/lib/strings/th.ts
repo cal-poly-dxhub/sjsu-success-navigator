@@ -1,21 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Thai. MACHINE-AUTHORED, NOT REVIEWED BY A THAI SPEAKER. See es.ts for why a file in this
- * state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the student
- * in the settings panel.
- *
- * REVIEWER'S NOTES. NO POLITE PARTICLES anywhere - no ครับ, no ค่ะ - which is the standard
- * for Thai interface copy and is also the only choice available: the particle is gendered
- * after the speaker, and Sammy is a mascot with no gender to pick one from. Politeness is
- * carried by โปรด and กรุณา on the few strings that ask something of the student instead.
- * Thai writes without spaces between words, so the spaces in these strings are phrase
- * boundaries and are load-bearing for line breaking; do not tidy them away. Sentences take
- * no full stop.
- *
- * Proper nouns stay in English on purpose - SJSU Cares, Spartan Food Pantry, CalFresh, Sammy,
- * the product name - because they are what the student will see on signs and on SJSU's pages.
- */
+/** Thai. */
 export const th: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'เข้าสู่ระบบด้วยบัญชี SJSU ของคุณเพื่อดำเนินการต่อ',

@@ -1,8 +1,6 @@
 """Safety handoff: the model triages with keys, the server owns every digit of contact.
 
-There is no pre-model phrase gate, and failure direction is always toward showing help.
-The table is the `safety` rows of data/contacts.csv, read at import; see
-docs/chat-service.md, Safety.
+There is no pre-model phrase gate, and failure always leans toward showing help.
 """
 
 from __future__ import annotations
@@ -24,14 +22,12 @@ class SafetyResource:
     when: str | None
 
 
-# The handoff table, from the `safety` rows of data/contacts.csv, in file order. Read at
-# import, so a malformed row fails the cold start rather than the panel.
+# Read at import, so a malformed row fails the cold start rather than the panel.
 _CONTACTS_FILE = "contacts.csv"
 _SAFETY_KIND = "safety"
 
 
 def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
-    """Return the resources and the default panel, from one pass over the same rows."""
     resources: dict[str, SafetyResource] = {}
     default_keys: list[str] = []
     for row in load_rows(
@@ -42,8 +38,7 @@ def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
         if row["kind"] != _SAFETY_KIND:
             continue
         key = row["id"]
-        # Checked here, not by the file reader: other kinds may leave these blank, but a
-        # safety row is a button on a crisis panel, so a blank one is fatal.
+        # Other kinds may leave these blank; a button on a crisis panel may not.
         for column in ("label", "detail", "href"):
             if not row[column]:
                 raise CampusDataError(
@@ -61,7 +56,6 @@ def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
             contact=SafetyContact(
                 id=key, label=row["label"], detail=row["detail"], href=row["href"]
             ),
-            # An empty `when` keeps a resource resolvable without offering it to the model.
             when=row["when"] or None,
         )
         if parse_flag(
@@ -87,10 +81,10 @@ def _load_safety_table() -> tuple[dict[str, SafetyResource], tuple[str, ...]]:
     return resources, tuple(default_keys)
 
 
-# The panel a bare tag or an all-unknown key list resolves to, marked row by row in the CSV.
+# The panel a bare tag or an all-unknown key list resolves to.
 SAFETY_RESOURCES, DEFAULT_SAFETY_KEYS = _load_safety_table()
 
-# The one sentence the server authors, for a safety turn that arrives with no prose.
+# For a safety turn that arrives with no prose.
 SAFETY_FALLBACK_TEXT = (
     "Thanks for telling me. I'm not able to give counseling myself, so please reach a "
     "real person using the options below. You're not alone, and help is available right now."
@@ -104,7 +98,6 @@ _BODY = (
 
 
 def safety_roster_for_prompt() -> list[tuple[str, str]]:
-    """Return (key, when) pairs for the system prompt, in table order."""
     return [
         (key, resource.when)
         for key, resource in SAFETY_RESOURCES.items()
@@ -113,7 +106,6 @@ def safety_roster_for_prompt() -> list[tuple[str, str]]:
 
 
 def resolve_safety_handoff(keys: tuple[str, ...]) -> SafetyHandoff:
-    """Resolve one model-emitted key list into a panel, in order and deduplicated."""
     contacts: list[SafetyContact] = []
     seen: set[str] = set()
     for key in keys:

@@ -1,5 +1,3 @@
-# Temporary placeholder .gitignore - replace once the stack is settled
-
 # Dependencies
 node_modules/
 .venv/
@@ -21,16 +19,10 @@ cdk.out/
 .env.*
 !.env.example
 
-# The TypeScript view of repo-root data/, written by frontend/scripts/generate-campus-data.mjs
-# before every `npm run build` and `npm run dev`. Ignored so it CANNOT be committed: a
-# committed copy is a second source of truth for facts that already have one, and the kind that
-# goes stale silently because it looks like ordinary source. Regeneration belongs to the build.
+# Generated from data/ before every build: a committed copy would be a second source of truth.
 frontend/src/lib/generated/
 
-# Local dev runtime config, hand-written to point `astro dev` at a deployed API. It is
-# the same bucket key the stack stamps at deploy time, so a committed copy is a second
-# source of truth for the one file that says where the API is - and the wrong one, since
-# it names whichever stack the developer happened to be testing against.
+# Hand-written to point `astro dev` at a deployed API, at the bucket key the stack stamps.
 frontend/public/config.json
 
 # Logs
@@ -55,6 +47,6 @@ coverage/
 # Claude
 .claude
 
-# Eval run artifacts (transcripts, rendered pages, judgments) - local records, not source
+# Eval run artifacts: local records, not source
 eval/results/
 eval/judgments/

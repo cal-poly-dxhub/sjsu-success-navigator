@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Measure what one real question actually COSTS, against the deployed stack.
+"""Measure what one real question actually costs, against the deployed stack.
 
-Runs the real loop in this process against the deployed stack's own wiring, so every
-call is real and billed. On-demand, never CI; see docs/eval-harness.md.
+Every call here is real and billed. On demand, never CI.
 """
 
 from __future__ import annotations
@@ -27,8 +26,7 @@ _GROUND_TRUTH = Path(__file__).resolve().parent / "ground-truth.yaml"
 
 
 def discover_chat_function(session, stack_name: str) -> str:
-    """The chat function's real name, from the stack's own resources. Its physical name
-    carries CloudFormation's hash, so a literal would measure a different account."""
+    """The physical name carries CloudFormation's hash, so a literal measures another account."""
     cfn = session.client("cloudformation")
     paginator = cfn.get_paginator("list_stack_resources")
     for page in paginator.paginate(StackName=stack_name):
@@ -41,15 +39,14 @@ def discover_chat_function(session, stack_name: str) -> str:
 
 
 def load_deployed_settings(session, function_name: str):
-    """Build app.settings.Settings from the DEPLOYED function's environment, which is what
-    makes the measurement attributable to this stack rather than to config.yaml."""
+    """From the deployed function's environment, so the measurement belongs to this stack."""
     config = session.client("lambda").get_function_configuration(
         FunctionName=function_name
     )
     environment = config.get("Environment", {}).get("Variables", {})
 
     sys.path.insert(0, str(_APP_DIR))
-    from settings import load_settings  # noqa: E402 - path set immediately above
+    from settings import load_settings  # noqa: E402 (path set immediately above)
 
     preserved = dict(os.environ)
     os.environ.update(environment)
@@ -64,7 +61,7 @@ def load_deployed_settings(session, function_name: str):
 
 
 def lambda_billed_seconds(session, stack_name: str) -> tuple[float, int] | tuple[None, None]:
-    """Mean BILLED duration of real /chat invocations, from the function's REPORT lines."""
+    """Mean billed duration of real /chat invocations, from the function's REPORT lines."""
     import time
 
     logs = session.client("logs")
@@ -96,14 +93,7 @@ def lambda_billed_seconds(session, stack_name: str) -> tuple[float, int] | tuple
 
 
 class UsageRecorder:
-    """Wrap the bedrock-runtime client so every Converse response's `usage` is captured,
-    leaving the loop under measurement byte-identical to the deployed one.
-
-    `modelId` is kept beside each call because this stack calls TWO models on a turn that
-    names a conversation, and they are not billed at the same rate; ApplyGuardrail is
-    captured for the same reason the Converse calls are - so the audit below can corroborate
-    app/usage.py against the service rather than against itself.
-    """
+    """Captures every response's `usage` and its `modelId`, leaving the loop untouched."""
 
     def __init__(self, inner):
         self._inner = inner
@@ -132,7 +122,6 @@ class UsageRecorder:
 
 
 def measure_one(orchestrator, retrieve_module, settings, query: str, history):
-    """One turn through the real loop. Returns its billable units."""
     from models import ChatRequest
 
     recorder = UsageRecorder(boto3.client("bedrock-runtime", region_name=settings.bedrock_region))
@@ -154,8 +143,7 @@ def measure_one(orchestrator, retrieve_module, settings, query: str, history):
         orchestrator.retrieve_chunks = original_retrieve
         orchestrator._BEDROCK_CLIENT = None
 
-    # A turn that retrieved nothing is a BROKEN measurement, not a cheap question:
-    # the input tokens are missing the passages that dominate them.
+    # A turn that retrieved nothing is broken, not cheap: the passages dominate the input.
     if retrievals["count"] == 0:
         raise SystemExit(
             "A turn completed with zero retrievals: the primed search failed, so these "
@@ -173,17 +161,7 @@ def measure_one(orchestrator, retrieve_module, settings, query: str, history):
 
 
 def audit_one(orchestrator, retrieve_module, titles, turn, settings, query: str) -> dict:
-    """One turn run with the SERVER'S OWN tally attached, beside the raw usage blocks.
-
-    THE INSTRUMENT IS CHECKED BEFORE IT IS READ. app/usage.py counts inside the loop, which
-    is the only place the counts exist - so nothing outside the loop can corroborate it
-    except this: the same turn, with every Converse and ApplyGuardrail response captured at
-    the client and summed independently. A disagreement here means the cost panel is
-    pricing a number the service never reported.
-
-    The sequence is app/turn.py's, minus the three DynamoDB steps: screen, loop, name. The
-    title is included deliberately - it is the one step that calls a SECOND model.
-    """
+    """The instrument checked before it is read: app/usage.py against the service itself."""
     from models import ChatRequest
     from usage import TurnUsage
 
@@ -239,12 +217,7 @@ def audit_one(orchestrator, retrieve_module, titles, turn, settings, query: str)
 
 
 def run_audit(orchestrator, retrieve_module, titles, turn, settings, questions) -> int:
-    """Audit turns until both shapes are covered: a one-call turn and a multi-call one.
-
-    A tally that agrees on a single call proves nothing about the loop, because the loop is
-    where the addition happens - a turn that searches again bills a second full context and
-    the panel has to see both.
-    """
+    """Both shapes, because a tally that agrees on one call proves nothing about the loop."""
     print("Auditing app/usage.py against Bedrock's own usage blocks.")
     print(f"  generation  {settings.generation_model_id}")
     print(f"  title       {settings.title_model_id}\n")
@@ -291,9 +264,7 @@ def run_audit(orchestrator, retrieve_module, titles, turn, settings, questions) 
 
 
 def _comparison(audited: list[dict]) -> list[tuple[str, int, int]]:
-    """The rows that have to match: Bedrock's own numbers, PER MODEL, against the fields
-    app/usage.py put them in. Comparing the two models' tokens as one total would pass
-    whether or not they landed in the right bucket, which is the whole thing being checked."""
+    """Per model, because one total would pass whether or not the buckets were right."""
     def raw(key: str) -> int:
         return sum(r[key] for r in audited)
 
@@ -311,12 +282,11 @@ def _comparison(audited: list[dict]) -> list[tuple[str, int, int]]:
 
 
 def _differences(row: dict) -> list[str]:
-    """Which of the comparison rows disagree for one turn."""
     return [label for label, raw, recorded in _comparison([row]) if raw != recorded]
 
 
 def measure_guardrail(session, settings, query: str) -> int:
-    """The input screen, exactly as the handler runs it, for its billed text units."""
+    """Exactly as the handler runs it, for its billed text units."""
     client = session.client("bedrock-runtime", region_name=settings.bedrock_region)
     result = client.apply_guardrail(
         guardrailIdentifier=settings.input_guardrail_id,
@@ -329,9 +299,7 @@ def measure_guardrail(session, settings, query: str) -> int:
 
 
 def embedding_model_arn(session, settings) -> str:
-    """The KB's own embedding model ARN, which is the dimension AWS/Bedrock publishes the
-    retriever's token counts under. Read off the deployed knowledge base rather than
-    config.yaml, for the reason every other value here is."""
+    """The dimension AWS/Bedrock publishes the retriever's token counts under."""
     kb = session.client("bedrock-agent").get_knowledge_base(
         knowledgeBaseId=settings.knowledge_base_id
     )["knowledgeBase"]
@@ -341,10 +309,7 @@ def embedding_model_arn(session, settings) -> str:
 
 
 def print_before_and_after(block: dict) -> None:
-    """The committed constants beside the ones just measured, and what the panel's
-    per-message figure does between them. Read from config.yaml ONLY here: nothing above
-    this line is allowed to, because a measurement that consulted the number it is
-    replacing is not one."""
+    """The only place config.yaml is read: a measurement that consulted its own answer is not one."""
     config_path = _REPO_ROOT / "config.yaml"
     try:
         cost_model = yaml.safe_load(config_path.read_text())["cost_model"]
@@ -366,15 +331,7 @@ def print_before_and_after(block: dict) -> None:
 
 
 def bedrock_by_model(session, started, finished, model_ids: dict) -> dict:
-    """Bedrock's OWN per-model counters over one eval run's window.
-
-    WHY THIS EXISTS. `/chat` reports one `usage` block per turn, and until app/usage.py
-    learned to split them that block folded the answering model's tokens together with the
-    titling model's. The deployed function is whatever was last deployed, so a run against
-    it cannot be asked for the split - but AWS publishes it: AWS/Bedrock carries
-    Invocations, InputTokenCount and OutputTokenCount per `ModelId`. Summed over the run's
-    window, those are the same calls the transcript counted, taken apart by model.
-    """
+    """The split a deployed function's wire `usage` cannot be asked for, taken apart by model."""
     import datetime
 
     cloudwatch = session.client("cloudwatch")
@@ -391,9 +348,7 @@ def bedrock_by_model(session, started, finished, model_ids: dict) -> dict:
                 Dimensions=[{"Name": "ModelId", "Value": model_id}],
                 StartTime=start,
                 EndTime=end,
-                # 60s is the finest AWS/Bedrock publishes, so a window is rounded out to
-                # whole minutes either side. The reconciliation below is what makes that
-                # safe: traffic from anything else in those minutes breaks it loudly.
+                # 60s is the finest AWS/Bedrock publishes; the reconciliation below makes it safe.
                 Period=60,
                 Statistics=["Sum"],
             )["Datapoints"]
@@ -403,9 +358,7 @@ def bedrock_by_model(session, started, finished, model_ids: dict) -> dict:
 
 
 def reconcile(per_model: dict, totals: dict) -> None:
-    """The per-model split has to add back up to what the run itself reported, or it is
-    describing different calls - a neighbouring minute's traffic, or a window that cut the
-    tail off. Refusing loudly, because either failure produces plausible numbers."""
+    """It has to add back up, because a window off by a minute produces plausible numbers."""
     generation, title = per_model["generation"], per_model["title"]
     checks = [
         ("model calls",
@@ -430,9 +383,7 @@ def reconcile(per_model: dict, totals: dict) -> None:
 
 
 def per_message_cost(rates: dict, measured: dict) -> float:
-    """What the panel says one message costs. MIRRORS frontend/src/lib/costModel.ts,
-    perMessage - it is here only so a recalibration can print the old figure beside the
-    new one, and it must be changed with that file or the two will disagree."""
+    """Mirrors `perMessage` in frontend/src/lib/costModel.ts and must move with it."""
     million = 1_000_000
     model = (
         measured["model_calls_avg"] * measured["context_tokens_per_call_base"] / million
@@ -458,12 +409,7 @@ def per_message_cost(rates: dict, measured: dict) -> float:
 
 
 def load_eval_run(path: Path) -> tuple[list[dict], dict, str, str]:
-    """One eval transcript's turns, as billable units. Nothing here is re-asked or re-billed.
-
-    These are turns through the REAL front door - API Gateway, the chat Lambda, the daily
-    cap, the guardrail, the store - under the eval account's own identity, which is the one
-    thing running the loop in this process cannot be.
-    """
+    """Turns through the real front door. Nothing here is re-asked or re-billed."""
     import json
 
     transcript = json.loads(path.read_text())
@@ -501,7 +447,7 @@ def load_eval_run(path: Path) -> tuple[list[dict], dict, str, str]:
 
 
 def load_questions(limit: int) -> list[str]:
-    """Real questions from the ground-truth set, spread across its behaviours by stride."""
+    """Spread across the ground-truth set's behaviours by stride."""
     data = yaml.safe_load(_GROUND_TRUTH.read_text())
     items = data.get("pairs") or []
     questions = [item["question"] for item in items if item.get("question")]
@@ -552,8 +498,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # PROCESS-WIDE, before anything under app/ is imported: those modules build clients
-    # from the DEFAULT session, so without this they can quietly measure another account.
+    # Before anything under app/ is imported: those modules build clients from the default session.
     os.environ["AWS_PROFILE"] = args.profile
     os.environ["AWS_DEFAULT_REGION"] = args.region
     os.environ.pop("AWS_ACCESS_KEY_ID", None)
@@ -586,9 +531,7 @@ def main() -> int:
 
     per_model = None
     if args.from_eval:
-        # THE SINGLE-TURN HALF COMES FROM TURNS THAT ALREADY HAPPENED, through API Gateway
-        # and the chat Lambda under the eval account's own identity - which is the one thing
-        # running the loop in this process cannot be. Nothing here is re-asked or re-billed.
+        # Turns that already happened through the front door: nothing is re-asked or re-billed.
         singles, run, started, finished = load_eval_run(Path(args.from_eval))
         questions = [turn_["question"] for turn_ in singles]
         print(f"Reading {len(singles)} deployed turn(s) from {Path(args.from_eval).name}")
@@ -632,7 +575,7 @@ def main() -> int:
                 f"{units['retrievals']} retrieval(s)  {question[:52]!r}"
             )
 
-    # ---- the depth slope, a CONTROLLED experiment; see docs/eval-harness.md -------------
+    # The depth slope, a controlled experiment.
     print("\nDepth series (same question, growing history):")
     transcript: list[StoredMessage] = []
     for index, (question, units) in enumerate(zip(questions, singles)):
@@ -645,8 +588,7 @@ def main() -> int:
     probes = questions[: args.depth_probes]
     for probe_index, probe in enumerate(probes, start=1):
         for prior_turns in range(args.depth_turns):
-            # Trimmed to the window the server shows the model, so the series flattens
-            # past the trim exactly as production does.
+            # Trimmed to the window the server shows the model, so the series flattens as it does.
             history = tuple(transcript[-(prior_turns * 2) :] if prior_turns else ())
             units = measure_one(
                 orchestrator, retrieve_module, settings, probe, history=history
@@ -666,12 +608,8 @@ def main() -> int:
     retrievals = [u["retrievals"] for u in singles]
     guardrails = [u["guardrail_units"] for u in singles]
 
-    # EVERY GENERATION FIGURE IS GENERATION-ONLY. A deployed turn's wire `usage` folds the
-    # titling model's tokens into the same fields until the fix in app/usage.py reaches the
-    # deployed function, so a run read out of a transcript takes its three generation
-    # numbers from Bedrock's per-model counters instead - where the two were never mixed.
-    # The three constants below are what the panel multiplies by the GENERATION rate; a
-    # figure carrying the title model's tokens would price them at the wrong model's price.
+    # Generation only: the panel multiplies these by the generation rate, so a folded-in
+    # title token would be priced at the wrong model's price.
     query_tokens = None
     if per_model is not None:
         generation = per_model["generation"]
@@ -687,7 +625,7 @@ def main() -> int:
         base_tokens = statistics.mean(per_call_input)
         output_avg = statistics.mean(outputs)
 
-    # Fitted on tokens PER CALL, or the loop-length effect contaminates it.
+    # Fitted on tokens per call, or the loop-length effect contaminates it.
     slope = 0.0
     if len(by_prior_turns) > 1:
         points = [(k, statistics.mean(v)) for k, v in sorted(by_prior_turns.items())]

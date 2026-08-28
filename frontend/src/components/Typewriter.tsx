@@ -11,15 +11,7 @@ type TypewriterProps = {
 	cps?: number;
 	/** Quiet beat before intro typing begins (ms). */
 	introDelayMs?: number;
-	/**
-	 * Characters to treat as already on screen.
-	 *
-	 * For the hand-off at the end of a streamed turn: the preview typed out the lead-in
-	 * while the reply was being written, and then the authoritative payload arrives with
-	 * the same prose in it. Starting from zero would re-type text the student has already
-	 * read; starting here continues where the preview stopped, which in the common case is
-	 * the end - the lead-in is short and the typing outruns the model.
-	 */
+	/** Characters to treat as already on screen. */
 	startAt?: number;
 	onTypingChange?: (typing: boolean) => void;
 	onComplete?: () => void;
@@ -34,14 +26,8 @@ export function Typewriter({
 	onComplete,
 }: TypewriterProps) {
 	const reduceMotion = usePrefersReducedMotion();
-	/**
-	 * The count is of RENDERED characters, not of the source string, and that is the whole
-	 * reason the reveal is a number rather than a growing slice of `text`. Typing a slice
-	 * puts the model's own markup on screen: a lone asterisk, then a second one, then the
-	 * pair vanishing as the run closes and the words behind it turn bold. Here the message
-	 * is parsed whole and then uncovered, so what arrives is already formatted - bold text
-	 * types in bold, and a bullet's marker is there before its first word.
-	 */
+	/** The count is of rendered characters, not of the source string, and that is the whole
+	 * reason the reveal is a number rather than a growing slice of `text`. */
 	const [revealed, setRevealed] = useState(startAt);
 	const [waiting, setWaiting] = useState(startAt === 0);
 	const total = useMemo(() => renderedLength(text), [text]);
@@ -50,21 +36,11 @@ export function Typewriter({
 	completeRef.current = onComplete;
 	typingRef.current = onTypingChange;
 
-	/**
-	 * How far the reveal has got, readable without making the effect depend on it.
-	 *
-	 * A STREAMED REPLY GROWS UNDER THIS COMPONENT: each delta re-renders it with a longer
-	 * `text`, so the effect below has to re-run on a new `total` and pick up typing from
-	 * where it was - not from zero, which would replay text already on screen, and not by
-	 * depending on `revealed`, which would tear the interval down on every single character.
-	 */
+	/** How far the reveal has got, readable without making the effect depend on it. */
 	const revealedRef = useRef(revealed);
 	revealedRef.current = revealed;
 
-	/**
-	 * Bumped when the text is REPLACED rather than extended. Appending is the streaming case
-	 * and continues; anything else is a different message in the same bubble and starts over.
-	 */
+	/** Bumped when the text is replaced rather than extended. */
 	const previousText = useRef(text);
 	const [generation, setGeneration] = useState(0);
 	useEffect(() => {
@@ -76,8 +52,8 @@ export function Typewriter({
 		}
 	}, [text]);
 
-	// The quiet beat before typing begins is observed ONCE per message, not again every
-	// time a delta extends it.
+	// The quiet beat before typing begins is observed once per message, not again every time a
+	// delta extends it.
 	const introObserved = useRef(startAt > 0);
 	useEffect(() => {
 		introObserved.current = startAt > 0;
@@ -92,8 +68,8 @@ export function Typewriter({
 			if (delayId !== undefined) window.clearTimeout(delayId);
 		};
 
-		// Nothing to type covers both the empty string and text that renders as no
-		// characters at all, which would otherwise start an interval with no end condition.
+		// Nothing to type covers both the empty string and text that renders as no characters
+		// at all, which would otherwise start an interval with no end condition.
 		if (!text || !total) {
 			setWaiting(false);
 			typingRef.current?.(false);
@@ -108,9 +84,7 @@ export function Typewriter({
 			return cleanup;
 		}
 
-		// Already caught up. On a finished reply this is the end of the turn; on a streamed
-		// one it is the pause between deltas, and the next one re-runs this effect with a
-		// larger `total`. Either way there is nothing to tick, so no interval is started.
+		// Already caught up, so no interval starts. The next delta re-runs this with more text.
 		if (revealedRef.current >= total) {
 			setWaiting(false);
 			typingRef.current?.(false);

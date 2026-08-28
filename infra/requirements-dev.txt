@@ -1,2 +1,2 @@
-# Same pytest pin as gav lib so the pulled test suites behave identically.
+# Same pytest pin as app/ and scraper/, so all three suites behave identically.
 pytest==8.4.2

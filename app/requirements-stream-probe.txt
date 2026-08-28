@@ -1,42 +1,13 @@
-# Deps for the Lambda Web Adapter streaming chat app (app/streaming_app.py) ONLY.
-#
-# ITS OWN FILE, not a line in requirements.txt, for the reason requirements-authorizer.txt
-# gives: POST /chat and the WebSocket worker are under a "keeps working unchanged"
-# constraint, and adding FastAPI to their layer would change their deployed artifact for a
-# function they do not run. `_requirements_hash` folds the layer NAME into the asset hash,
-# so this file also keeps the probe's layer out of the CDK asset-cache collision that once
-# had two layers silently sharing one bundle.
-#
-# THE FRAMEWORK IS THE POINT, not a convenience. The adapter speaks HTTP to an ordinary
-# web server; FastAPI's StreamingResponse over uvicorn is what turns an async generator
-# into chunked transfer encoding, and that is the mechanism under test.
-#
-# uvicorn, NOT uvicorn[standard]: the extra pulls httptools and uvloop, two compiled
-# wheels, to make a server faster than a Lambda behind a Function URL can be. Plain
-# uvicorn is pure Python, and every wheel below except pydantic-core is too (verified:
-# pydantic-core lands as the cp313 manylinux2014_x86_64 build).
+# Deps for the streaming chat app (app/streaming_app.py) only. Its own file, so the chat
+# function's layer does not grow a framework for a function it never runs.
+
+# uvicorn, not uvicorn[standard]: the extra pulls two compiled wheels for speed a Lambda
+# behind a Function URL cannot use.
 fastapi>=0.115,<1
 uvicorn>=0.32,<1
 
-# PyJWT WITH THE `crypto` EXTRA, because this function now decides who its caller is.
-# There is no authorizer in front of a Function URL, so app/token_auth.py verifies the
-# Cognito access token in process (RS256 against the pool's JWKS), and without the extra
-# PyJWT cannot verify RS256 at all - the failure would be at runtime, on a student's first
-# request. `cryptography` is a compiled wheel, which is the same manylinux treatment
-# pydantic-core already needs from the bundler below.
-#
-# THE SAME PIN THE $connect AUTHORIZER CARRIES (requirements-authorizer.txt). Two doors
-# into one pool verifying with two different versions of one library is a difference nobody
-# would choose on purpose; a third copy of the reasoning is in that file.
+# The `crypto` extra, or app/token_auth.py cannot verify RS256 and fails at runtime.
 pyjwt[crypto]>=2.8,<3
 
-# THE APP'S OWN RUNTIME DEPS, by reference rather than by a second copy of the pin. This
-# function serves the real turn now (app/turn.py and everything under it), so it needs
-# whatever the chat function needs - which today is pydantic and nothing else. FastAPI
-# happens to pull pydantic in anyway; relying on that would make the app's dependency an
-# accident of a web framework's own requirements, and the day app/requirements.txt grows a
-# second line this file would silently not install it.
-#
-# The layer's asset hash covers BOTH files (see _requirements_hash), so editing the line
-# below rebuilds this layer rather than leaving the previous build staged.
+# By reference, so a new pin over there installs here too rather than arriving by accident.
 -r requirements.txt

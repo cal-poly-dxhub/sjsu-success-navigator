@@ -1,7 +1,6 @@
 """Conversation history in DynamoDB: the server's copy of the turn, and the only one.
 
-Three sort-key prefixes share one partition, and every key derives from the JWT `sub`;
-see docs/accounts-and-storage.md and docs/chat-service.md, Storage.
+Three sort-key prefixes share one partition, and every key derives from the JWT `sub`.
 """
 
 from __future__ import annotations
@@ -21,14 +20,13 @@ logger = logging.getLogger(__name__)
 # Crockford base32: I, L, O and U are absent, so a transcribed id cannot read as 1, 0 or V.
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-# The FALLBACK title, written on the first turn so model titling may fail without leaving
-# the conversation nameless. Settings passes the real cap in; this is a bare-store default.
+# A bare-store default. Settings passes the real cap in.
 _TITLE_MAX_CHARS = 80
 
-# Shown for a header that carries no title. See list_conversations for the one way that is.
+# Shown for a header that carries no title.
 _UNTITLED = "Untitled chat"
 
-# The last ULID this container minted, as an integer. See new_ulid.
+# The last ULID this container minted, so two in one millisecond still sort.
 _last_ulid_int = 0
 
 
@@ -52,12 +50,11 @@ def new_ulid() -> str:
 
 
 def new_conversation_id() -> str:
-    """The id for a conversation the client did not name. THE SERVER MINTS IT."""
+    """The server mints it; a client-supplied id is never trusted to be new."""
     return new_ulid()
 
 
 def _is_conditional_check_failure(exc: Exception) -> bool:
-    """Is this the exception DynamoDB raises when a ConditionExpression was not met?"""
     response = getattr(exc, "response", None)
     if not isinstance(response, dict):
         return False
@@ -72,7 +69,7 @@ def _now_iso() -> str:
 
 @dataclass(frozen=True)
 class StoredMessage:
-    """One message as the CONTEXT projection sees it: role and original text."""
+    """One message as the context projection sees it: role and original text."""
 
     role: str
     text: str
@@ -81,22 +78,22 @@ class StoredMessage:
 
 @dataclass(frozen=True)
 class DisplayMessage:
-    """One message as the DISPLAY projection sees it: the same item, read for a browser."""
+    """One message as the display projection sees it: the same item, read for a browser."""
 
     role: str
     text: str
     escalation: dict[str, Any] | None
     created_at: str | None
     sources: dict[int, str] = field(default_factory=dict)
-    # LEGACY AND READ-ONLY. Nothing writes this any more; the read path still serves it.
+    # Legacy and read-only: nothing writes this, the read path still serves it.
     cards: list[dict[str, Any]] = field(default_factory=list)
-    # Still written, unlike `cards`: it is where the office WAS when the student asked.
+    # Still written: it is where the office was when the student asked.
     place: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class ConversationSummary:
-    """One row of the conversation list: a header item, as the sidebar shows it."""
+    """One header item, as the sidebar shows it."""
 
     conversation_id: str
     title: str
@@ -115,8 +112,7 @@ class ConversationStore:
 
     def _table_resource(self):
         if self._table is None:
-            # No explicit region: Lambda always sets AWS_REGION and the table is local to it.
-            # Short timeouts, because these calls sit inside the turn's own 29-second budget.
+            # No region: Lambda sets AWS_REGION. Short timeouts: this sits inside the turn.
             resource = boto3.resource(
                 "dynamodb",
                 config=Config(
@@ -127,8 +123,6 @@ class ConversationStore:
             )
             self._table = resource.Table(self._table_name)
         return self._table
-
-    # --- writes ---------------------------------------------------------------
 
     def append_message(
         self,
@@ -141,7 +135,7 @@ class ConversationStore:
         escalation: dict[str, Any] | None = None,
         place: dict[str, Any] | None = None,
     ) -> str:
-        """Append one message and return its sort key."""
+
         sort_key = f"MSG#{conversation_id}#{new_ulid()}"
         item: dict[str, Any] = {
             "pk": f"USER#{user_id}",
@@ -186,7 +180,7 @@ class ConversationStore:
             "#createdAt = if_not_exists(#createdAt, :now)",
         ]
         if title:
-            # if_not_exists, so the FIRST user message names the conversation.
+            # if_not_exists, so the first user message names the conversation.
             expression_names["#title"] = "title"
             expression_values[":title"] = title
             sets.append("#title = if_not_exists(#title, :title)")
@@ -211,8 +205,7 @@ class ConversationStore:
         limit: int,
         expires_at: int,
     ) -> bool:
-        """Take one message off this user's allowance for `window_key`. True if there was
-        one."""
+        """Take one message off this user's allowance. False when it is spent."""
         try:
             self._table_resource().update_item(
                 Key={"pk": f"USER#{user_id}", "sk": f"RATE#DAY#{window_key}"},
@@ -220,13 +213,11 @@ class ConversationStore:
                     "SET #expiresAt = if_not_exists(#expiresAt, :expiresAt) "
                     "ADD #count :one"
                 ),
-                # attribute_not_exists covers the first message of a window. `<` not `<=`:
-                # the count is how many have already been taken.
+                # `<` not `<=`: the count is how many have already been taken.
                 ConditionExpression=(
                     "attribute_not_exists(#count) OR #count < :limit"
                 ),
-                # `count` is a DynamoDB reserved word, so both names go through
-                # ExpressionAttributeNames or the call fails at runtime.
+                # `count` is a DynamoDB reserved word, so it has to be an expression name.
                 ExpressionAttributeNames={
                     "#count": "count",
                     "#expiresAt": "expiresAt",
@@ -293,8 +284,6 @@ class ConversationStore:
             raise
         return True
 
-    # --- deletes --------------------------------------------------------------
-
     def delete_conversation(self, *, user_id: str, conversation_id: str) -> int:
         """Delete one conversation: every message, then the header. Returns the count."""
         table = self._table_resource()
@@ -337,8 +326,6 @@ class ConversationStore:
         logger.info("Deleted a conversation and its %s message(s).", deleted)
         return deleted
 
-    # --- reads ----------------------------------------------------------------
-
     def list_conversations(self, *, user_id: str, limit: int) -> list[ConversationSummary]:
         """A user's conversations, most recently active first."""
         if limit <= 0:
@@ -371,8 +358,7 @@ class ConversationStore:
             summaries.append(
                 ConversationSummary(
                     conversation_id=conversation_id,
-                    # Not the ordinary case: the first user message names the conversation.
-                    # This is a header the assistant write alone created.
+                    # A header the assistant write alone created; usually the first message names it.
                     title=(item.get("title") or "").strip() or _UNTITLED,
                     created_at=item.get("createdAt"),
                     last_activity_at=item.get("lastActivityAt"),
@@ -454,7 +440,7 @@ class ConversationStore:
         limit: int,
         exclude_sort_key: str | None = None,
     ) -> list[StoredMessage]:
-        """The previous `limit` messages, oldest first. ONE descending, limited query."""
+        """The previous `limit` messages, oldest first, from one descending query."""
         if limit <= 0:
             return []
 
@@ -466,8 +452,7 @@ class ConversationStore:
                 ":pk": f"USER#{user_id}",
                 ":prefix": f"MSG#{conversation_id}#",
             },
-            # The CONTEXT projection: message text only. An assistant reply still carries
-            # the model's tags; those come off at the one point history becomes model input.
+            # The context projection: text only, and an assistant reply still carries its tags.
             ProjectionExpression="sk, #role, #text",
             ScanIndexForward=False,
             Limit=fetch,
@@ -494,7 +479,7 @@ class ConversationStore:
 
 
 def _sources_from(stored: Any) -> dict[int, str]:
-    """A stored `sources` map as ints and strings, or empty. Converted once, at the boundary."""
+    """A stored `sources` map as ints and strings, or empty."""
     if not isinstance(stored, dict):
         return {}
 

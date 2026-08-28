@@ -1,22 +1,4 @@
-/*
- * A place is a map, a name, the line under it, and a way to get there. Nothing else.
- *
- * IT IS THE PLAINEST PANEL IN THE APP, and that is the design rather than an unfinished
- * version of one. StatementCard is a warm tile you pick up; EscalationDraft is a cool sheet
- * that looks like the mail it will become; this had a blue rule down its side and a "Where
- * to go" strap over the name, and both were removed - the strap said in three words what the
- * two lines under it already said, and the rule was decoration competing with the map. What
- * identifies this panel now is the picture at the top of it.
- *
- * THE MAP IS FRAMED BY THE CARD, not bled to its edges. The card keeps its own padding and
- * the image sits inside it with the same radius and hairline border every other inset
- * element in this app has. Full bleed reads as a banner pasted onto a card; inset, it reads
- * as part of one.
- *
- * NOTHING HERE CLIPS TEXT - no line clamp, no max-height, no ellipsis. The same rule the
- * cards hold, and it bites hardest on this panel: an address cut at a word boundary is a
- * room number that stops halfway, and the server never truncates one either (app/places.py).
- */
+/* A place is a map, a name, the line under it, and a way to get there. */
 .place-card {
 	display: flex;
 	flex-direction: column;
@@ -40,9 +22,8 @@
 	display: block;
 	width: 100%;
 	height: auto;
-	/* The render's own 4:3, stated so the box is reserved before the bytes land and the
-	   column does not jump. `cover` rather than `fill` so a future render at another
-	   proportion crops rather than stretches the campus. */
+	/* The render's own 4:3, stated so the box is reserved before the bytes land and the column
+	 * does not jump. */
 	aspect-ratio: 4 / 3;
 	object-fit: cover;
 	border-radius: 12px;
@@ -74,7 +55,7 @@
 	color: var(--text-secondary);
 	user-select: text;
 	/* "Diaz Compean Student Union West, entrance across from the Engineering Building" has
-	   nowhere to break on a 320px viewport without this. */
+	 * nowhere to break on a 320px viewport without this. */
 	overflow-wrap: anywhere;
 }
 

@@ -1,17 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Simplified Chinese. MACHINE-AUTHORED, NOT REVIEWED BY A CHINESE SPEAKER. See es.ts for why
- * a file in this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly
- * to the student in the settings panel.
- *
- * REVIEWER'S NOTES. Simplified characters only. Traditional is a separate file and a separate
- * entry rather than a variant of this one (zhHant.ts), which is what lets it carry Taiwan's
- * vocabulary - 登入, 設定, 儲存, 訊息 - and not just this file's characters converted. Reviewing
- * either one says nothing about the other. Proper nouns are left in English on purpose:
- * SJSU Cares, Spartan Food Pantry, CalFresh, Sammy and the product name are what the student
- * will see on signs and on SJSU's own pages.
- */
+/** Simplified Chinese. */
 export const zhHans: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: '请使用你的 SJSU 账号登录以继续。',

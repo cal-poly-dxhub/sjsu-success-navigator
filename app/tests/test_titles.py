@@ -1,7 +1,6 @@
 """Conversation titling: the model's reply is a suggestion, and this is what rejects it.
 
-A rejection is never a repair, and titling can never delay or fail a turn; see
-docs/chat-service.md, Conversation titling.
+A rejection is never a repair, and titling can never delay or fail a turn.
 """
 
 import time
@@ -55,9 +54,6 @@ def _generate(deadline=None):
     )
 
 
-# --- the usable_title contract -----------------------------------------------------------
-
-
 def test_a_plain_short_reply_is_the_title(bedrock):
     assert _generate() == "Financial aid appeal deadline"
 
@@ -75,7 +71,7 @@ def test_a_plain_short_reply_is_the_title(bedrock):
     ],
 )
 def test_a_preamble_is_a_failure_not_a_title(bedrock, reply):
-    """THE FAILURE THIS FEATURE IS ACTUALLY ABOUT: a model that answers about the task."""
+    """The failure this feature is actually about: a model that answers about the task."""
     bedrock.reply = reply
     assert _generate() is None
 
@@ -86,7 +82,7 @@ def test_a_preamble_is_a_failure_not_a_title(bedrock, reply):
      "“Financial aid appeal”"],
 )
 def test_a_quoted_reply_is_a_failure(bedrock, reply):
-    """A quoted string is the model PRESENTING a title rather than writing one."""
+    """A quoted string is the model presenting a title rather than writing one."""
     bedrock.reply = reply
     assert _generate() is None
 
@@ -128,9 +124,6 @@ def test_no_title_this_module_can_produce_carries_an_em_or_en_dash():
     assert "–" not in titles.TITLE_SYSTEM_PROMPT
 
 
-# --- never delaying or failing a turn ----------------------------------------------------
-
-
 def test_a_bedrock_failure_returns_none_rather_than_raising(bedrock):
     """A forced titling failure still leaves a good answer: the reply is already written."""
     bedrock.raises = RuntimeError("ThrottlingException")
@@ -138,7 +131,7 @@ def test_a_bedrock_failure_returns_none_rather_than_raising(bedrock):
 
 
 def test_nothing_is_called_once_the_deadline_has_passed(bedrock):
-    """The point of a deadline is that no network call STARTS which cannot finish inside it."""
+    """The point of a deadline is that no call starts which cannot finish inside it."""
     assert _generate(deadline=time.monotonic() - 1) is None
     assert bedrock.calls == [], "a call was started past the deadline"
 
@@ -153,8 +146,7 @@ def test_the_call_is_small_and_deterministic(bedrock):
 
 
 def test_the_model_is_shown_the_answer_as_well_as_the_question(bedrock):
-    """Why this runs AFTER the exchange: a title that has seen the reply names what the
-    conversation turned out to be about."""
+    """Why it runs after the exchange: the title names what the conversation became."""
     _generate()
     sent = bedrock.calls[0]["messages"][0]["content"][0]["text"]
     assert "how do I appeal my financial aid?" in sent

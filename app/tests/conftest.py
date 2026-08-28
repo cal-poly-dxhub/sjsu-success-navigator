@@ -1,7 +1,6 @@
 """Put app/ on sys.path so the Lambda's flat imports resolve as they do when deployed.
 
-Also stubs boto3 before any app module is imported: the suite is hermetic; see
-docs/chat-service.md, What the suites pin.
+boto3 is stubbed before any app module is imported: the suite is hermetic.
 """
 
 import json
@@ -13,8 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Set before collection, not in a fixture: load_settings() raises without them and
-# handler.py calls it at import. setdefault, so a test can still override.
+# Before collection, not in a fixture: handler.py calls load_settings() at import.
 for _name, _value in {
     "KNOWLEDGE_BASE_ID": "KB-TEST",
     "GENERATION_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
@@ -29,12 +27,12 @@ for _name, _value in {
 if "boto3" not in sys.modules:
     boto3_stub = types.ModuleType("boto3")
 
-    def _no_client(*args, **kwargs):  # pragma: no cover - guard, not behaviour
+    def _no_client(*args, **kwargs):  # pragma: no cover (a guard, not behaviour)
         raise AssertionError(
             "a test reached boto3.client(); AWS calls must be monkeypatched"
         )
 
-    def _no_resource(*args, **kwargs):  # pragma: no cover - guard, not behaviour
+    def _no_resource(*args, **kwargs):  # pragma: no cover (a guard, not behaviour)
         raise AssertionError(
             "a test reached boto3.resource(); DynamoDB calls must be monkeypatched"
         )
@@ -47,7 +45,7 @@ if "botocore" not in sys.modules:
     botocore_stub = types.ModuleType("botocore")
     botocore_config = types.ModuleType("botocore.config")
 
-    class _Config:  # pragma: no cover - a stand-in for botocore.config.Config
+    class _Config:  # pragma: no cover (a stand-in for botocore.config.Config)
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
@@ -57,16 +55,15 @@ if "botocore" not in sys.modules:
     sys.modules["botocore.config"] = botocore_config
 
 
-import pytest  # noqa: E402 - after the stubs, deliberately
+import pytest  # noqa: E402
 
 from history import ConversationSummary, DisplayMessage, StoredMessage  # noqa: E402
 
 
-# The sub every test signs with, unless it is testing what happens without one.
 TEST_SUB = "11111111-2222-3333-4444-555555555555"
 
 
-# An ordinary student's app client. A real deployment has exactly two.
+# An ordinary student's app client. A real deployment has two.
 TEST_CLIENT_ID = "web-client-id"
 
 # The eval harness's machine client, the one the stack puts in RATE_LIMIT_EXEMPT_CLIENT_IDS.
@@ -74,7 +71,7 @@ EXEMPT_CLIENT_ID = "eval-client-id"
 
 
 def _authorized(event, sub, client_id=TEST_CLIENT_ID):
-    """Attach the claims the JWT authorizer would have put on the event."""
+    """The claims the JWT authorizer would have put on the event."""
     if sub is not None:
         claims = {"sub": sub}
         if client_id is not None:
@@ -99,12 +96,12 @@ def chat_event(
 
 
 def conversations_event(sub=TEST_SUB):
-    """GET /conversations. No body and no parameters - the only input is the claim."""
+    """No body and no parameters: the only input is the claim."""
     return _authorized({"routeKey": "GET /conversations"}, sub)
 
 
 def conversation_event(conversation_id, sub=TEST_SUB):
-    """GET /conversations/{conversationId}, with the path parameter API Gateway extracts."""
+    """With the path parameter API Gateway extracts."""
     return _authorized(
         {
             "routeKey": "GET /conversations/{conversationId}",
@@ -115,7 +112,7 @@ def conversation_event(conversation_id, sub=TEST_SUB):
 
 
 def rename_event(conversation_id, body, sub=TEST_SUB):
-    """PATCH /conversations/{conversationId}. The id is in the PATH, never the body."""
+    """The id is in the path, never the body."""
     return _authorized(
         {
             "routeKey": "PATCH /conversations/{conversationId}",
@@ -127,7 +124,7 @@ def rename_event(conversation_id, body, sub=TEST_SUB):
 
 
 def delete_event(conversation_id, sub=TEST_SUB):
-    """DELETE /conversations/{conversationId}. No body at all."""
+    """No body at all."""
     return _authorized(
         {
             "routeKey": "DELETE /conversations/{conversationId}",
@@ -138,8 +135,7 @@ def delete_event(conversation_id, sub=TEST_SUB):
 
 
 class FakeConversationStore:
-    """A ConversationStore stand-in that records the turn's table access IN ORDER, which is
-    the assertion in most tests that use it."""
+    """Records the turn's table access in order, which is what most callers assert on."""
 
     def __init__(
         self,
@@ -158,10 +154,9 @@ class FakeConversationStore:
         self.messages = list(messages)
         # Keyed exactly as the real item is. Seeded by a test that wants a partway day.
         self.counters = dict(counters or {})
-        # The lock models what DynamoDB buys from a conditional ADD on one item: compare
-        # and increment as one operation.
+        # What a conditional ADD on one item buys: compare and increment as one operation.
         self._counter_lock = threading.Lock()
-        # What the two CONDITIONAL writes report. False is the condition holding, not an error.
+        # What the two conditional writes report. False is the condition holding, not an error.
         self.renamed = renamed
         self.titled = titled
         self.deleted_messages = deleted_messages
@@ -177,7 +172,7 @@ class FakeConversationStore:
         return sort_key
 
     def claim_message_allowance(self, *, user_id, window_key, limit, expires_at):
-        """DynamoDB's conditional ADD, modelled: compare and increment as ONE step."""
+        """DynamoDB's conditional ADD, modelled: compare and increment as one step."""
         self.calls.append(("allowance", {"user_id": user_id, "window_key": window_key}))
         if "allowance" in self.fail_on:
             raise RuntimeError("DynamoDB is unavailable (rate limit write)")
@@ -241,8 +236,7 @@ def store(monkeypatch):
 
 @pytest.fixture
 def daily_limit(monkeypatch):
-    """Turn the per-user daily cap on for one test. It is OFF everywhere else, because the
-    deployed default reads an environment variable the stack omits when it is disabled."""
+    """The cap is off everywhere else, because the stack omits the variable when disabled."""
     import dataclasses
 
     import handler

@@ -8,22 +8,9 @@ const THINKING_DOT_COUNT = THINKING_MAX_DOTS + 1;
 const THINKING_FRAME_MS = 420;
 
 type ThinkingBubbleProps = {
-	/**
-	 * What the indicator says. Defaults to the model working; when the server says what it
-	 * is doing instead, that REPLACES this in the same slot rather than arriving as a second
-	 * line under the bubble. One indicator, whose words change.
-	 *
-	 * Undefined rather than a literal default, because the default is a translated string
-	 * and the catalogue is only readable from inside the render.
-	 */
+	/** What the indicator says. */
 	label?: string;
-	/**
-	 * Wear it small, under a bubble that already holds prose.
-	 *
-	 * Same words, same dots, same announcement - the chrome comes off because a second
-	 * speech bubble below the first would read as Sammy saying two things, where this is
-	 * one thing still being said.
-	 */
+	/** Wear it small, under a bubble that already holds prose. */
 	inline?: boolean;
 };
 
@@ -43,9 +30,7 @@ export function ThinkingBubble({ label, inline = false }: ThinkingBubbleProps) {
 	const dots = '.'.repeat(reduceMotion ? THINKING_MAX_DOTS : dotCount);
 
 	return (
-		// Polite rather than hidden: this is the only place the server's account of what it
-		// is doing now appears, and it used to be announced by the status line this replaces.
-		// The dots stay hidden, so a screen reader is not read a new sentence every 420ms.
+		// Polite rather than hidden: the only place the server's account of what it is doing appears.
 		<div
 			className={`thinking-bubble${inline ? ' thinking-bubble--inline' : ''}`}
 			aria-live="polite"

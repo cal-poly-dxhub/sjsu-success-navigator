@@ -1,8 +1,4 @@
-"""Tests for the scraper Lambda handler. No live network and no AWS.
-
-The gate and prune properties these pin, and why each matters, are in docs/scraper.md,
-What the suite pins.
-"""
+"""The scraper Lambda handler. No live network and no AWS."""
 
 import json
 import sys
@@ -12,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Stub boto3 BEFORE importing the handler, which imports it at module load.
+# Before importing the handler, which imports boto3 at module load.
 sys.modules.setdefault("boto3", types.ModuleType("boto3"))
 
 import lambda_function as lf  # noqa: E402
@@ -88,15 +84,12 @@ def _job(job_id, status, started_at):
     return {"ingestionJobId": job_id, "status": status, "startedAt": started_at}
 
 
-# --- The happy path ----------------------------------------------------------------------------
-
-
 def test_uploads_markdown_and_metadata_and_triggers_ingestion(monkeypatch):
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
     out = lf.handler({}, None)
 
     puts = {c.kwargs["Key"]: c.kwargs for c in s3.put_object.call_args_list}
-    # Two objects per page: the markdown and a Bedrock metadata sidecar (NOT `<slug>.json`).
+    # Two objects per page: the markdown and a Bedrock metadata sidecar, not `<slug>.json`.
     assert set(puts) == {"x-a-hash.md", "x-a-hash.md.metadata.json"}
     assert puts["x-a-hash.md"]["Body"] == b"# Page A\n\nbody text"
     assert all(p["Bucket"] == "kb-bucket" for p in puts.values())
@@ -140,7 +133,7 @@ def test_the_sidecar_key_is_metadata_json_not_a_plain_json_document(monkeypatch)
 def test_partial_failure_uploads_survivors_and_still_ingests(monkeypatch):
     s3, bedrock_agent = _wire(monkeypatch, [_ok(), _fail()])
     out = lf.handler({}, None)
-    # Only the successful page (md + metadata = 2 puts); the failure is reported; ingestion runs.
+    # Only the successful page, two puts. The failure is reported and ingestion still runs.
     assert s3.put_object.call_count == 2
     assert out["uploaded"] == 1
     assert out["failed"] == [{"url": "https://x/b", "error": "HTTP 404"}]
@@ -204,9 +197,6 @@ def test_the_run_summary_reports_configured_pages_and_duration(monkeypatch):
     json.loads(json.dumps(summary, default=str))
 
 
-# --- The crawl list arrives as a bundled asset, and a bad one is fatal --------------------------
-
-
 def test_seed_list_path_prefers_the_layer_mount(monkeypatch, tmp_path):
     # /opt is where Lambda extracts layer content; both candidates are redirected here.
     opt, local = tmp_path / "opt", tmp_path / "local"
@@ -247,7 +237,7 @@ def test_a_missing_bundled_list_raises_naming_where_it_looked(monkeypatch, tmp_p
 
 
 def test_a_bad_crawl_list_fails_the_invocation_before_anything_is_deleted(monkeypatch):
-    # THE guarantee: an unusable list aborts before the prune ever runs.
+    # The guarantee: an unusable list aborts before the prune ever runs.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
 
     def boom(path):
@@ -276,9 +266,6 @@ def test_a_missing_layer_asset_fails_the_invocation_too(monkeypatch):
 
     s3.delete_object.assert_not_called()
     bedrock_agent.start_ingestion_job.assert_not_called()
-
-
-# --- Pruning: keyed off the crawl list, never off what a run fetched ---------------------------
 
 
 def test_expected_kb_keys_covers_every_page_on_the_crawl_list():
@@ -351,9 +338,6 @@ def test_ingestion_runs_for_a_prune_only_change(monkeypatch):
     lf.handler({}, None)
 
     bedrock_agent.start_ingestion_job.assert_called_once()
-
-
-# --- Gate 1: upload only what changed ---------------------------------------------------------
 
 
 def test_content_fingerprint_ignores_the_scrape_timestamp():
@@ -437,8 +421,7 @@ def test_a_missing_fingerprint_is_treated_as_changed(monkeypatch):
 
 
 def test_an_unchanged_page_is_never_pruned_as_stale(monkeypatch):
-    # The regression change gating introduces: an unchanged page uploads nothing, so a prune
-    # keyed on this run's uploads would delete what it just confirmed.
+    # An unchanged page uploads nothing, so a prune keyed on uploads would delete it.
     s3, _ = _wire(monkeypatch, [_ok()])
     stored = lf.content_fingerprint(_ok().markdown, _ok().metadata)
     s3.head_object.return_value = {"Metadata": {lf.CONTENT_HASH_METADATA_KEY: stored}}
@@ -452,9 +435,6 @@ def test_an_unchanged_page_is_never_pruned_as_stale(monkeypatch):
     assert out["pruned"] == ["really-stale.md"]
 
 
-# --- Gate 2 + concurrency: one ingestion job at a time, and never lose a change ----------------
-
-
 def test_overlapping_run_defers_instead_of_failing(monkeypatch):
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
     bedrock_agent.list_ingestion_jobs.return_value = {
@@ -466,13 +446,12 @@ def test_overlapping_run_defers_instead_of_failing(monkeypatch):
     bedrock_agent.start_ingestion_job.assert_not_called()
     assert out["ingestionJobId"] is None
     assert out["ingestion"] == "deferred (job running-job in progress)"
-    # The upload still happened - only the indexing was deferred.
+    # The upload still happened: only the indexing was deferred.
     assert out["uploaded"] == 1
 
 
 def test_a_deferred_change_is_picked_up_by_the_next_run(monkeypatch):
-    # Why deferring is safe: this run changes nothing, so only the bucket-newer rule catches
-    # the content the deferred run left unindexed.
+    # Deferring is safe because the bucket-newer rule catches what the deferred run left.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
     stored = lf.content_fingerprint(_ok().markdown, _ok().metadata)
     s3.head_object.return_value = {"Metadata": {lf.CONTENT_HASH_METADATA_KEY: stored}}
@@ -522,7 +501,7 @@ def test_a_race_on_start_ingestion_defers_rather_than_raising(monkeypatch):
 
 
 def test_losing_job_history_falls_back_to_the_old_rule(monkeypatch):
-    # If ListIngestionJobs is denied or throttled, we must still ingest what we just changed.
+    # Denied or throttled, it must still ingest what this run just changed.
     s3, bedrock_agent = _wire(monkeypatch, [_ok()])
     bedrock_agent.list_ingestion_jobs.side_effect = RuntimeError("AccessDenied")
 

@@ -1,21 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Spanish. MACHINE-AUTHORED, NOT REVIEWED BY A SPANISH SPEAKER.
- *
- * Every string below was written by a model from the English in en.ts, and no native speaker
- * has read them. They ship in that state deliberately: SJSU's sponsor asked that students be
- * met in their own language, and a machine-translated sidebar is closer to that than an
- * English one while the review happens. What is NOT guessed at is which strings are in that
- * state - LANGUAGES in lib/i18n.ts records `reviewed: false`, this comment says so in the
- * file SJSU will be sent, and the settings panel says so to the student.
- *
- * REVIEWER'S NOTES. Neutral "tú" throughout, on the basis that this is a student talking to
- * a campus assistant rather than an institution addressing a citizen; switch to "usted" if
- * SJSU prefers it, and the change is this file alone. Proper nouns are left in English on
- * purpose - SJSU Cares, Spartan Food Pantry, CalFresh, Sammy, the product name - because
- * they are what the student will see on signs and on SJSU's own pages.
- */
+/** Spanish. */
 export const es: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'Inicia sesión con tu cuenta de SJSU para continuar.',

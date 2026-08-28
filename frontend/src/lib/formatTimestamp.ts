@@ -4,19 +4,7 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/**
- * Hybrid label: relative under 24h, short date otherwise.
- *
- * THE STRINGS AND THE LOCALE ARE PARAMETERS, not module-level reads, even though there is
- * exactly one caller and it could have read both itself. Two reasons. The relative half is
- * chrome like any other and belongs in strings/, where a reviewer sees it beside the label it
- * gets interpolated into (StatementStack builds "Campus resources from 5m ago" out of both
- * halves, so a translated wrapper around an English "5m ago" would read worse than leaving
- * both in English). The date half is the browser's own formatter and needs the language
- * explicitly: `toLocaleDateString(undefined, ...)` follows the BROWSER's locale, so a student
- * who picked Thai on an en-US laptop would get a Thai label wrapped around an English date.
- * Passing the chosen language is what makes the picker reach this string at all.
- */
+/** Hybrid label: relative under 24h, short date otherwise. */
 export function formatBatchTimestamp(
 	createdAt: number,
 	t: Strings,
