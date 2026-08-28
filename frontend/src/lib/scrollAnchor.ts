@@ -2,7 +2,9 @@
 const TOP_GAP_REM = 5.25;
 
 export function scrollElementToTop(target: HTMLElement, reduceMotion: boolean) {
-	const top = window.scrollY + target.getBoundingClientRect().top - TOP_GAP_REM * 16;
+	const remPx =
+		Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+	const top = window.scrollY + target.getBoundingClientRect().top - TOP_GAP_REM * remPx;
 	window.scrollTo({
 		top: Math.max(0, top),
 		behavior: reduceMotion ? 'auto' : 'smooth',
