@@ -13,9 +13,11 @@ This repo pins nothing for `eval/`: `python3 -m pip install boto3 httpx PyYAML`.
 ## run_eval.py
 
 **It is deliberately judgment-free.** It sends each ground-truth question to the real deployed
-endpoint (genuine HTTP through API Gateway with a real Cognito access token, over the same
-gated route the browser uses) and records what came back. Accuracy is decided by humans, and by
-Claude reading the transcript, never by this script. The only derived field is
+endpoint (genuine HTTP through API Gateway with a real Cognito access token, on `POST /chat`)
+and records what came back. The browser streams its own turns over `/api/chat` and falls back to
+this route, so the eval measures the same turn behind a different door: `app/turn.py` holds the
+one copy of the order and both transports run it. Accuracy is decided by humans, and by Claude
+reading the transcript, never by this script. The only derived field is
 `behavior_fired`, a mechanical classification of the response shape (safety panel present,
 cards present, prose only, error) so the rendered page can badge each answer.
 
@@ -27,8 +29,9 @@ response verbatim) and `eval-<UTC stamp>.html`.
 The browser signs in by redirecting to Cognito managed login (authorization code with PKCE),
 which needs a browser and a human. This runner is headless, so it uses the pool's **second app
 client**, the machine one, with a single unsigned `USER_PASSWORD_AUTH` `InitiateAuth` call, and
-the **access** token (not the id token) as the Bearer. Both clients are in the API's JWT
-audience, so the token this gets is accepted on exactly the same route the browser's is.
+the **access** token (not the id token) as the Bearer. Both clients sit in the API's JWT
+audience and in the streaming app's own allowlist, so this token is accepted wherever the
+browser's is.
 
 **`ChatEvalClientId`, never `ChatWebClientId`.** The web client has no password flow enabled
 (its `ExplicitAuthFlows` is exactly `ALLOW_REFRESH_TOKEN_AUTH`), so reaching for its id here
@@ -51,15 +54,12 @@ is the gateway timing out rather than the answer still coming.
 
 **One retry on a 429,** because the runner fires the whole set as one account. Concurrency
 defaults to 3, which stays well under the stage's 10 rps throttle. The eval's machine client is
-exempt from the per-user daily message cap by `client_id` (see `docs/chat-service.md`, The
-daily message cap), because the set is larger than any number the cap could be raised to and
-would have to be kept above whatever `ground-truth.yaml` grows to.
+exempt from the per-user daily message cap by `client_id` (`app/ratelimit.py`), because the set
+is larger than any number the cap could be raised to and would have to be kept above whatever
+`ground-truth.yaml` grows to.
 
 Each question is asked as a **fresh single-turn conversation**, so no answer is influenced by
 the one before it.
-
-The run best-effort warms the function first through the ungated `GET /warm` route, which
-exists for exactly this.
 
 ## render_results.py
 
@@ -107,7 +107,7 @@ ApplyGuardrail response at the client, then puts the two side by side.
 **It compares per model, never in total.** This stack answers on Sonnet and names conversations
 on Haiku. A comparison of summed input tokens passes whether or not the two models' tokens
 landed in the right fields, which is how the titling call spent four months being priced at the
-generation rate (`docs/chat-service.md`, What one turn cost). So the audit's rows are
+generation rate (`app/usage.py`, `record_title_call`). So the audit's rows are
 generation-in, generation-out, title-in, title-out, calls and guardrail units, and any one of
 them disagreeing is a non-zero exit.
 
@@ -119,25 +119,25 @@ see both.
 ### --from-eval takes the single-turn half from the deployed endpoint
 
 The questions are asked by `run_eval.py --sample 40` through API Gateway and the chat Lambda,
-signed in as the eval machine account, so the numbers describe the deployed system whole -
-the handler, the store, the cap, the guardrail - rather than a loop run in a local process
+signed in as the eval machine account, so the numbers describe the deployed system whole (the
+handler, the store, the cap, the guardrail) rather than a loop run in a local process
 under a developer's credentials. `--sample N` takes an even stride through `ground-truth.yaml`,
 which is grouped by behaviour, so the run keeps the set's own mix rather than a head or a
 random draw's.
 
 **One wire `usage` block cannot say which model spent what,** and the deployed function is
-whatever was last deployed - so a run against it cannot be asked for the split. AWS publishes
+whatever was last deployed, so a run against it cannot be asked for the split. AWS publishes
 it anyway: `AWS/Bedrock` carries `Invocations`, `InputTokenCount` and `OutputTokenCount` per
 `ModelId`. Summed over the run's window (`started_utc`/`finished_utc`, recorded in the
 transcript for exactly this), those are the same calls the transcript counted, taken apart by
-model - and `retrieval_query_tokens` stops being an assumption, because the embedding model has
-a counter too.
+model. `retrieval_query_tokens` stops being an assumption on the same run, because the
+embedding model has a counter too.
 
 **The split is reconciled before anything is derived from it,** call for call and token for
 token against the run's own wire totals, and a disagreement raises. AWS/Bedrock's finest period
 is 60 seconds, so the window is rounded out to whole minutes either side; the reconciliation is
-what makes that safe, because both failure modes - a neighbouring minute's traffic, and a tail
-the metrics have not published yet - break it loudly instead of producing plausible numbers.
+what makes that safe, because both failure modes (a neighbouring minute's traffic, and a tail
+the metrics have not published yet) break it loudly instead of producing plausible numbers.
 
 **The depth slope is still measured locally,** because it needs to control the history in front
 of each question exactly, which is a thing the server owns and a client cannot ask for. Its

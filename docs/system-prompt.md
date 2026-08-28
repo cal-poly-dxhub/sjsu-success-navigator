@@ -74,8 +74,8 @@ What merged, and why it was a merge rather than a cut:
 ## How the reply is read
 
 - prose plus zero or more card blocks, in the emitted order: prose above the first block
-  renders above the grid, prose after the last one renders below it (docs/cards-v2.md,
-  Where the cards sit in the reply), so a question above the cards reaches the student
+  renders above the grid, prose after the last one renders below it (app/cards.py splits
+  the reply once, at the end of the last block), so a question above the cards reaches the student
   ahead of the answer it asks about
 - always write prose; a cards-only reply renders as an empty message
 - the blocks this prompt defines are the only markup the model writes. The sentence is
