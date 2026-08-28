@@ -1,18 +1,5 @@
-/**
- * The English strings, and THE SHAPE every other language is checked against: each
- * translation is typed as `Strings`, so a missing or misspelled key is a build-time error
- * rather than an `undefined` rendered into the sidebar.
- *
- * WHAT LIVES HERE IS PAGE CHROME - buttons, labels, headings, empty states, the frontend's
- * own error sentences, and the greeting an unused chat opens with. Sammy's replies and the
- * cards are not here and never will be: they are written by the model, which now answers in
- * the language of the student's own message, cards included (app/prompts.py). Two separate
- * mechanisms reaching the same student, deliberately - this file is a translation SJSU can
- * review line by line, and the reply is a generation nobody can review in advance.
- *
- * Interpolation is a function per string, which TypeScript checks for arity in a way a
- * `{{name}}` placeholder never would.
- */
+/** The English strings, and the shape every other language is typed against, so a missing key is
+ * A build error rather than an `undefined` in the sidebar. */
 export const en = {
 	// Sign-in gate.
 	appName: 'Student Success Navigator',
@@ -22,30 +9,16 @@ export const en = {
 	signInNotCompleted: 'Sign-in could not be completed.',
 	signInNotStarted: 'Sign-in could not be started.',
 
-	/**
-	 * The greeting a new chat opens with.
-	 *
-	 * It is the ONE piece of bubble prose in this file, and it is here because it is the
-	 * app's own words rather than the model's - nothing was asked yet, so nothing has been
-	 * answered. It follows the picker only while the chat is untouched; the moment a student
-	 * sends a message that chat keeps the language it was in, and every reply after it is
-	 * the model's to decide (components/ChatApp.tsx).
-	 */
+	/** The greeting a new chat opens with. */
 	welcome:
 		"Hi! I'm Sammy. Ask me anything about SJSU campus resources: tutoring, advising, wellness, housing help, and more.",
 
 	// Sidebar chrome: the header, and the rail it collapses to.
-	//
-	// `brandName` is the product's name and stays in English in every file, the same way
-	// `appName` above does. It is a key rather than a literal in the component so that
-	// staying English is a decision a reviewer can see and reverse per language, which is
-	// not true of a string baked into the JSX.
 	brandName: 'SJSU Student Success',
-	// Read aloud in place of his face, so it says who he is rather than naming a file. The
-	// two proper nouns stay as SJSU publishes them; the sentence around them does not.
+	// Read aloud in place of his face, so it says who he is rather than naming a file.
 	sammyAlt: 'Sammy, the SJSU Spartans mascot',
-	// Both the accessible name and the tooltip on the one control, which is why each of
-	// these is used twice. They name what the click DOES, not what the sidebar is now.
+	// Both the accessible name and the tooltip on the one control, which is why each of these
+	// is used twice.
 	expandSidebar: 'Expand sidebar',
 	collapseSidebar: 'Collapse sidebar',
 
@@ -82,15 +55,11 @@ export const en = {
 	stageRetrieving: 'Looking through campus resources',
 	stageComposingCards: 'Finding campus resources',
 
-	// The card group under a reply, named for a screen reader rather than left as an
-	// unlabelled region. The archived form carries the timestamp because a chat reopened
-	// from history has several groups, and one name for all of them tells a student
-	// stepping through the landmarks nothing about which reply they have landed on.
+	// The card group under a reply, named for a screen reader rather than left as an unlabelled
+	// region.
 	campusResources: 'Campus resources',
 	campusResourcesFrom: (timestamp: string) => `Campus resources from ${timestamp}`,
-	// The timestamp inside that label, and on screen above the group. These three are the
-	// only parts of it written here: past a day it is a date, which the browser formats in
-	// the chosen language rather than this file (lib/formatTimestamp.ts).
+	// The timestamp inside that label, and on screen above the group.
 	timeJustNow: 'Just now',
 	timeMinutesAgo: (minutes: number) => `${minutes}m ago`,
 	timeHoursAgo: (hours: number) => `${hours}h ago`,
@@ -102,14 +71,10 @@ export const en = {
 	chatOpenFailed: 'Could not open that chat.',
 	turnFailed: 'Something went wrong reaching Sammy. Is the chat API running?',
 
-	// The crisis panel's accessible name, and the ONLY string of that panel in this file.
-	// Everything inside it - each label, number and link - is table-authored server-side
-	// (app/safety.py) and arrives already fixed, which is the point: a crisis contact is
-	// the one thing on screen a translation bug must not be able to reword.
+	// The crisis panel's accessible name, and the only string of that panel in this file.
 	safetyContactsAria: 'Safety contacts',
 
-	// The handoff to a human, and the panel behind it. SJSU Cares, the phone number, the
-	// email and the building name are proper nouns and stay as SJSU publishes them.
+	// The handoff to a human, and the panel behind it.
 	talkToPerson: 'Talk to a person',
 	talkToPersonAria: 'Talk to a person at SJSU Cares',
 	university: 'San José State University',
@@ -146,11 +111,7 @@ export const en = {
 		},
 	},
 
-	// The escalate-to-human draft. The OTHER way to a person: where the panel above hands
-	// over a phone number, this hands over a message the student sends themselves, from
-	// their own address. Nothing here is sent by the app, and none of these strings is the
-	// draft - the To line, the subject and the body come off the server with the turn and
-	// are shown in whatever language the model wrote them in, exactly as stored.
+	// The escalate-to-human draft.
 	escalationAria: 'Email draft for a person',
 	escalationHeadline: 'Send this to a person',
 	escalationNote:
@@ -161,26 +122,14 @@ export const en = {
 	escalationOpen: 'Open in my email app',
 	escalationCopied: 'Copied',
 	escalationCopy: 'Copy the message',
-	// Both are states a real draft reaches, so both say what to do next rather than what
-	// broke: the clipboard the browser refused, and the draft too long for a mailto link.
+	// Both are states a real draft reaches, so both say what to do next rather than what broke:
+	// The clipboard the browser refused, and the draft too long for a mailto link.
 	escalationClipboardBlocked:
 		'Your browser would not let us use the clipboard, so the message is selected instead: copy it and paste it into a new email.',
 	escalationTooLong:
 		'This draft is too long to open your email app automatically. Copy it and paste it into a new email instead.',
 
-	// The campus location panel. The model names a place from a fixed catalogue and the
-	// server attaches the name, the address, the map and the link (app/places.py), so NONE of
-	// the panel's values are here: the building's name and its address are what SJSU puts on
-	// the door, and a translated door is one nobody arrives at.
-	//
-	// `placeAria` names the region for a screen reader and is the only label on the panel:
-	// it used to carry a visible "Where to go" strap above the building's name, which said in
-	// three words what the two lines under it already said.
-	//
-	// `placeMapCredit` is the attribution the OpenStreetMap tile licence asks for, and it
-	// DOES follow the language, unlike the proper nouns above it: "OpenStreetMap" is a name
-	// and stays, the sentence around it is ordinary words. It is drawn into the image too, so
-	// this copy is the one a screen reader and a text selection can reach.
+	// The campus location panel.
 	placeAria: 'Campus location',
 	placeDirections: 'Get directions',
 	placeDirectionsFor: (name: string) => `Get directions to ${name}`,
@@ -190,11 +139,7 @@ export const en = {
 	settingsClose: 'Close settings',
 	close: 'Close',
 	languageLabel: 'Language',
-	// One sentence, and it is about THIS CONTROL rather than about the app's languages. The
-	// second sentence it used to carry - that Sammy's answers are not translated - stopped
-	// being true when the system prompt started following the student's own message, and a
-	// stale caveat is worse than none: it tells a student not to bother asking in Spanish.
-	// Nothing replaces it here, because the picker does not steer Sammy. The message does.
+	// One sentence, and it is about this control rather than about the app's languages.
 	languageHint: "Changes this app's own labels and buttons.",
 	languageUnreviewed: 'Machine translated. SJSU has not reviewed this wording yet.',
 

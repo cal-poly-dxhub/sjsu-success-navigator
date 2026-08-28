@@ -1,8 +1,4 @@
-/*
- * The settings dialog. The shell here (scrim, centring layer, head, close) was the cost
- * panel's and is unchanged apart from its name - it now belongs to the panel that holds
- * every setting rather than to the one thing that used to be behind the gear.
- */
+/* The settings dialog. */
 
 .settings-panel__scrim {
 	position: fixed;
@@ -14,16 +10,7 @@
 	cursor: pointer;
 }
 
-/*
- * Centring lives on this layer, NOT on the panel, and that is load-bearing rather than
- * stylistic: the panel is a motion element, so its `transform` is written inline on every
- * animation frame. A `transform: translate(-50%, -50%)` centring rule loses to that inline
- * value and the panel renders offset by half its own size - measured in Chrome at 1440x940
- * before this layer existed, hanging 266px past the bottom of the viewport.
- *
- * pointer-events are off here and back on for the panel, so the scrim underneath still
- * receives the click that closes it.
- */
+/* Centring lives here, not on the panel, whose `transform` is written on every frame. */
 .settings-panel__layer {
 	position: fixed;
 	inset: 0;
@@ -97,7 +84,6 @@
 	overflow-y: auto;
 }
 
-/* --- one setting -------------------------------------------------------- */
 
 .settings-field__label {
 	display: block;
@@ -110,12 +96,8 @@
 
 .settings-field__select {
 	margin-top: 0.5rem;
-	/*
-	 * Wide enough for a language name at any length this list will reach, and capped so it
-	 * does not become a full-width control for two words. The native arrow and the native
-	 * dropdown are left alone deliberately - a restyled select is the classic way to make a
-	 * control that no longer behaves like one on a phone.
-	 */
+	/* Wide enough for a language name at any length this list will reach, and capped so it does
+	 * not become a full-width control for two words. */
 	width: min(18rem, 100%);
 	padding: 0.5rem 0.6rem;
 	font: inherit;
@@ -138,7 +120,6 @@
 	color: #7a6410;
 }
 
-/* --- a section that opens ------------------------------------------------ */
 
 .settings-section {
 	border: 1px solid #e4e7ec;
@@ -156,12 +137,7 @@
 	font-weight: 700;
 	color: var(--text-primary, #1c2430);
 	cursor: pointer;
-	/*
-	 * The native disclosure triangle is dropped by a flex summary - measured in Chrome, where
-	 * this row read as a heading with nothing to say it opens - so the marker is turned off
-	 * and drawn below instead. The chevron is the whole affordance; without it the cost
-	 * figures are behind a click nobody knows is there.
-	 */
+	/* A flex summary drops the native triangle, so the marker is turned off and drawn below. */
 	list-style: none;
 }
 
@@ -202,7 +178,6 @@
 	background: var(--bg-mid, #faf9f7);
 }
 
-/* --- the gear that opens it, in the side nav's account block ------------- */
 
 .side-nav__settings {
 	display: grid;
@@ -227,10 +202,7 @@
 	outline-offset: 2px;
 }
 
-/*
- * Sign out and the gear share a row. Sign out keeps the width it had; the gear is a fixed
- * square beside it, so adding this control did not resize the button next to it.
- */
+/* Sign out and the gear share a row. */
 .side-nav__account-actions {
 	display: flex;
 	align-items: stretch;

@@ -4,13 +4,7 @@ import { useLanguage, useStrings } from '../lib/i18n';
 import { CardDeck } from './CardDeck';
 import './StatementStack.css';
 
-/**
- * Card ceiling, per docs/cards-v2.md.
- *
- * Exported because the hand-off has to agree with it: the waiting deck compresses to the
- * number of cards that will actually be SHOWN, and a reply carrying five would otherwise
- * leave the deck squaring up to a count this grid then trims.
- */
+/** Card ceiling, per docs/cards-v2.md. */
 export const MAX_CARDS = 4;
 
 type RagGridProps = {
@@ -19,7 +13,7 @@ type RagGridProps = {
 	createdAt: number;
 	/** Deal the group in from a deck. Off for archived turns. */
 	deal?: boolean;
-	/** Called once the last card is down - see CardDeck's onLanded. */
+	/** Called once the last card is down, see CardDeck's onLanded. */
 	onLanded?: () => void;
 	archived?: boolean;
 };

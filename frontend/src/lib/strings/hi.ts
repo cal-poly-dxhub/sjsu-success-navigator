@@ -1,16 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Hindi. MACHINE-AUTHORED, NOT REVIEWED BY A HINDI SPEAKER. See es.ts for why a file in this
- * state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the student
- * in the settings panel. SJSU's sponsor named this language alongside Spanish.
- *
- * REVIEWER'S NOTES. "आप" throughout - a campus service addressing a student politely; "तुम"
- * would read as over-familiar from an institution. Proper nouns are left in Latin script on
- * purpose: SJSU Cares, Spartan Food Pantry, CalFresh, Sammy and the product name are what
- * the student will see on signs and on SJSU's own pages, and transliterating them would send
- * someone looking for a name that does not exist.
- */
+/** Hindi. */
 export const hi: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'जारी रखने के लिए अपने SJSU खाते से साइन इन करें।',

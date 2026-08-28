@@ -1,15 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Punjabi (Gurmukhi). MACHINE-AUTHORED, NOT REVIEWED BY A PUNJABI SPEAKER. See es.ts for why
- * a file in this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly
- * to the student in the settings panel.
- *
- * REVIEWER'S NOTES. Gurmukhi script and "ਤੁਸੀਂ" throughout. If SJSU needs Shahmukhi as well
- * that is a separate file and a separate entry, not a variant of this one. Proper nouns are
- * left in Latin script on purpose - SJSU Cares, Spartan Food Pantry, CalFresh, Sammy and the
- * product name are what the student will see on signs and on SJSU's own pages.
- */
+/** Punjabi (Gurmukhi). */
 export const pa: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'ਜਾਰੀ ਰੱਖਣ ਲਈ ਆਪਣੇ SJSU ਖਾਤੇ ਨਾਲ ਸਾਈਨ ਇਨ ਕਰੋ।',

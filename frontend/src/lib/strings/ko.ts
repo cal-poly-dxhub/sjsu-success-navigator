@@ -1,15 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Korean. MACHINE-AUTHORED, NOT REVIEWED BY A KOREAN SPEAKER. See es.ts for why a file in
- * this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the
- * student in the settings panel.
- *
- * REVIEWER'S NOTES. 해요체 throughout - polite but not the stiff 합쇼체 an institution would
- * use in a letter, since this is an assistant talking to a student. Proper nouns are left in
- * English on purpose: SJSU Cares, Spartan Food Pantry, CalFresh, Sammy and the product name
- * are what the student will see on signs and on SJSU's own pages.
- */
+/** Korean. */
 export const ko: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: '계속하려면 SJSU 계정으로 로그인하세요.',

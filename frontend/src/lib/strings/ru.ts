@@ -1,26 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Russian. MACHINE-AUTHORED, NOT REVIEWED BY A RUSSIAN SPEAKER. See es.ts for why a file in
- * this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the
- * student in the settings panel.
- *
- * REVIEWER'S NOTES. "вы" throughout, and this file deliberately breaks with the informal
- * register es.ts and fr.ts chose. Russian does not read "ты" from an institution as friendly
- * the way Spanish reads "tú": from a service addressing an adult it reads as presumptuous,
- * and a warm voice is not worth that. Lower-case "вы", which is the modern convention for
- * addressing one person in an interface, rather than the letter-writing capital.
- *
- * `costMessagesSoFar` DROPS THE PLURAL FLAG, which is not laziness. Russian needs three
- * forms where the flag carries two (сообщение / сообщения / сообщений, on 1, 2-4, 5+), so a
- * boolean would be wrong for most counts. The sentence is rebuilt around a count-first
- * construction that governs the genitive plural for every number instead, which is idiomatic
- * and correct at 1, at 3 and at 21. Interpolation is a function per string precisely so a
- * language can do this; a `{{count}}` placeholder could not.
- *
- * Proper nouns stay in English on purpose - SJSU Cares, Spartan Food Pantry, CalFresh, Sammy,
- * the product name - because they are what the student will see on signs and on SJSU's pages.
- */
+/** Russian. */
 export const ru: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'Войдите с учётной записью SJSU, чтобы продолжить.',

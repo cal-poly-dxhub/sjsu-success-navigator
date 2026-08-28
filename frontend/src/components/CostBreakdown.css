@@ -1,12 +1,5 @@
-/*
- * The cost breakdown: two cards inside the settings panel's collapsible section - what the
- * chat on screen has billed, and what a month at a given volume would. Numbers are set in a
- * tabular face so the counts line up down the column while they change.
- *
- * The dialog chrome this file used to carry (scrim, centring layer, head, close button) is
- * in SettingsPanel.css now: it belongs to the panel that owns those things, not to one
- * section inside it.
- */
+/* The cost breakdown: two cards inside the settings panel's collapsible section, what the chat
+ * on screen has billed, and what a month at a given volume would. */
 
 .cost-breakdown {
 	display: grid;
@@ -56,7 +49,6 @@
 	color: var(--text-muted, #6b7380);
 }
 
-/* --- the conversation's own counts --------------------------------------- */
 
 .cost-rows {
 	list-style: none;
@@ -88,7 +80,6 @@
 	white-space: nowrap;
 }
 
-/* --- the one slider ----------------------------------------------------- */
 
 .cost-slider__label {
 	display: flex;
@@ -117,10 +108,7 @@
 	outline-offset: 2px;
 }
 
-/*
- * The two figures the projected total is made of. They sit UNDER it rather than beside it,
- * so the number the slider moves is read first and these explain where it came from.
- */
+/* The two figures the projected total is made of. */
 .cost-figures {
 	display: grid;
 	grid-template-columns: 1fr 1fr;

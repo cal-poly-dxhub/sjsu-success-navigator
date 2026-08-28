@@ -1,20 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Traditional Chinese. MACHINE-AUTHORED, NOT REVIEWED BY A CHINESE SPEAKER. See es.ts for why
- * a file in this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly
- * to the student in the settings panel.
- *
- * REVIEWER'S NOTES. NOT zhHans.ts CONVERTED, which is the whole reason it is its own file.
- * Character conversion alone produces text a Taipei reader finds legible and foreign, because
- * the differences that matter here are vocabulary: 登入 not 登錄, 設定 not 設置, 儲存 not 保存,
- * 訊息 not 消息, 傳送 not 發送, 開啟 not 打開, 複製到剪貼簿 not 剪貼板, 學號 not 學生證號. Taiwan
- * usage throughout; a Hong Kong deployment would want its own pass over this file, and the
- * two Chinese entries are reviewed separately - signing off one says nothing about the other.
- *
- * Proper nouns stay in English on purpose - SJSU Cares, Spartan Food Pantry, CalFresh, Sammy,
- * the product name - because they are what the student will see on signs and on SJSU's pages.
- */
+/** Traditional Chinese. */
 export const zhHant: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: '請使用你的 SJSU 帳號登入以繼續。',

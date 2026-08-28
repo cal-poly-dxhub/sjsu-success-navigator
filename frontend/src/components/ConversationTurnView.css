@@ -50,15 +50,7 @@
 	margin-top: 0.35rem;
 }
 
-/*
- * The escalation draft, when a turn carries one. More air above it than the cards or the
- * trailing prose get: those are parts of the same answer, and this is a different kind of
- * thing under it - a message about to leave with the student's name on it. The extra
- * quarter-inch is what says so.
- *
- * Narrower than the panel, at the width the static bubble uses, so a draft reads as
- * correspondence rather than spanning the column like the card grid does.
- */
+/* The escalation draft, when a turn carries one. */
 .conversation-turn__escalation {
 	width: 100%;
 	min-width: 0;
@@ -66,11 +58,7 @@
 	margin-top: 0.9rem;
 }
 
-/*
- * The location panel. Less air above it than the draft gets and the same ceiling on its
- * width: it is part of the answer the cards above it gave, so it sits close to them, where
- * the draft is a different kind of thing and is spaced away from both.
- */
+/* The location panel. */
 .conversation-turn__place {
 	width: 100%;
 	min-width: 0;

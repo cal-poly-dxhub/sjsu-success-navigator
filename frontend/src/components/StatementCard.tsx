@@ -14,8 +14,7 @@ export function StatementCard({ card, onFollowup }: StatementCardProps) {
 			<header className="statement-card__header">
 				<h2 className="statement-card__title">{card.title}</h2>
 			</header>
-			{/* The description is model-authored, so it formats like the prose around it.
-			    The title is not: it is one line, and a heading has nothing to bold. */}
+			{/* The description is model-authored, so it formats like the prose around it.  */}
 			<div className="statement-card__body">
 				<FormattedMessage text={card.body} />
 			</div>

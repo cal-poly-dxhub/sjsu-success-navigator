@@ -14,20 +14,13 @@ type ConversationFeedProps = {
 	pendingPreview?: string;
 	/** What the server says it is doing while the pending exchange has no prose yet. */
 	pendingStage?: string | null;
-	/**
-	 * The turn that just took the pending exchange's place, if any. Its bubble is the one
-	 * that was already on screen a frame ago, so it does not play an entrance.
-	 */
+	/** The turn that just took the pending exchange's place, if any. */
 	continuedTurnId?: string | null;
 	introDelayMs?: number;
 	onTypingChange?: (typing: boolean) => void;
 	onPhaseChange: (turnId: string, phase: RagPhase | 'done') => void;
 	onFollowup: (prompt: string) => void;
-	/**
-	 * Whether this deployment has anywhere to escalate to (config.json's
-	 * escalationRecipient). Passed down rather than read here so one fetch at the top of the
-	 * app decides it for every turn, exactly as the cost panel's presence is decided.
-	 */
+	/** Whether this deployment has anywhere to escalate to (config.json's escalationRecipient). */
 	escalationEnabled?: boolean;
 };
 

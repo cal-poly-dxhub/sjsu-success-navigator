@@ -5,39 +5,7 @@ import { useStrings } from '../lib/i18n';
 import { logEscalationIntent, mailtoDraft } from '../lib/mailtoDraft';
 import './EscalationDraft.css';
 
-/**
- * The escalate-to-human draft, presented as the email it is.
- *
- * AN EMAIL, NOT A CARD, and that shape is the honest one. A card is a destination we are
- * sending the student to; this is a message that will go out over their name, from their
- * address, and it is the only thing in this app whose output leaves the app. So it is laid
- * out the way their mail client will lay it out - a To line, a subject line, a body - and
- * every part of it is selectable text rather than a summary of itself.
- *
- * WHAT IS ON SCREEN IS WHAT GETS SENT. The three strings rendered here are the three strings
- * handed to the mailto and the three the server stored with the turn. Nothing is generated,
- * shortened or prettified on this side; a preview that differed from the message would be
- * worse than no preview, because the student is being asked to vouch for it.
- *
- * TWO WAYS OUT, AND ONE OF THEM ALWAYS WORKS. The button opens their mail client with the
- * draft in it. The copy action puts the same text on the clipboard for anyone whose mail
- * lives in a tab, or on a machine with no mail client registered, or whose draft is past the
- * mailto ceiling - past it, the button is not rendered at all rather than rendered dead
- * (see lib/mailtoDraft.ts: Outlook on Windows fails silently, so a link that cannot work
- * looks exactly like an app that is broken).
- *
- * NOBODY HERE SENDS ANYTHING. There is no request in this component. The student presses
- * send in their own mail client, having read and edited the message, which is the whole
- * reason this design needs no verified sending identity and why a reply comes back to them.
- *
- * TWO LANGUAGES ON ONE PANEL, AND THE SPLIT IS THE CONTRACT (lib/i18n.ts). The chrome - the
- * heading, the note, the two field labels, the buttons, the two fallback hints - is page
- * chrome and comes from the catalogues, so it follows the student's chosen language. The
- * three values do NOT: the address, the subject and the body are the draft the server
- * assembled and stored with the turn, and they are shown exactly as stored. Translating
- * those here would put a message on screen that differs from the one the mailto carries,
- * which is the one thing this component promises never to do.
- */
+/** The escalate-to-human draft, presented as the email it is. */
 
 type EscalationDraftProps = {
 	draft: EmailDraft;
@@ -65,7 +33,7 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 
 	const handleCopy = useCallback(() => {
 		// The same two labels the panel shows above, so a copy from the button reads as the
-		// copy from the page - and the three values between them stay the server's bytes.
+		// copy from the page, and the three values between them stay the server's bytes.
 		const text = `${t.escalationTo}: ${draft.to}\n${t.escalationSubject}: ${draft.subject}\n\n${draft.body}`;
 
 		const settle = (ok: boolean) => {
@@ -88,8 +56,8 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 			resetTimer.current = window.setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
 		};
 
-		// `navigator.clipboard` is undefined on an insecure origin, so this is a feature
-		// check rather than a try/catch around a call that may not exist.
+		// `navigator.clipboard` is undefined on an insecure origin, so this is a feature check
+		// rather than a try/catch around a call that may not exist.
 		if (!navigator.clipboard?.writeText) {
 			settle(false);
 			return;
@@ -111,7 +79,7 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 				<div className="escalation-draft__field">
 					<dt className="escalation-draft__label">{t.escalationTo}</dt>
 					{/* The address as the server addressed it, selectable: somebody whose mail
-					    lives in a tab needs to be able to take it from here. */}
+					 * lives in a tab needs to be able to take it from here. */}
 					<dd className="escalation-draft__value">{draft.to}</dd>
 				</div>
 				<div className="escalation-draft__field">
@@ -121,9 +89,7 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 			</dl>
 
 			{/* A <pre>, so the paragraph breaks the draft was written with survive exactly as
-			    they will arrive, and so a copy from the page matches a copy from the button.
-			    Not a textarea: this is not editable HERE - it is editable in the mail client,
-			    where the edit is the student's own and lands in the message they send. */}
+			 * they will arrive, and so a copy from the page matches a copy from the button. */}
 			<pre className="escalation-draft__body" ref={bodyRef}>
 				{draft.body}
 			</pre>
@@ -149,9 +115,8 @@ export function EscalationDraft({ draft }: EscalationDraftProps) {
 				</PressableButton>
 			</div>
 
-			{/* Both of these are states a real draft reaches, so both say what to do next
-			    rather than what went wrong. `aria-live` because the first one appears in
-			    response to a press and the reader is looking at the button, not at this. */}
+			{/* Both of these are states a real draft reaches, so both say what to do next rather
+			 * than what went wrong. */}
 			<p className="escalation-draft__hint" aria-live="polite">
 				{copyFailed ? t.escalationClipboardBlocked : null}
 				{!href && !copyFailed ? t.escalationTooLong : null}

@@ -1,15 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Tagalog. MACHINE-AUTHORED, NOT REVIEWED BY A TAGALOG SPEAKER. See es.ts for why a file in
- * this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the
- * student in the settings panel.
- *
- * REVIEWER'S NOTES. Conversational Tagalog with the English loanwords a Bay Area student
- * actually uses ("chat", "email", "tutoring") rather than coined equivalents nobody says.
- * Proper nouns are left in English on purpose: SJSU Cares, Spartan Food Pantry, CalFresh,
- * Sammy and the product name are what the student will see on signs and on SJSU's own pages.
- */
+/** Tagalog. */
 export const tl: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'Mag-sign in gamit ang iyong SJSU account para magpatuloy.',

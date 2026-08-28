@@ -31,8 +31,7 @@ export function SjsuCaresModal({
 	const panelRef = useRef<HTMLElement | null>(null);
 	const previousActiveRef = useRef<HTMLElement | null>(null);
 	// The service SJSU publishes under this theme, named and described in the reader's
-	// language. The link is SJSU's own page and stays as it is - it is in English, and
-	// sending someone to a URL that does not exist would be worse than sending them there.
+	// language.
 	const recommended = highlightedServiceTheme
 		? { href: SJSU_CARES_SERVICE_HREFS[highlightedServiceTheme], ...t.caresServices[highlightedServiceTheme] }
 		: null;

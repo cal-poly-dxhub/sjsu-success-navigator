@@ -1,23 +1,5 @@
-/**
- * Every number that decides how the deck MOVES, in one mutable object.
- *
- * WHY IT IS MUTABLE, which is the only surprising thing here. These are constants in every
- * sense that matters: nothing in the app writes to them, and the shipped build runs on the
- * defaults below exactly as it would on `const`s. The object exists so a LOCAL TUNING HARNESS
- * can drive them from sliders - feel is not a thing anyone gets right by reading a number, and
- * the alternative is a recompile per guess.
- *
- * THE APP MUST NEVER WRITE HERE. There is no setter, no subscription and no persistence on
- * purpose: a tuned value that survived a reload would be a second source of truth for how the
- * product behaves, and the point of the harness is to produce numbers that get pasted back
- * into this file, not numbers that live somewhere else.
- *
- * READ AT USE, NOT AT MODULE SCOPE. Every consumer reads `deckTuning.x` at the moment it needs
- * it - inside a frame callback or a render - because a value captured once at import is a
- * value the sliders cannot reach.
- */
+/** Every number that decides how the deck moves, in one mutable object. */
 export type DeckTuning = {
-	// --- The waiting deck's idle cycle -------------------------------------------------
 	/** One nudge, out and back. */
 	cyclePopMs: number;
 	/** Everything stands still for this long before the card above takes its turn. */
@@ -31,15 +13,14 @@ export type DeckTuning = {
 	/** How tall the deck stands. Mirrored into CSS as `--waiting-deck-h`. */
 	waitingDeckHeightPx: number;
 
-	// --- The compress: shedding the cards the reply did not need ------------------------
 	/** One surplus card's trip up under the top card. */
 	rippleMs: number;
-	/** Gap between one surplus card starting and the next. Shorter than rippleMs, so they overlap. */
+	/** Gap between one surplus card starting and the next. Shorter than rippleMs, so they
+	 * overlap. */
 	rippleStaggerMs: number;
 	/** The beat after the last one lands, before the deal is allowed to begin. */
 	compressSettleMs: number;
 
-	// --- The deal ----------------------------------------------------------------------
 	/** Between one card leaving the deck and the next. */
 	dealStaggerS: number;
 	/** Cards are timed by distance so they all travel at about this speed. */

@@ -1,18 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Brazilian Portuguese. MACHINE-AUTHORED, NOT REVIEWED BY A PORTUGUESE SPEAKER. See es.ts for
- * why a file in this state ships; it is marked `reviewed: false` in lib/i18n.ts and said
- * plainly to the student in the settings panel.
- *
- * REVIEWER'S NOTES. BRAZILIAN, not European, and the difference is vocabulary rather than
- * spelling: "você" throughout, "celular" over "telemóvel", "aplicativo" over "aplicação",
- * "tela" over "ecrã", "arquivo" over "ficheiro". A European Portuguese deployment would be a
- * separate file and a separate entry, the same way zhHant.ts is separate from zhHans.ts, not
- * a search-and-replace over this one. Proper nouns stay in English on purpose - SJSU Cares,
- * Spartan Food Pantry, CalFresh, Sammy, the product name - because they are what the student
- * will see on signs and on SJSU's own pages.
- */
+/** Brazilian Portuguese. */
 export const ptBR: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: 'Entre com sua conta da SJSU para continuar.',

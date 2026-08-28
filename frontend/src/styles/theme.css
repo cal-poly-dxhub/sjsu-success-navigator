@@ -5,7 +5,8 @@
 	--text-secondary: #3d4654;
 	--text-muted: #6b7380;
 	--accent-gold: #f9c20b;
-	/* SJSU published brand palette: blue is primary, gold is an accent only, gray is the neutral. */
+	/* SJSU published brand palette: blue is primary, gold is an accent only, gray is the
+	 * neutral. */
 	--accent-blue: #0055a2;
 	--sjsu-gold: #e5a823;
 	--sjsu-gray: #939597;
@@ -22,15 +23,8 @@
 	--btn-ghost-edge: #d8dce2;
 	--btn-ghost-text: #2a3440;
 
-	/*
-	 * The shared control shape: a rounded face sitting on a solid bottom edge that collapses
-	 * when the control is pressed. These values are the ones the source and follow-up buttons
-	 * already rendered at, lifted out of PressableButton.css so a control that is not a
-	 * .pressable can join the family without re-guessing them.
-	 *
-	 * The side-nav's new-chat and recent-chat buttons are hand-rolled near-variants of this
-	 * shape (16px/5px and 15px/4px) and are deliberately left on their own literals.
-	 */
+	/* The shared control shape: a rounded face sitting on a solid bottom edge that collapses
+	 * when the control is pressed. */
 	--control-radius: 14px;
 	--control-edge: 4px;
 	--control-border: 2px;
@@ -38,9 +32,7 @@
 	--side-nav-width: 13rem;
 	/* The rail. Wide enough for his face and a 2.2rem tap target, and nothing more. */
 	--side-nav-width-collapsed: 3.5rem;
-	/* One curve for the whole collapse: the rail, the content margin and the dock all
-	   travel together, so they have to be the same length and the same easing or the
-	   layout arrives in pieces. */
+	/* One curve for the whole collapse, or the layout arrives in pieces. */
 	--side-nav-ease: cubic-bezier(0.22, 1, 0.36, 1);
 	--side-nav-duration: 240ms;
 }

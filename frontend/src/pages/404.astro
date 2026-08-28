@@ -1,14 +1,5 @@
 ---
 // The 404 page CloudFront serves for any path that does not resolve.
-//
-// It exists because CloudFront requires ResponsePagePath and ResponseCode TOGETHER on a
-// custom error response - specifying a status without a page is rejected outright at
-// distribution creation ("Both or neither of ResponseCode and ResponsePagePath must be
-// specified"). So an honest 404 needs a real page to point at, not just a status.
-//
-// This is the alternative to the blanket SPA fallback: a missing page renders THIS with a
-// 404 status, rather than rendering the app shell with a 200 and looking like a page that
-// failed to load.
 ---
 
 <!doctype html>

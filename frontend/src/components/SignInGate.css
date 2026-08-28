@@ -32,8 +32,7 @@
 	font-size: 0.875rem;
 }
 
-/* Shape, edge and press come from .pressable - this is the same control the composer's
-   Send button is, and it used to be a flat rectangle that matched nothing else. */
+/* Shape, edge and press come from .pressable: the same control the composer's Send is. */
 .sign-in__submit {
 	width: 100%;
 	margin-top: 1rem;

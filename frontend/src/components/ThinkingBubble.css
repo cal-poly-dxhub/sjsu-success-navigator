@@ -13,12 +13,8 @@
 		0 2px 6px rgba(28, 36, 48, 0.05);
 }
 
-/*
- * The same indicator under a bubble that already has prose in it, rather than inside an
- * empty one. It keeps the words and the dots and drops the bubble: the student is reading
- * an answer that is still arriving, and this is a note in the margin of it, not a second
- * thing said.
- */
+/* The same indicator under a bubble that already has prose in it, rather than inside an empty
+ * one. */
 .thinking-bubble--inline {
 	width: auto;
 	align-items: flex-start;

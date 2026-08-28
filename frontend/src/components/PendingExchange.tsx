@@ -10,36 +10,17 @@ import './ConversationTurnView.css';
 
 type PendingExchangeProps = {
 	prompt: string;
-	/**
-	 * The reply so far, while it is still arriving. Prose only, and a PREVIEW: the
-	 * authoritative payload replaces this whole exchange when the turn finishes, cards and
-	 * all. Empty on the buffered path, where there is nothing to show until the reply lands.
-	 */
+	/** The reply so far, while it is still arriving. */
 	preview?: string;
-	/**
-	 * What the server says it is doing while no text is arriving - "retrieving" today. It
-	 * lets this say a true thing during the second or two of silence before the first token,
-	 * rather than a dot animation that means nothing in particular.
-	 */
+	/** What the server says it is doing while no text is arriving, "retrieving" today. */
 	stage?: string | null;
 };
 
-/**
- * The stage the server sends once the model has begun writing card blocks (app/streaming.py,
- * CARDS_STAGE). It is the ONE thing that knows cards are coming while the student can see
- * nothing at all, and the two ends of this string are a wire contract.
- */
+/** The stage the server sends once the model has begun writing card blocks (app/streaming.py,
+ * CARDS_STAGE). */
 export const CARDS_STAGE = 'composing_cards';
 
-/**
- * What the indicator says instead of "Thinking". Server stages are a closed set; anything
- * else leaves the default alone. No trailing ellipsis on any of these, in any language: the
- * indicator animates its own dots, and a stage that brought its own would read as two.
- *
- * A function of the catalogue rather than a constant, because the STAGE is the server's word
- * and the SENTENCE is ours: `retrieving` is a wire value that never gets translated, and what
- * the student reads about it does.
- */
+/** What the indicator says instead of "Thinking". */
 const STAGE_LABELS = (t: Strings): Record<string, string> => ({
 	retrieving: t.stageRetrieving,
 	[CARDS_STAGE]: t.stageComposingCards,
@@ -51,40 +32,13 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 
 	const label = stage ? STAGE_LABELS(t)[stage] : undefined;
 
-	/**
-	 * Whether the bubble is mid-sentence. Read off the typewriter rather than timed, because
-	 * the only question below is whether there is still prose arriving on screen.
-	 */
+	/** Whether the bubble is mid-sentence. */
 	const [typing, setTyping] = useState(false);
 
-	/**
-	 * THE SILENT WINDOW, and the whole reason this indicator exists: the lead-in has finished
-	 * typing, the cards are still being written, and until now the screen said nothing while
-	 * the student waited to find out whether anything else was coming.
-	 *
-	 * Three conditions and each one closes a different way of lying. THE STAGE is the
-	 * server's, sent when `<card` appeared in the model's own output, so this can never
-	 * promise resources to a reply that has none - roughly one in ten - and it is not a
-	 * timer, so it cannot fire on a turn that is simply slow. PROSE ON SCREEN keeps it out
-	 * of the pre-text wait, which already has its own indicator inside the bubble. NOT
-	 * TYPING keeps it out of the reply itself: the deltas stop at the first tag, so a bubble
-	 * that has caught up has nothing further to say.
-	 *
-	 * It clears by unmounting: this whole exchange is replaced by the finished turn the
-	 * moment the payload lands, and that turn's prose has already been typed, so its cards
-	 * are revealed in the render that follows.
-	 */
+	/** The silent window: the lead-in has finished typing and the cards are still being written. */
 	const awaitingCards = stage === CARDS_STAGE && Boolean(preview) && !typing;
 
-	/**
-	 * Anchor to the deck the once, when it appears.
-	 *
-	 * The finished turn anchors to its card group the same way (ConversationTurnView), and
-	 * that group lands at exactly this position - so doing it HERE, while the deck is still
-	 * waiting, leaves the turn's own anchor with nowhere to scroll, and the hand-off no
-	 * longer drags the page out from under the stack. That was the largest of the three
-	 * things making that moment jump.
-	 */
+	/** Anchor to the deck the once, when it appears. */
 	const deckRef = useRef<HTMLDivElement>(null);
 	const anchoredRef = useRef(false);
 	useEffect(() => {
@@ -96,9 +50,8 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 	}, [awaitingCards, reduceMotion]);
 
 	return (
-		// No layout animation, for the reason spelled out in ConversationTurnView: the only
-		// thing it measured on these articles was a turn leaving the head of the feed, which
-		// the browser's own scroll clamp has already absorbed.
+		// No layout animation: all it measured was a turn leaving the head of the feed, which
+		// the browser's own scroll clamp already absorbs.
 		<article
 			className="conversation-exchange conversation-exchange--active conversation-exchange--pending"
 			id="active-conversation-turn"
@@ -107,23 +60,14 @@ export function PendingExchange({ prompt, preview = '', stage = null }: PendingE
 		>
 			<UserPrompt text={prompt} />
 			<div className="conversation-exchange__response conversation-exchange__response--pending">
-				{/*
-				 * ONE BUBBLE FOR THE WHOLE WAIT. It opens holding the indicator and ends
-				 * holding the reply: the prose types in place, where the finished turn's own
-				 * bubble will be, instead of a second bubble arriving under the first. No
-				 * intro delay - the student has been waiting already.
-				 */}
+				{/* ONE BUBBLE FOR THE WHOLE WAIT.  */}
 				<ConversationalBubble
 					text={preview}
 					introDelayMs={0}
 					onTypingChange={setTyping}
 					placeholder={<ThinkingBubble label={label} />}
 				/>
-				{/*
-				 * THE DECK SAYS IT, so nothing needs to be written. A stack of cards where the
-				 * cards are about to be is already the sentence, and a line of copy beside it
-				 * was saying the same thing twice.
-				 */}
+				{/* THE DECK SAYS IT, so nothing needs to be written.  */}
 				{awaitingCards ? (
 					<div className="waiting-deck-row" ref={deckRef}>
 						<CardDeckPlaceholder />

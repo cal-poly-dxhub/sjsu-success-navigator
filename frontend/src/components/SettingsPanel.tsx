@@ -9,33 +9,14 @@ import './SettingsPanel.css';
 
 type SettingsPanelProps = {
 	open: boolean;
-	/**
-	 * The cost model, or null when the stack stamped none. NULL IS THE GATE and it is the
-	 * only thing it gates now: settings itself is always available, because the language
-	 * choice inside it is for the student and has nothing to do with what a demo costs.
-	 * With no model the cost section is not rendered at all - not disabled, not empty.
-	 */
+	/** The cost model, or null when the stack stamped none. */
 	costModel: CostModel | null;
 	/** What the conversation on screen has billed. Only ever read by the cost section. */
 	usage?: ConversationUsage;
 	onClose: () => void;
 };
 
-/**
- * Settings: the panel behind the gear in the sidebar.
- *
- * IT EXISTS FOR THE LANGUAGE PICKER. SJSU's sponsor asked that students be met in their own
- * language, and the picker is the one control here a student has any reason to touch. The
- * cost breakdown - which used to BE this dialog, opened directly by the gear - is now a
- * collapsed section inside it, closed until a sponsor opens it, because it is an instrument
- * for a demo audience and a student opening settings to change language should not be shown
- * what their questions cost.
- *
- * The dialog behaviour is the cost panel's, moved up a level and unchanged: Escape closes,
- * the body stops scrolling underneath, focus is trapped while it is open and returned to the
- * gear when it closes. `summary` is in the focusable query because the collapsed section's
- * own toggle is one, and a Tab that skipped it could not reach the cost figures at all.
- */
+/** Settings: the panel behind the gear in the sidebar. */
 export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanelProps) {
 	const t = useStrings();
 	const [language, setLanguage] = useLanguage();
@@ -56,10 +37,8 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 				onClose();
 				return;
 			}
-			// A focus trap, for the same reason the safety modal has one: this panel covers
-			// the conversation, so tabbing out of it lands on controls the student cannot
-			// see. The select and the slider are real form controls, so arrow keys work
-			// without help.
+			// A focus trap, for the same reason the safety modal has one: this panel covers the
+			// conversation, so tabbing out of it lands on controls the student cannot see.
 			if (event.key !== 'Tab' || !panelRef.current) return;
 			const focusables = Array.from(
 				panelRef.current.querySelectorAll<HTMLElement>(
@@ -138,14 +117,8 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 									<label className="settings-field__label" htmlFor="settings-language">
 										{t.languageLabel}
 									</label>
-									{/*
-									  A native select rather than a segmented control, and it is the
-									  right shape rather than the cheap one: this list gets Hindi
-									  next (the sponsor named it alongside Spanish), and every
-									  language after that is one line in i18n.ts with nothing here
-									  to re-lay-out. It also arrives already keyboard-operable and
-									  already spoken correctly by a screen reader.
-									*/}
+									{/* A native select, so another language is one line in
+									 * i18n.ts with nothing to re-lay-out. */}
 									<select
 										id="settings-language"
 										className="settings-field__select"
@@ -153,8 +126,8 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 										onChange={(event) => setLanguage(event.target.value as Language)}
 									>
 										{LANGUAGES.map((option) => (
-											// Labelled in the language itself, so someone who cannot
-											// read the current one can still find their own.
+											// Labelled in the language itself, so it is legible
+											// to the person choosing it.
 											<option key={option.code} value={option.code}>
 												{option.label}
 											</option>
@@ -162,7 +135,7 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 									</select>
 									<p className="settings-field__hint">{t.languageHint}</p>
 									{/* Said to the student, not just recorded in the file: these
-									    strings have not been read by a Spanish speaker yet. */}
+									 * strings have not been read by a Spanish speaker yet. */}
 									{chosen && !chosen.reviewed ? (
 										<p className="settings-field__hint settings-field__hint--flag">
 											{t.languageUnreviewed}
@@ -171,15 +144,10 @@ export function SettingsPanel({ open, costModel, usage, onClose }: SettingsPanel
 								</section>
 
 								{costModel ? (
-									// Native details/summary: the open state is the browser's, the
-									// toggle is a real focusable control, and there is no state
-									// here to get out of step with what is on screen.
+									// Native details/summary, so there is no open state here to
+									// get out of step.
 									<details className="settings-section">
-										{/* The title alone. An amber "ESTIMATE" pill used to sit beside it;
-										    the caveat is already made properly at the foot of the
-										    breakdown ("These are estimates, not a bill"), and a warning
-										    badge on a closed row read as something being wrong rather
-										    than as a note about precision. */}
+										{/* The title alone.  */}
 										<summary className="settings-section__summary">
 											<span>{t.costSection}</span>
 										</summary>

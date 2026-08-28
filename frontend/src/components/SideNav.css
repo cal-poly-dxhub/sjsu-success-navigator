@@ -48,8 +48,7 @@
 	min-width: 0;
 }
 
-/* Sammy. `height` drives it and the width follows his own 234x256, so the box the width
-   and height attributes reserved is the box he lands in. */
+/* Sammy. */
 .side-nav__mark {
 	flex: none;
 	width: auto;
@@ -65,10 +64,7 @@
 	color: var(--text-muted);
 }
 
-/* WRAPS, where the old two-line name was two elements that could not. "SJSU Student
-   Success" is 20 characters against about 6rem of room once his face and the collapse
-   control have taken theirs, so holding it on one line would mean either ellipsing the
-   product name or shrinking it to something no one reads. Two lines, tight. */
+/* Wraps, where the old two-line name was two elements that could not. */
 .side-nav__brand-copy strong {
 	color: var(--text-primary);
 	font-size: 0.79rem;
@@ -91,19 +87,14 @@
 	transition: background 140ms ease, color 140ms ease;
 }
 
-/* Always visible, not revealed on hover: it is the only way back to the rail, and a control
-   you have to go looking for is one most people never find. */
+/* Always visible, not revealed on hover: it is the only way back to the rail, and a control you
+ * have to go looking for is one most people never find. */
 .side-nav__collapse {
 	width: 1.95rem;
 	height: 1.95rem;
 }
 
-/*
- * THE FLOP. PanelIcon is drawn once, narrow-pane-left and filled, which is the rail; the
- * expanded control is that same drawing mirrored, so the solid bar lands on the right. The
- * fill travels with the mirror on purpose - the solid pane marks the side the panel is
- * heading for, and pinning it to one side would take the direction back out of the glyph.
- */
+/* The flop. */
 .side-nav__collapse svg {
 	transform: scaleX(-1);
 }
@@ -120,7 +111,6 @@
 	outline-offset: 2px;
 }
 
-/* ---- The collapsed rail ------------------------------------------------------------ */
 
 .side-nav__rail {
 	display: flex;
@@ -135,8 +125,8 @@
 	height: 2.5rem;
 }
 
-/* His face and the control occupy ONE cell and cross-fade in place, so the swap reads as
-   the mark becoming the button rather than as two things trading places. */
+/* His face and the control occupy one cell and cross-fade in place, so the swap reads as the
+ * mark becoming the button rather than as two things trading places. */
 .side-nav__mark--rail,
 .side-nav__rail-icon {
 	grid-area: 1 / 1;
@@ -156,11 +146,7 @@
 	transform: scale(0.72);
 }
 
-/*
- * HOVERING THE RAIL, not the picture. The strip is the click target, so it has to be the
- * hover target too - aiming at a 28px face to reveal the control it is about to become
- * would make a 3.5rem bar feel like a 1.75rem one.
- */
+/* Hovering the rail, not the picture. */
 .side-nav--collapsed:hover .side-nav__mark--rail,
 .side-nav__rail-brand:focus-visible .side-nav__mark--rail {
 	opacity: 0;
@@ -301,21 +287,14 @@
 	transform: translateY(2px);
 }
 
-/* The row is the positioning context for the two controls that sit over the end of the
-   title. A reserved column would narrow every row for the sake of two buttons most rows
-   never show. */
+/* The row is the positioning context for the two controls that sit over the end of the title. */
 .side-nav__row {
 	position: relative;
 }
 
 .side-nav__row-actions {
 	position: absolute;
-	/* INSIDE the button's border box, never across it. The insets are the chat button's own
-	   border widths - 2px, and 4px at the bottom edge - and the radii are its 15px radius
-	   minus those, so the panel stops where the pill's inner curve does.
-	   `inset: 0` put it over the border instead: the outline vanished along the panel's
-	   whole span and the rounded right cap was squared off, which is what made the controls
-	   read as a hard block wedged into the end of the row rather than as part of it. */
+	/* Inside the button's border box, never across it. */
 	inset: 2px 2px 4px auto;
 	border-radius: 0 13px 11px 0;
 	display: flex;
@@ -323,10 +302,7 @@
 	gap: 0.15rem;
 	padding-left: 0.9rem;
 	/* The fade is what keeps a truncated title from colliding with the icons: the text runs
-	   under a gradient rather than being cut at a hard edge. SHORT on purpose - at 1.4rem
-	   the ramp reached into the middle of the button and read as a smudge laid over the
-	   title rather than as its last characters dissolving. The solid end matches the
-	   button's own surface, so nothing but the icons and that dissolve is visible. */
+	 * under a gradient rather than being cut at a hard edge. */
 	background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 0.9rem);
 	opacity: 0;
 	pointer-events: none;
@@ -337,7 +313,7 @@
 	background: linear-gradient(to right, rgba(238, 247, 255, 0), #eef7ff 0.9rem);
 }
 
-/* focus-within, not hover alone: the controls have to be reachable by keyboard. */
+/* Focus-within, not hover alone: the controls have to be reachable by keyboard. */
 .side-nav__row:hover .side-nav__row-actions,
 .side-nav__row:focus-within .side-nav__row-actions {
 	opacity: 1;
@@ -513,7 +489,7 @@
 }
 
 /* Sits at the right end of the row it belongs to, so a title that is being fetched does not
-   reflow the list. */
+ * reflow the list. */
 .side-nav__chat-status {
 	flex: none;
 	margin-left: auto;
@@ -559,9 +535,8 @@
 		z-index: 15;
 		display: grid;
 		place-items: center;
-		/* Footprint and position are load-bearing for the mobile header (the talk-pill's
-		   max-width is measured against them) and are unchanged. Only the surface joins
-		   the shared control shape: a bordered face over a bottom edge. */
+		/* Footprint and position are load-bearing for the mobile header (the talk-pill's max-
+		 * width is measured against them) and are unchanged. */
 		width: 2.65rem;
 		height: 2.65rem;
 		padding: 0;
@@ -587,11 +562,8 @@
 	}
 }
 
-/*
- * The drawer at phone widths: four fifths of the viewport, so the remaining fifth stays a
- * visible sliver of chat under the scrim. Dismissal is the scrim tap or a left drag
- * (SideNav.tsx) - there is no close button to make room for.
- */
+/* The drawer at phone widths: four fifths of the viewport, so the remaining fifth stays a
+ * visible sliver of chat under the scrim. */
 @media (max-width: 860px) {
 	.side-nav--mobile {
 		width: 80vw;

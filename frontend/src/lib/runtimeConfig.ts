@@ -1,69 +1,20 @@
-/**
- * Runtime configuration, fetched from /config.json.
- *
- * Camp read its endpoint from `import.meta.env.PUBLIC_CHAT_API_URL`, which Astro inlines
- * at BUILD time. That cannot work here: the API URL does not exist until `cdk deploy`
- * creates the HTTP API, so a build-time value would mean build, deploy, read the outputs,
- * rebuild, redeploy - forever, and a fresh install in another account would ship a site
- * pointing at this one's stack.
- *
- * The stack writes config.json into the site bucket at deploy time from CloudFormation
- * tokens (Source.jsonData), with `no-store` so a cached copy can never pin a stale
- * endpoint. Nothing in this repo names an account, a region, an API id or a pool id.
- */
+/** Runtime configuration, fetched from /config.json. */
 
 export type RuntimeConfig = {
 	chatApiUrl: string;
-	/**
-	 * Base URL for the history reads: GET here lists the signed-in student's own
-	 * conversations, and GET here + "/<conversationId>" opens one. Stamped by the stack
-	 * alongside chatApiUrl rather than derived from it - stripping "/chat" and re-appending
-	 * would put this stack's route names in a file this stack does not build.
-	 */
+	/** Base URL for the history reads: GET here lists the signed-in student's own conversations,
+	 * and GET here + "/<conversationId>" opens one. */
 	conversationsApiUrl: string;
 	userPoolId: string;
-	/** The WEB app client - authorization code + PKCE. Never the eval client. */
+	/** The web app client, authorization code + PKCE. Never the eval client. */
 	userPoolClientId: string;
-	/**
-	 * Base URL of the Cognito managed login domain, e.g.
-	 * https://sjsu-navigator-abc123.auth.us-west-2.amazoncognito.com - the origin the
-	 * browser is redirected to for /oauth2/authorize, /oauth2/token and /logout.
-	 *
-	 * There is no redirect URI here on purpose: auth.ts derives it from
-	 * window.location.origin, so this one file is correct on localhost and on the
-	 * distribution, and the two can never disagree about the exact string Cognito matches.
-	 */
+	/** Base URL of the Cognito managed login domain, e.g. */
 	loginDomain: string;
 	region: string;
-	/**
-	 * The cost panel's model, or absent when the panel is off.
-	 *
-	 * ABSENCE IS THE GATE, and it is why this is optional rather than carrying a `false`
-	 * flag: the stack omits the key entirely when config.yaml's `cost_model.enabled` is
-	 * false, so a build that never receives it cannot render the control at all. Okta
-	 * federation provisions any SJSU student into this pool just in time, and a student
-	 * must not be shown operating cost - one config edit takes the whole surface away.
-	 *
-	 * Not a bill. Every figure is a published AWS list rate multiplied by usage measured
-	 * against this stack (eval/measure_usage.py), so nothing here can blend in the spend of
-	 * another project sharing the AWS account.
-	 */
+	/** The cost panel's model, or absent when the panel is off. */
 	costModel?: CostModel;
-	/**
-	 * Where an escalation draft is addressed, or absent when this deployment has no mailbox
-	 * to route students to.
-	 *
-	 * ABSENCE IS THE GATE for a third time, and it is the browser's half of a gate the
-	 * server holds the other end of: with no recipient the stack sets no ESCALATION_*
-	 * variables, so the system prompt never mentions the tag and no reply can carry a draft
-	 * (app/prompts.py, app/escalation.py). This key is what keeps the component out of the
-	 * page as well, so an escalation UI cannot appear in a deployment that never agreed a
-	 * destination.
-	 *
-	 * It is NOT what a draft is addressed to on screen. The rendered destination comes from
-	 * the draft the server assembled and stored, so a turn from last month shows where it
-	 * was actually going rather than where today's config points.
-	 */
+	/** Where an escalation draft is addressed, or absent when this deployment has no mailbox to
+	 * route students to. */
 	escalationRecipient?: string;
 };
 
@@ -132,8 +83,8 @@ export type CostModel = {
 let cached: Promise<RuntimeConfig> | null = null;
 
 export function loadRuntimeConfig(): Promise<RuntimeConfig> {
-	// Cached per page load, not per call: every fetch would otherwise re-request it, and
-	// it cannot change while the page is open.
+	// Cached per page load, not per call: every fetch would otherwise re-request it, and it
+	// cannot change while the page is open.
 	if (cached) return cached;
 
 	cached = fetch('/config.json', { cache: 'no-store' })
@@ -161,15 +112,15 @@ export function loadRuntimeConfig(): Promise<RuntimeConfig> {
 			return {
 				...config,
 				chatApiUrl: config.chatApiUrl.replace(/\/$/, ''),
-				// Trailing slash off for the same reason: the single-conversation URL is
-				// this plus "/<id>", and a double slash is a different path to API Gateway.
+				// Trailing slash off for the same reason: the single-conversation URL is this
+				// plus "/<id>", and a double slash is a different path to API Gateway.
 				conversationsApiUrl: config.conversationsApiUrl.replace(/\/$/, ''),
 				loginDomain: config.loginDomain.replace(/\/$/, ''),
 			};
 		})
 		.catch((error: unknown) => {
-			// Do not cache a failure: a transient network error at page load would
-			// otherwise make the app permanently unusable until a manual reload.
+			// Do not cache a failure: a transient network error at page load would otherwise
+			// make the app permanently unusable until a manual reload.
 			cached = null;
 			throw error;
 		});

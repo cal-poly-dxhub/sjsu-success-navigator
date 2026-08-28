@@ -24,33 +24,13 @@ const MESSAGES_MAX = 200_000;
 const MESSAGES_STEP = 1_000;
 const MESSAGES_DEFAULT = 20_000;
 
-/**
- * The cost breakdown: what this conversation cost, and what a month of them would.
- *
- * IT IS CONTENT, NOT A PANEL, and that is the whole of what changed when settings arrived.
- * The dialog it used to be - scrim, focus trap, close button, Escape - now belongs to
- * SettingsPanel, which owns those things once for everything it holds. This renders the two
- * cards and the footnote into whatever it is given, which today is a collapsed section a
- * sponsor opens.
- *
- * THE LEFT HALF IS MEASURED, NOT MODELLED. It prices the tokens the server counted on the
- * turns this student actually sent (app/usage.py, reported on every reply), so it answers
- * "what did that cost" about the conversation in front of the reader. It used to show the
- * 40-question sample average under the heading "one student message", which was a figure
- * about a sample presented where a reader would read it as a figure about their chat.
- *
- * THE RIGHT HALF IS A PROJECTION, and it is one slider and three numbers: the total a
- * month at that volume costs, the floor it never drops below, and what one message adds.
- * The itemizations and the rate table came off deliberately - they were an audit of the
- * arithmetic sitting in the middle of a demo, and the arithmetic is in costModel.ts where
- * it can be read properly.
- */
+/** The cost breakdown: what this conversation cost, and what a month of them would. */
 export function CostBreakdown({ model, usage }: CostBreakdownProps) {
 	const t = useStrings();
 	const [messages, setMessages] = useState(MESSAGES_DEFAULT);
 
-	// Rates and the baseline never change while the page is open, so the floor and the
-	// per-message price are computed once rather than on every slider frame.
+	// Rates and the baseline never change while the page is open, so the floor and the per-
+	// message price are computed once rather than on every slider frame.
 	const per = useMemo(() => perMessage(model.rates, model.measured), [model]);
 	const fixed = useMemo(() => fixedMonthly(model.rates, model.baseline), [model]);
 
@@ -77,15 +57,14 @@ export function CostBreakdown({ model, usage }: CostBreakdownProps) {
 							<span className="cost-rows__v">{count(conversation.messages)}</span>
 						</li>
 						<li>
-							{/* Not the same number as the one above, and that is the point: the
-							    loop calls the model again after a search, and each call resends
-							    everything before it. */}
+							{/* Not the number above: a second search is a second call, and each
+							 * call resends everything. */}
 							<span className="cost-rows__k">{t.costModelCalls}</span>
 							<span className="cost-rows__v">{count(conversation.modelCalls)}</span>
 						</li>
 						<li>
-							{/* Both models' tokens, because the row says what the conversation used.
-							    They are priced apart (costModel.ts) and counted together here. */}
+							{/* Both models' tokens, because the row says what the conversation
+							 * used. */}
 							<span className="cost-rows__k">{t.costInputTokens}</span>
 							<span className="cost-rows__v">
 								{count(conversation.inputTokens + conversation.titleInputTokens)}

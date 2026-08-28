@@ -1,6 +1,5 @@
-/* Brand colours come only from the theme tokens: var(--accent-blue) is the primary,
-   var(--sjsu-gold) is an accent only, var(--sjsu-gray) is the neutral. Tints are derived
-   with color-mix so no brand hex is open-coded here. */
+/* Brand colours come only from the theme tokens: var(--accent-blue) is the primary, var(--sjsu-
+ * gold) is an accent only, var(--sjsu-gray) is the neutral. */
 .cares {
 	position: fixed;
 	inset: 0;
@@ -100,12 +99,8 @@
 	line-height: 1.5;
 }
 
-/*
- * The three controls below are .pressable, not bespoke rectangles: this panel's buttons
- * were the ones that read as belonging to a different product. Only the face padding and
- * the stacked text layout are set here - shape, edge and press come from the shared
- * pattern. The stacked face is the same arrangement SafetyHandoff already uses.
- */
+/* The three controls below are .pressable, not bespoke rectangles: this panel's buttons were
+ * the ones that read as belonging to a different product. */
 .cares__primary .pressable__face {
 	flex-direction: column;
 	align-items: flex-start;
@@ -165,8 +160,7 @@
 	line-height: 1.45;
 }
 
-/* Gold is the recommendation marker. It moves from a left rule to the button's own bottom
-   edge, which keeps it an accent rather than a second border treatment. */
+/* Gold is the recommendation marker. */
 .cares__service {
 	--pressable-edge: var(--sjsu-gold);
 }

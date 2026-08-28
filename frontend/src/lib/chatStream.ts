@@ -1,90 +1,23 @@
 /**
  * One turn over an ordinary HTTP response, read as it arrives, so the reply appears as it
- * is written.
- *
- * A POST AND A STREAM READER, NOT `EventSource`. The turn carries a body - the query, the
- * follow-up flag and the conversation id - and `EventSource` can only issue a GET with no
- * body, so SSE was never available here whatever its framing is worth. `fetch` gives back
- * a `ReadableStream` that yields bytes as the edge forwards them, which is the same thing
- * an `onmessage` handler was doing and one fewer protocol.
- *
- * THE ROUTES ARE ON THIS PAGE'S OWN ORIGIN. `/api/*` is a behaviour on the same CloudFront
- * distribution that served this bundle, so a relative path is the whole address: no second
- * hostname, no CORS allowlist to keep in step, and no preflight in front of a request
- * whose entire value is time to first byte. STREAM_PATH_PREFIX is this side of a string
- * spelled once per language - see the constant.
- *
- * TWO HEADERS THAT ARE NOT `Authorization`, and neither is a preference:
- *
- * - `x-amz-content-sha256` is the SHA-256 of the body we are about to send, in hex. The
- *   edge signs each origin request with SigV4 (origin access control), and Lambda refuses
- *   an origin request whose payload is unsigned, so a client sending a body has to hand
- *   the edge the hash to sign over. It is a HASH, not a signature: it authenticates
- *   nothing on its own, it commits the request to its own bytes, and computing it needs no
- *   AWS credentials - which is why a browser can compute it and never holds any.
- * - the token rides `x-sjsu-authorization` because that SigV4 signature lives in
- *   `Authorization`, so a token in that header is a token CloudFront overwrites on the way
- *   past. The `/api/*` behaviour forwards every other viewer header, so a header of the
- *   app's own arrives intact and `app/token_auth.py` verifies it in process.
- *
- * WHAT ARRIVES IS A PREVIEW, AND IT IS NOT THE ANSWER. The `delta` frames carry prose only
- * - the server stops them at the first tag of the card contract - and nothing here parses
- * them, caps them or keeps them. The turn ends with ONE `final` frame carrying exactly the
- * payload POST /chat would have returned, and that is what the caller renders. The preview
- * is thrown away.
- *
- * FALLING BACK IS NOT UNCONDITIONAL, and there are two lines rather than one.
- *
- * The first is `accepted`. Before it the server has done nothing - nothing written,
- * nothing billed. After it the student's message is on record and the turn is running, so
- * retrying over HTTP would ask the same question twice, bill it twice and store it twice;
- * a failure there is reported instead, and the reply is still written server-side for when
- * they come back.
- *
- * The second is WHAT the failure was, and it is the narrower of the two. A non-2xx is not
- * a fallback condition on its own: the buffered POST /chat answers whether or not `/api`
- * is alive, so falling back on every refusal makes a broken front door look like a working
- * product - which is precisely the thing a deploy needs to be able to see. Only a 404
- * falls back, because only a 404 means there is no door: nothing behind `/api`, or a
- * prefix that does not match. An authentication or authorization failure never falls back.
- * See the check itself for the rest.
- */
+ * is written. Only a 404 falls back to POST /chat, and only before the `accepted` frame. */
 
 import type { ChatResponse } from '../types/chat';
 import { ChatApiError } from './chatApi';
 import { currentAccessToken } from './auth';
 
-/**
- * The prefix the edge routes at this app, and the frontend's half of a string spelled once
- * per language.
- *
- * CloudFront matches a behaviour on the viewer's path and forwards that path to the origin
- * UNCHANGED - there is no prefix-stripping short of a rewrite function - so this, the
- * distribution's path pattern (`_STREAM_EDGE_PATH_PREFIX` in infra_stack.py) and the
- * FastAPI router's prefix (`EDGE_PATH_PREFIX` in app/stream_probe.py) are one string in
- * three files. A mismatch synthesizes clean, deploys clean, and is a 404 from FastAPI
- * served through a distribution behaving exactly as configured, so the infra suite reads
- * all three off disk and compares them.
- */
+/** One string in three files: here, `_STREAM_EDGE_PATH_PREFIX` in infra_stack.py, and
+ * `EDGE_PATH_PREFIX` in app/streaming_app.py. The infra suite reads all three off disk. */
 export const STREAM_PATH_PREFIX = '/api';
 
-/**
- * The header the streaming app reads the Cognito access token off, and the browser's half
- * of the same kind of contract: `AUTH_HEADER_NAME` in app/token_auth.py is the only other
- * place this string is written, and the infra suite compares the two.
- *
- * It is not `Authorization` because origin access control's SigV4 signature owns that
- * header on the origin request - see the module docstring.
- */
+/** Not `Authorization`, which the edge's own SigV4 signature owns. Spelled here and in
+ * app/token_auth.py, and the infra suite compares the two. */
 export const AUTH_HEADER_NAME = 'x-sjsu-authorization';
 
 /** The body hash header the edge signs over. Named here for the same reason. */
 const BODY_HASH_HEADER_NAME = 'x-amz-content-sha256';
 
-/**
- * The stream could not carry this turn, and the server had not taken it on yet. The caller
- * answers this by asking the same question over POST /chat.
- */
+/** The stream could not carry this turn, and the server had not taken it on yet. */
 export class StreamUnavailable extends Error {
 	constructor(message: string) {
 		super(message);
@@ -107,14 +40,11 @@ type ServerFrame =
 	  };
 
 export type StreamHandlers = {
-	/**
-	 * The server has taken the turn on, under this conversation id. THE FIRST FRAME, ahead
-	 * of the retrieval status and every delta. Past this point there is no falling back.
-	 */
+	/** The server has taken the turn on, under this conversation id. */
 	onAccepted?: (conversationId: string) => void;
-	/** Something is happening that produces no text yet - a retrieval, or cards starting. */
+	/** Something is happening that produces no text yet, a retrieval, or cards starting. */
 	onStatus?: (stage: string) => void;
-	/** The reply so far, as prose. Append-only: each call is the WHOLE preview to date. */
+	/** The reply so far, as prose. Append-only: each call is the whole preview to date. */
 	onPreview?: (preview: string) => void;
 };
 
@@ -124,26 +54,10 @@ export type StreamChatOptions = {
 	conversationId?: string;
 };
 
-/**
- * How long to wait with nothing arriving before giving up on a turn.
- *
- * Generous against the server's own budget: the agent loop is capped at 22 seconds and the
- * function gets 60, so anything past this is a turn that is not coming rather than a slow
- * one. It is a SILENCE timer, reset by every chunk, not a total - a long reply that is
- * streaming steadily must never trip it.
- */
+/** How long to wait with nothing arriving before giving up on a turn. */
 const SILENCE_TIMEOUT_MS = 45_000;
 
-/**
- * The hex SHA-256 of what we are about to send.
- *
- * `crypto.subtle` needs a secure context, which https and localhost both are and which the
- * only two places this app runs both are. Encoded to UTF-8 bytes FIRST rather than hashing
- * the string, because the hash has to be over the bytes the fetch will actually put on the
- * wire - a body with an accented character in it hashes differently otherwise, and the
- * failure would be an edge signature that does not validate on exactly the turns whose
- * text is not ASCII.
- */
+/** The hex SHA-256 of what we are about to send. */
 async function bodyHash(body: string): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
 	return Array.from(new Uint8Array(digest))
@@ -151,18 +65,12 @@ async function bodyHash(body: string): Promise<string> {
 		.join('');
 }
 
-/**
- * One turn, streamed.
- *
- * Resolves with the authoritative `ChatResponse` off the `final` frame. Rejects with
- * `StreamUnavailable` while a fall back to POST /chat is still safe, and with
- * `ChatApiError` once it is not.
- */
+/** One turn, streamed. */
 export async function streamChat(
 	options: StreamChatOptions,
 	handlers: StreamHandlers = {},
 ): Promise<ChatResponse> {
-	// Throws BEFORE the request when the token is missing or expired, for the same reason
+	// Throws before the request when the token is missing or expired, for the same reason
 	// postChat checks first: a request we know will be refused is never sent.
 	const token = currentAccessToken();
 
@@ -173,13 +81,13 @@ export async function streamChat(
 	});
 
 	// One turn's worth of state, so `accepted` can decide which error class a failure is:
-	// before it the caller may retry over POST /chat, after it it may not.
+	// Before it the caller may retry over POST /chat, after it it may not.
 	let accepted = false;
 	const failure = (message: string): Error =>
 		accepted ? new ChatApiError(message) : new StreamUnavailable(message);
 
-	// The silence timer aborts the fetch rather than merely rejecting, so a stalled
-	// response releases its connection instead of being left to the tab.
+	// The silence timer aborts the fetch rather than merely rejecting, so a stalled response
+	// releases its connection instead of being left to the tab.
 	const abort = new AbortController();
 	let silenceTimer = 0;
 	let silent = false;
@@ -206,8 +114,7 @@ export async function streamChat(
 				signal: abort.signal,
 			});
 		} catch (error) {
-			// Nothing left this browser, or nothing came back. Either way the server never
-			// saw the turn, so this is always the retryable class.
+			// Nothing left this browser, or nothing came back, so the turn was never taken on.
 			throw new StreamUnavailable(
 				silent
 					? 'Sammy did not answer in time.'
@@ -215,29 +122,7 @@ export async function streamChat(
 			);
 		}
 
-		// ONE STATUS FALLS BACK, AND IT IS 404. Every non-2xx used to, on the reasoning
-		// that the app decides a status code before it commits to a turn, so retrying is
-		// free of consequence. That is true about consequence and wrong about
-		// DIAGNOSIS: the buffered POST /chat works whether or not `/api` does, so a
-		// fallback that fires on any refusal turns a dead streaming front door into a
-		// product that looks fine. The failure has to be visible before it is survivable.
-		//
-		// 404 is the one status that means the door is not there at all - a deployment
-		// with nothing behind `/api`, or a FastAPI whose prefix does not match the
-		// behaviour's (EDGE_PATH_PREFIX against _STREAM_EDGE_PATH_PREFIX). There is no
-		// server to have taken the turn on, so this is the known-safe unavailability and
-		// the caller may ask POST /chat instead.
-		//
-		// EVERYTHING ELSE SURFACES, AND 401 MOST OF ALL. An unverifiable token is the
-		// answer of a door that IS there and refused this caller (app/token_auth.py);
-		// POST /chat sits behind the same Cognito pool, so falling back either spends a
-		// second request to be refused again or - worse - succeeds through API Gateway's
-		// own authorizer and hides that the streaming path trusts nobody. 403 is the edge
-		// failing to invoke the origin or a request the origin would not have signed, 400
-		// is this client sending a body the app will not parse, 5xx is the app itself:
-		// none of those is a missing door, and none of them gets quieter for being asked
-		// twice. They are reported, with the status in the sentence, because the status
-		// is the whole diagnosis.
+		// The one status that falls back, because only a 404 means there is no door.
 		if (response.status === 404) {
 			throw new StreamUnavailable('There is no streaming route at this deployment.');
 		}
@@ -248,16 +133,13 @@ export async function streamChat(
 			);
 		}
 		if (!response.body) {
-			// A browser with no streams, or a response the runtime buffered away. Neither is
-			// a turn the server started.
+			// A browser with no streams, or a response the runtime buffered away.
 			throw new StreamUnavailable('This browser cannot read a streamed reply.');
 		}
 
 		const reader = response.body.getReader();
 		const decoder = new TextDecoder();
-		// Whatever of the last line has arrived. NDJSON is newline-delimited and a chunk
-		// boundary lands wherever the network put it, so a frame routinely arrives in two
-		// pieces and is only parseable once its newline does.
+		// Whatever of the last line has arrived.
 		let pending = '';
 		let preview = '';
 
@@ -276,18 +158,15 @@ export async function streamChat(
 					handlers.onPreview?.(preview);
 					return null;
 				case 'final':
-					// THE AUTHORITATIVE PAYLOAD. Everything above it was a preview.
+					// The authoritative payload. Everything above it was a preview and is
+					// thrown away.
 					return frame.payload;
 				case 'error':
-					// The server saying something definite - a daily-limit refusal, a failed
-					// loop. NOT a transport failure, so it is a ChatApiError whatever stage
-					// we are at: retrying it over HTTP would ask a question that has already
-					// been answered with "no".
+					// The server saying something definite, a daily-limit refusal, a failed
+					// loop.
 					throw new ChatApiError(frame.message);
 			}
-			// A frame type this client does not know. Ignored rather than fatal, for the
-			// same reason the server ignores an unknown Bedrock event: a new frame type must
-			// not be able to fail a turn that is otherwise going fine.
+			// A frame type this client does not know.
 			return null;
 		};
 
@@ -320,17 +199,15 @@ export async function streamChat(
 			if (chunk.done) break;
 
 			pending += decoder.decode(chunk.value, { stream: true });
-			// Split on the LAST newline: everything before it is whole lines, what is left
-			// is the start of the next frame.
+			// Split on the last newline: everything before it is whole lines, what is left is
+			// the start of the next frame.
 			let newline = pending.indexOf('\n');
 			while (newline !== -1) {
 				const line = pending.slice(0, newline);
 				pending = pending.slice(newline + 1);
 				const payload = consume(line);
 				if (payload) {
-					// The final frame is the end of the turn. Cancel rather than drain: the
-					// server sends nothing after it, and a reader left open holds the
-					// connection until the function returns.
+					// The final frame is the end of the turn, so the reader is released here.
 					void reader.cancel().catch(() => {
 						/* Already closed. Nothing to do and nothing to report. */
 					});
@@ -344,8 +221,7 @@ export async function streamChat(
 		const payload = consume(pending + decoder.decode());
 		if (payload) return payload;
 
-		// A stream that ended without a `final` frame. Before `accepted` this is a
-		// deployment with nothing behind `/api`; after it, a turn that died mid-flight.
+		// A stream that ended without a `final` frame.
 		throw failure('The live connection closed before the answer arrived.');
 	} finally {
 		window.clearTimeout(silenceTimer);

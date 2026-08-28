@@ -1,15 +1,6 @@
 import type { Strings } from './en';
 
-/**
- * Japanese. MACHINE-AUTHORED, NOT REVIEWED BY A JAPANESE SPEAKER. See es.ts for why a file in
- * this state ships; it is marked `reviewed: false` in lib/i18n.ts and said plainly to the
- * student in the settings panel.
- *
- * REVIEWER'S NOTES. です・ます throughout - polite, but not the 敬語 an office would use in a
- * formal notice, since this is an assistant talking to a student. Proper nouns are left in
- * English on purpose: SJSU Cares, Spartan Food Pantry, CalFresh, Sammy and the product name
- * are what the student will see on signs and on SJSU's own pages.
- */
+/** Japanese. */
 export const ja: Strings = {
 	appName: 'Student Success Navigator',
 	signInSubtitle: '続けるには SJSU のアカウントでサインインしてください。',
