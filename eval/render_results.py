@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Render an eval transcript against the ground truth as one self-contained HTML page.
 
-Presentation only, no scoring; see docs/eval-harness.md. Judgments, if any, come from
-eval/judgments/<transcript stem>.yaml.
+Presentation only. Judgments, if any, come from eval/judgments/<transcript stem>.yaml.
 """
 
 from __future__ import annotations

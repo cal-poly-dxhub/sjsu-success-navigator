@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Collect the deployed system's answers to the ground-truth questions. NO SCORING.
+"""Collect the deployed system's answers to the ground-truth questions. No scoring.
 
-Headless, so it signs in as the pool's machine client; endpoints come from the stack
-outputs. See docs/eval-harness.md. Needs boto3, httpx and PyYAML.
+Headless, so it signs in as the pool's machine client. Needs boto3, httpx and PyYAML.
 """
 
 from __future__ import annotations
@@ -32,8 +31,7 @@ REQUEST_TIMEOUT_S = 35.0
 
 
 def discover_endpoint(profile: str, region: str, stack_name: str) -> dict:
-    """ChatApiUrl and ChatEvalClientId from the stack outputs. The EVAL client, not the web
-    one, which has no password flow."""
+    """The eval client, not the web one, which has no password flow."""
     session = boto3.Session(profile_name=profile, region_name=region)
     stacks = session.client("cloudformation").describe_stacks(StackName=stack_name)
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stacks["Stacks"][0]["Outputs"]}
@@ -44,7 +42,7 @@ def discover_endpoint(profile: str, region: str, stack_name: str) -> dict:
 
 
 def sign_in(client_id: str, region: str, username: str, password: str) -> str:
-    """The machine client's sign-in: one unsigned InitiateAuth, access token back."""
+    """One unsigned InitiateAuth, access token back."""
     resp = httpx.post(
         f"https://cognito-idp.{region}.amazonaws.com/",
         headers={
@@ -71,7 +69,7 @@ def sign_in(client_id: str, region: str, username: str, password: str) -> str:
 
 
 def classify(status: int | None, response: dict | None) -> str:
-    """Mechanical response-shape classification for the page badge. Not a judgment."""
+    """Response shape for the page badge. Not a judgment."""
     if status != 200 or response is None:
         return "error"
     if response.get("safetyHandoff"):
@@ -83,7 +81,7 @@ def classify(status: int | None, response: dict | None) -> str:
 
 
 def ask_one(client: httpx.Client, api_url: str, token: str, pair: dict) -> dict:
-    """POST one question as a fresh single-turn conversation. One retry on a throttle."""
+    """A fresh single-turn conversation, with one retry on a throttle."""
     payload = {"query": pair["question"], "followup": False}
     headers = {"Authorization": f"Bearer {token}"}
     attempts = 0
@@ -218,10 +216,7 @@ def main() -> None:
     transcript = {
         "run": {
             "timestamp_utc": stamp,
-            # The WINDOW, not just the finish stamp. eval/measure_usage.py --from-eval reads
-            # Bedrock's own per-model CloudWatch counters over exactly this span to split the
-            # run's tokens between the answering model and the titling one, which the wire
-            # `usage` block cannot do on its own.
+            # The window, because measure_usage.py --from-eval reads CloudWatch over it.
             "started_utc": started_utc,
             "finished_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "api_url": endpoint["api_url"],
