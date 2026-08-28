@@ -1,0 +1,13 @@
+# Deps for the streaming chat app (app/streaming_app.py) only. Its own file, so the chat
+# function's layer does not grow a framework for a function it never runs.
+
+# uvicorn, not uvicorn[standard]: the extra pulls two compiled wheels for speed a Lambda
+# behind a Function URL cannot use.
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
+
+# The `crypto` extra, or app/token_auth.py cannot verify RS256 and fails at runtime.
+pyjwt[crypto]>=2.8,<3
+
+# By reference, so a new pin over there installs here too rather than arriving by accident.
+-r requirements.txt

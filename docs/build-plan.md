@@ -1,0 +1,83 @@
+# Build plan
+
+- [x] scaffold the v1 project structure
+- [x] verify the SJSU crawl list against the live site and move it to the repo root
+- [x] pull gav's config skeleton and synth validators, renamed with no hardcoded global names
+- [x] pull gav's knowledge base and vector index, repointed at our source bucket and chunking values
+- [x] pull gav's scraper as one daily sweep over the curated URL list, no tiers
+- [x] pull gav's chat Lambda and deps layer as a bare handler, not FastAPI plus Mangum
+- [x] pull camp's Converse loop, tool schemas, system prompt and services as files
+- [x] pull camp's card parsing and its pre-model safety intercept
+- [x] map crawl sections to card presets, since deleted by the card tag contract
+- [x] pull gav's HTTP API with the Cognito JWT gate on the billable route
+- [x] pull gav's site bucket and CloudFront distribution, stamping config.json with the API URL
+- [x] bundle Astro in a container at synth so dist/ is never committed
+- [x] assert in the infra suite that every app module reaches the Lambda asset
+- [x] replace the placeholder site with camp's UI
+- [x] strip gav-specific surface and pin its absence so a later pull cannot reintroduce it
+- [x] give CloudFront error responses a 404 page
+- [x] keep the two deps layers as distinct assets
+- [x] keep the dev config.json out of the site bundle
+- [x] parse cards from model-emitted tags instead of cutting them out of prose
+- [x] move the detail into the cards and raise the description cap, so the prose is a lead-in
+- [x] deal variable-height cards off a deck, retiring the reveal button and the four-line clamp
+- [x] slow the deal and tighten the card copy into one reading rhythm
+- [x] let a follow-up click carry cards, since it is an ordinary user turn
+- [x] size cards to their content instead of truncating, with the caps as runaway guards
+- [x] rebuild the system prompt to spec and normalise dashes out of everything displayed
+- [x] rebuild the talk-to-a-person surface and correct the SJSU Cares contact details
+- [x] add mobile layout states and a modal menu drawer
+- [x] add 25 sources from the sponsor coverage audit, taking the crawl list to 228 pages
+- [x] recover the contact band and link-tile text trafilatura drops, taking phones from 39/203 to 192/228
+- [x] add the 82-pair ground-truth baseline and a judgment-free runner
+- [x] replace the phrase gate with model-triaged safety and server-resolved contacts
+- [x] render cards in the model's emitted position and order the reply lead-in, cards, questions
+- [x] normalise the frontend: app mark, background texture, button styling and large-viewport scale
+- [x] send the model whole retrieved chunks, dropping the 500-char excerpt cap
+- [x] prime retrieval on every turn and rebuild the prompt around it
+- [x] lead each scraped page with its title and contact band so every page introduces itself
+- [x] check every PR in CI: three pytest suites and the Astro build
+- [x] create the DynamoDB chat history table, infrastructure only
+- [x] replace the shared credential with per-user Cognito accounts behind managed login
+- [x] make the turn server-authoritative, which is a prompt injection fix and not a memory feature
+- [x] add the history endpoints and the conversation sidebar
+- [x] animate live replies only
+- [x] add the cost analysis panel
+- [x] generate conversation titles with a small model, and let a student rename or delete a chat
+- [x] meter the conversation on screen from tokens the server counted
+- [x] name the titling model with an id Bedrock accepts
+- [x] render bold and bullet lists in replies, preserving newlines inside card descriptions
+- [x] tighten the reply length targets and permit bold and bullets inside cards
+- [x] add a per-user daily message cap, the first control bounding what one account spends
+- [x] federate Okta into the chat user pool behind one config key
+- [x] permit ordered lists and italics, in the display parser's syntax rather than markdown's
+- [x] stream replies over a WebSocket, since API Gateway response streaming is REST only
+- [x] drop the authorizer result TTL from the WebSocket API
+- [x] show Sammy beside the app title
+- [x] add the language selector and nest the cost panel under it
+- [x] inject campus-local time into the model's copy of the turn
+- [x] keep the streaming bubble stable during a reply
+- [x] add the escalate-to-human email draft, addressed by the server and sent by the student
+- [x] widen the chrome to fifteen languages and answer in the student's own language
+- [x] resolve SJSU campus abbreviations from a glossary the prompt carries
+- [x] show resource progress and settle card entry, so the wait after the prose says what it is
+- [x] bridge the waiting deck into the deal, dealt from the bottom off a deck that shuffles
+- [x] store the model's reply rather than its rendered halves, so a reopened turn is the turn that was sent
+- [x] add a campus location card with keyless directions and self-served OpenStreetMap tiles
+- [x] use the SJSU head mark as the favicon
+- [x] add the SJSU coaching handouts and extract text from PDF sources
+- [x] stop a card flying to the viewport top on entry
+- [x] group the prompt's rules and state each once, then say each fact once across a reply
+- [x] move every SJSU fact into a repo-root data/ directory, read by both languages
+- [x] pass over the Python comments
+- [x] add a Lambda Web Adapter response-streaming probe and stream a real Bedrock reply from it
+- [x] lift the turn sequence out of the API Gateway handler and serve the whole turn from the FastAPI app
+- [x] format the escalation email draft as real lines, encoding the breaks at the mailto boundary
+- [x] recalibrate the cost panel from measured turns, pricing the titling call at its own rate
+- [x] hand-draw the architecture in draw.io, showing the Converse loop rather than one-shot RAG
+- [x] announce the conversation id on the accepted frame, ahead of any delta
+- [x] serve the streaming endpoint through CloudFront with origin access control
+- [x] verify the Cognito token in the streaming app, since a Function URL takes no authorizer
+- [x] stream the reply over HTTP from the browser and remove the WebSocket transport
+- [x] surface front-door failures instead of masking them, falling back on a 404 and nothing else
+- [x] scan only the source tree for the auth header name

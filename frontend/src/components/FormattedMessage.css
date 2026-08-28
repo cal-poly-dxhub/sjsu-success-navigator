@@ -1,0 +1,49 @@
+.formatted-message {
+	display: flex;
+	flex-direction: column;
+	gap: 0.55rem;
+	/* A token with nowhere to break wraps rather than being clipped. */
+	overflow-wrap: break-word;
+}
+
+.formatted-message__para,
+.formatted-message__item {
+	margin: 0;
+	font-family: inherit;
+	font-size: inherit;
+	line-height: 1.45;
+	color: inherit;
+}
+
+/* `outside` markers sit in the list's own padding, so a bullet never pokes out of the bubble or
+ * the card it is in. */
+.formatted-message__list {
+	margin: 0;
+	padding-left: 1.2rem;
+	list-style: disc outside;
+}
+
+/* Numbers instead of discs, and a wider gutter: a marker is "10." rather than one glyph, and at
+ * 1.2rem the second digit sits under the text of the item above it. */
+.formatted-message__list--ordered {
+	padding-left: 1.6rem;
+	list-style: decimal outside;
+}
+
+.formatted-message__item::marker {
+	color: var(--accent-blue);
+}
+
+/* Explicit, because an <em> inheriting a block's `font-style` renders as unmarked text. */
+.formatted-message em {
+	font-style: italic;
+}
+
+.formatted-message__item + .formatted-message__item {
+	margin-top: 0.3rem;
+}
+
+.formatted-message strong {
+	font-weight: 750;
+	color: var(--text-primary);
+}

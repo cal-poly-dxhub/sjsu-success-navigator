@@ -1,0 +1,18 @@
+.sammy-stage {
+	position: relative;
+	z-index: 1;
+	width: 75%;
+	aspect-ratio: 1;
+	margin: 0 auto;
+	padding: 0;
+	line-height: 0;
+}
+
+.sammy-stage__canvas {
+	width: 100%;
+	height: 100%;
+	display: block;
+	margin: 0;
+	padding: 0;
+	vertical-align: top;
+}

@@ -1,0 +1,8 @@
+# The scraper's runtime deps. boto3 comes from the Lambda runtime.
+httpx>=0.27
+trafilatura>=1.12
+# Named rather than inherited from trafilatura, because scraper.py imports it directly.
+lxml>=4.9
+PyYAML>=6.0
+# Pure Python, so the layer bundler's --only-binary=:all: finds a wheel and nothing compiles.
+pypdf>=5.1

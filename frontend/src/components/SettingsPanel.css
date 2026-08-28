@@ -1,0 +1,214 @@
+/* The settings dialog. */
+
+.settings-panel__scrim {
+	position: fixed;
+	inset: 0;
+	z-index: 60;
+	border: 0;
+	padding: 0;
+	background: rgba(18, 24, 33, 0.42);
+	cursor: pointer;
+}
+
+/* Centring lives here, not on the panel, whose `transform` is written on every frame. */
+.settings-panel__layer {
+	position: fixed;
+	inset: 0;
+	z-index: 61;
+	display: grid;
+	place-items: center;
+	padding: 1rem;
+	pointer-events: none;
+}
+
+.settings-panel {
+	pointer-events: auto;
+	width: min(52rem, 100%);
+	max-height: 100%;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg-mid, #faf9f7);
+	color: var(--text-primary, #1c2430);
+	border: 2px solid #d8dce2;
+	border-radius: 18px;
+	box-shadow: 0 24px 60px rgba(20, 28, 40, 0.28);
+	overflow: hidden;
+}
+
+.settings-panel__head {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 1.05rem 1.25rem;
+	border-bottom: 1px solid #e4e7ec;
+	background: #fff;
+}
+
+.settings-panel__head h2 {
+	margin: 0;
+	font-size: 1.06rem;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+}
+
+.settings-panel__close {
+	margin-left: auto;
+	display: grid;
+	place-items: center;
+	width: 2rem;
+	height: 2rem;
+	border-radius: 10px;
+	border: 1px solid #d8dce2;
+	background: #fff;
+	color: var(--text-secondary, #3d4654);
+	cursor: pointer;
+}
+
+.settings-panel__close:hover {
+	background: #f3f4f6;
+}
+
+.settings-panel__close:focus-visible,
+.settings-panel__scrim:focus-visible,
+.settings-field__select:focus-visible,
+.settings-section__summary:focus-visible {
+	outline: 3px solid var(--accent-blue, #0055a2);
+	outline-offset: 2px;
+}
+
+.settings-panel__body {
+	display: flex;
+	flex-direction: column;
+	gap: 1.15rem;
+	padding: 1.15rem 1.25rem 1.35rem;
+	overflow-y: auto;
+}
+
+
+.settings-field__label {
+	display: block;
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--text-muted, #6b7380);
+}
+
+.settings-field__select {
+	margin-top: 0.5rem;
+	/* Wide enough for a language name at any length this list will reach, and capped so it does
+	 * not become a full-width control for two words. */
+	width: min(18rem, 100%);
+	padding: 0.5rem 0.6rem;
+	font: inherit;
+	font-size: 0.95rem;
+	color: var(--text-primary, #1c2430);
+	background: #fff;
+	border: var(--control-border, 2px) solid var(--btn-ghost-edge, #d8dce2);
+	border-radius: 10px;
+	cursor: pointer;
+}
+
+.settings-field__hint {
+	margin: 0.45rem 0 0;
+	font-size: 0.78rem;
+	line-height: 1.45;
+	color: var(--text-muted, #6b7380);
+}
+
+.settings-field__hint--flag {
+	color: #7a6410;
+}
+
+
+.settings-section {
+	border: 1px solid #e4e7ec;
+	border-radius: 14px;
+	background: #fff;
+	overflow: hidden;
+}
+
+.settings-section__summary {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	padding: 0.8rem 1rem;
+	font-size: 0.95rem;
+	font-weight: 700;
+	color: var(--text-primary, #1c2430);
+	cursor: pointer;
+	/* A flex summary drops the native triangle, so the marker is turned off and drawn below. */
+	list-style: none;
+}
+
+.settings-section__summary::-webkit-details-marker {
+	display: none;
+}
+
+.settings-section__summary::before {
+	content: '';
+	width: 0.42rem;
+	height: 0.42rem;
+	flex: 0 0 auto;
+	border-right: 2px solid var(--text-muted, #6b7380);
+	border-bottom: 2px solid var(--text-muted, #6b7380);
+	/* Pointing right when closed, down when open. */
+	transform: translateY(-1px) rotate(-45deg);
+	transition: transform 0.15s ease;
+}
+
+.settings-section[open] .settings-section__summary::before {
+	transform: translateY(-2px) rotate(45deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.settings-section__summary::before {
+		transition: none;
+	}
+}
+
+.settings-section__summary:hover {
+	background: #f7f8f9;
+}
+
+.settings-section__body {
+	padding: 0 1rem 1rem;
+	border-top: 1px solid #eef0f3;
+	padding-top: 1rem;
+	background: var(--bg-mid, #faf9f7);
+}
+
+
+.side-nav__settings {
+	display: grid;
+	place-items: center;
+	width: 2.1rem;
+	height: 2.1rem;
+	flex: 0 0 auto;
+	border-radius: 10px;
+	border: var(--control-border, 2px) solid var(--btn-ghost-edge, #d8dce2);
+	background: var(--btn-ghost-face, #fff);
+	color: var(--text-muted, #6b7380);
+	cursor: pointer;
+}
+
+.side-nav__settings:hover {
+	color: var(--text-secondary, #3d4654);
+	background: #f3f4f6;
+}
+
+.side-nav__settings:focus-visible {
+	outline: 3px solid var(--accent-blue, #0055a2);
+	outline-offset: 2px;
+}
+
+/* Sign out and the gear share a row. */
+.side-nav__account-actions {
+	display: flex;
+	align-items: stretch;
+	gap: 0.4rem;
+}
+
+.side-nav__account-actions .side-nav__logout {
+	flex: 1 1 auto;
+}

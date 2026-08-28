@@ -1,0 +1,38 @@
+:root {
+	--bg-deep: #f7f5f1;
+	--bg-mid: #faf9f7;
+	--text-primary: #1c2430;
+	--text-secondary: #3d4654;
+	--text-muted: #6b7380;
+	--accent-gold: #f9c20b;
+	/* SJSU published brand palette: blue is primary, gold is an accent only, gray is the
+	 * neutral. */
+	--accent-blue: #0055a2;
+	--sjsu-gold: #e5a823;
+	--sjsu-gray: #939597;
+	--btn-primary-face: #f9c20b;
+	--btn-primary-edge: #c99700;
+	--btn-primary-text: #1a2f4a;
+	--btn-secondary-face: #085aa3;
+	--btn-secondary-edge: #05407a;
+	--btn-secondary-text: #ffffff;
+	--btn-safety-face: #e85d4c;
+	--btn-safety-edge: #b33a2d;
+	--btn-safety-text: #fff8f6;
+	--btn-ghost-face: #ffffff;
+	--btn-ghost-edge: #d8dce2;
+	--btn-ghost-text: #2a3440;
+
+	/* The shared control shape: a rounded face sitting on a solid bottom edge that collapses
+	 * when the control is pressed. */
+	--control-radius: 14px;
+	--control-edge: 4px;
+	--control-border: 2px;
+
+	--side-nav-width: 13rem;
+	/* The rail. Wide enough for his face and a 2.2rem tap target, and nothing more. */
+	--side-nav-width-collapsed: 3.5rem;
+	/* One curve for the whole collapse, or the layout arrives in pieces. */
+	--side-nav-ease: cubic-bezier(0.22, 1, 0.36, 1);
+	--side-nav-duration: 240ms;
+}

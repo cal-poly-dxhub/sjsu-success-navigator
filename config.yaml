@@ -1,0 +1,239 @@
+# The single source of truth for changeable knobs. infra/config.py validates it at synth, so
+# an invalid value fails `cdk synth` rather than the deploy.
+
+knowledge_base:
+  name: sjsu-navigator-kb
+  # Titan Text Embeddings v2, which emits 1024-dimension vectors.
+  embedding_model_id: amazon.titan-embed-text-v2:0
+  vector_dimension: 1024
+
+vector_store:
+  # Semantic search only, which is the accepted tradeoff for a near-zero-cost store.
+  vector_bucket_name: sjsu-navigator-vectors
+  index_name: bedrock-knowledge-base-default-index
+  data_type: float32
+  distance_metric: cosine
+  # Immutable after index creation, and without them every ingestion fails on the limit.
+  non_filterable_metadata_keys:
+    - AMAZON_BEDROCK_TEXT
+    - AMAZON_BEDROCK_METADATA
+    - x-amz-bedrock-kb-source-uri
+    - x-amz-bedrock-kb-chunk-id
+    - x-amz-bedrock-kb-data-source-id
+
+chunking:
+  # Changing this replaces the data source, because chunking is immutable in Bedrock.
+  strategy: FIXED_SIZE
+  max_tokens: 600
+  overlap_percentage: 20
+
+scraper:
+  # One daily sweep, no tiers. 11:30 UTC is about 3:30am Pacific.
+  schedule_cron: "cron(30 11 * * ? *)"
+  # A filename inside repo-root data/, never a path: the layer extracts that directory to /opt.
+  url_list_file: urls.csv
+  timeout_seconds: 20
+  user_agent: "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
+
+
+
+http_api:
+  # With no billing alarm, this and the concurrency ceiling below are the only cost fence.
+  # Neither bounds one runaway invocation; the loop's deadline and iteration cap do.
+  throttling_rate_limit: 10
+  throttling_burst_limit: 20
+  # A rate limit alone leaves ~290 invocations in flight at 10 rps against a 29-second budget.
+  chat_reserved_concurrency: 20
+
+cors:
+  # Never "*", which synth rejects. The distribution's domain joins this list at deploy.
+  allow_origins:
+    - http://localhost:4321   # DEV ONLY: astro dev server
+
+request:
+  # Server-side query length cap, checked before any retrieval or guardrail call.
+  max_query_chars: 2000
+
+retrieval:
+  number_of_results: 8
+  # Inherited, and tuned against a differently shaped corpus. Retune with the eval.
+  min_score: 0.35
+
+cards:
+  # Every cap here reaches both the parser that enforces it and the prompt that states it,
+  # so the number the model is told is the number the server applies.
+  max_cards: 4
+  # Deduplicated by URL. The model cites integer ids and never sees or writes a URL.
+  max_retrieval_results: 6
+  # A guard against a runaway response, not an editorial budget: length steering lives in the
+  # prompt, and a cap at the steered length turns ordinary variance into daily truncation.
+  desc_max_chars: 600
+  # Also a guard. Titles wrap, so this is not a line length, just a ceiling above the steer.
+  title_max_chars: 90
+  # An over-cap follow-up keeps its button and goes through whole: a shortened question is a
+  # different question.
+  followup_max_chars: 120
+
+# The model writes the words and the server addresses the mail. Nothing sends from here: the
+# student's own client opens with the draft, and the absence of a contact is the gate.
+escalation:
+  # A row id in data/contacts.csv, not an address: the same mailbox the SJSU Cares panel uses.
+  contact: sjsu-cares
+  # Fixed rather than model-authored: staff triage on it, so it says the same thing every time.
+  subject: "A student would like to talk with someone"
+  # The one cap whose violation drops the offer rather than truncating it. It is not the
+  # mailto budget, which the browser measures on the percent-encoded URL.
+  max_chars: 1200
+
+chat:
+  # The loop's cap on Converse round trips, logged when it hits: otherwise a request that
+  # spent six model calls looks identical to one that answered on the first.
+  max_converse_iterations: 6
+  # Messages, not turns, so 24 is twelve exchanges. It is the Limit on the one descending
+  # history query and the window the model is shown, so it is a paid-token control.
+  max_history_messages: 24
+  # Separate numbers from max_history_messages, which is billed in tokens on every turn.
+  # These bound a browser read, and both take the newest n, so a cap hides the oldest.
+  max_conversations_listed: 40
+  max_conversation_messages: 60
+  # The iteration cap bounds calls, not time. The remainder up to the function's timeout
+  # covers the card shaping and serialisation that happen after the loop returns.
+  converse_deadline_seconds: 22
+  # One number for everything that can name a conversation: the model call, the first-message
+  # fallback, and a student's own rename, so every sidebar row fits the same width.
+  title_max_chars: 80
+  # The most a label may ever cost a turn: past it the call is not attempted and the
+  # conversation keeps its first-message title, which is a worse name and not a worse outcome.
+  title_deadline_seconds: 3
+
+rate_limit:
+  # The one control that bounds what a single account spends. Attempts rather than answers,
+  # counted before the guardrail and the loop, on a fixed UTC day. Absent or 0 is off.
+  daily_message_limit: 60
+
+chat_history:
+  # The name is the only knob: the key schema and the TTL attribute live in the stack. The
+  # table is retained on `cdk destroy`, so a redeploy collides until the leftover is gone.
+  table_name: sjsu-navigator-chat-history
+
+# Nothing reads this block. The socket it configured is gone, a reply streams in band out of
+# the app behind /api/*, and these four values are validated at synth and consumed by nobody.
+streaming:
+  enabled: true
+  # A cost control when a push was a billable gateway message, not a feel knob.
+  delta_min_chars: 160
+  # Without it the tail of a reply, under delta_min_chars, would never be pushed at all.
+  delta_max_delay_ms: 250
+  # Off, and measured: `sync` moved time to first token from 1.12s to 6.75s, and buys nothing
+  # while the one filter is PROMPT_ATTACK with output strength forced to NONE.
+  output_guardrail: false
+
+# The absence of a URL is the gate: no identity provider, and the local accounts keep working.
+# The provider's name is a constant, because renaming it orphans every stored conversation.
+okta:
+  # A URL rather than a file, so a certificate rotation is not an outage. https only, because
+  # this document carries the certificate every assertion is verified against.
+  metadata_url: "https://integrator-6509951.okta.com/app/exk16bohofxDxsJS4698/sso/saml/metadata"
+  # Config because orgs spell it differently. Omit the key for the default; never blank it.
+  email_attribute: email
+
+generation:
+  # A cross-region inference profile, so IAM needs the profile and the model ARNs both.
+  model_id: us.anthropic.claude-sonnet-4-6
+  # A separate, cheaper model. Do not shorten it to match the line above: the two are not
+  # published under one convention, and a wrong id here is swallowed at WARNING.
+  title_model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  # The Converse inference knobs.
+  max_tokens: 1200
+  temperature: 0.2
+
+# Published AWS list rates times measured usage, so every figure is attributable to this stack
+# rather than to the account around it. `enabled: false` omits the block from config.json.
+cost_model:
+  # The gear that opens settings is there either way: it holds the language picker too.
+  enabled: true
+  # Shown on the panel, because a figure with no date is not checkable.
+  as_of: "2026-08-11"
+  region: us-west-2
+  currency: USD
+
+  # Read from the AWS Price List API, so they are checkable. The two generation rates are the
+  # exception: the API publishes no Claude Sonnet row, so recheck them when `as_of` moves.
+  rates:
+    generation_input_per_1m: 3.00        # Claude Sonnet 4.6 input (pricing page)
+    generation_output_per_1m: 15.00      # Claude Sonnet 4.6 output (pricing page)
+    # A second model writes the title, so its tokens are priced apart. These hold the
+    # generation rate, which is a ceiling: the title model is the cheaper of the two.
+    title_input_per_1m: 3.00             # >= Claude Haiku 4.5 input; see above
+    title_output_per_1m: 15.00           # >= Claude Haiku 4.5 output; see above
+    embedding_per_1m: 0.02               # TitanEmbeddingV2-Text-input-tokens
+    guardrail_content_per_1k_units: 0.15 # Guardrail-ContentPolicyUnitsConsumed
+    # No PII rate: this stack's guardrail is PROMPT_ATTACK only, so there is no policy to price.
+    vector_query_per_1m: 2.50            # Vectors-Request-Tier3 ($0.0000025/request)
+    vector_storage_per_gb_month: 0.06    # Vectors-TimedStorage-ByteHrs
+    vector_put_per_gb: 0.20              # Vectors-Put-Bytes
+    s3_storage_per_gb_month: 0.023       # S3 Standard, first 50 TB
+    lambda_per_1m_requests: 0.20
+    lambda_per_gb_second: 0.0000166667   # Lambda duration, tier 1
+    api_requests_per_1m: 1.00            # HTTP API (v2), first 300M
+    cloudfront_per_1m_requests: 1.00     # US-Requests-HTTPS-Proxy ($0.01/10k)
+    logs_ingest_per_gb: 0.50             # custom log data ingested, Standard class
+    dynamodb_write_per_1m: 0.625         # on-demand write request units
+    dynamodb_read_per_1m: 0.125          # on-demand read request units
+
+  # What one question actually consumed, through the deployed endpoint and folded up by
+  # eval/measure_usage.py --from-eval.
+  measured:
+    at: "2026-08-20"
+    # An even stride through eval/ground-truth.yaml, so the run keeps the set's own mix: a
+    # safety turn costs a full model call, and excluding it would flatter the average.
+    sample_questions: 40
+    # The answering model only, and above 1 because the loop re-calls after a tool result.
+    model_calls_avg: 1.12
+    # Per call rather than per question, so the loop-length and depth effects stay separable.
+    context_tokens_per_call_base: 10427
+    # Isolated by asking one question at each depth: walking a real conversation measures
+    # nothing, because the retrieval difference swamps the history one. Nothing reads it today.
+    context_tokens_per_call_per_prior_turn: 80
+    output_tokens_avg: 283
+    retrievals_avg: 1.18
+    # A text unit covers 1,000 characters, and one screen runs over the bare question.
+    guardrail_content_units_avg: 1.0
+    # Measured off the embedding model's own counter: a question is a sentence, not a paragraph.
+    retrieval_query_tokens: 12
+    # Not measurable inside a request: billed duration is reported after the invocation ends,
+    # so this is the mean of real invocations from CloudWatch, times the configured memory.
+    chat_lambda_gb_seconds: 4.28
+    # Read off the turn's write path in app/history.py rather than measured.
+    chat_dynamodb_writes: 3
+    chat_dynamodb_reads: 2
+
+  # What exists at zero traffic. Inputs rather than answers, so the floor can be checked.
+  baseline:
+    # S3 Standard across the KB source bucket and the site bucket.
+    s3_stored_bytes: 2437280
+    # The per-vector size is measured over a sample, not assumed from the dimension count.
+    vector_count: 414
+    vector_bytes_each: 7288
+    # One full re-ingestion, at the usual four-characters-per-token approximation.
+    ingest_embedded_tokens: 220567
+    # Mean billed duration over the runs logged so far, which is fewer than a full month.
+    scraper_seconds_per_run: 202
+    scraper_memory_gb: 0.5
+    # Invocations per month, from scraper.schedule_cron above.
+    scrapes_per_month: 30.4
+    # How often a run finds changed content and pays to re-embed it. Most runs find nothing,
+    # so this is deliberately not scrapes_per_month, and it is an assumption, not a measurement.
+    reindexes_per_month: 4
+    # Also an assumption, and an upper bound for that reason.
+    deploys_per_month: 4
+    # A monthly ingest figure across the stack's log groups, which is what the rate prices.
+    log_gb_per_month: 0.02
+
+guardrail:
+  # One guardrail, PROMPT_ATTACK on the input side only. Safety triage belongs to the model.
+  name: sjsu-navigator-input-guardrail
+  content_filters:
+    - type: PROMPT_ATTACK
+      input_strength: HIGH
+  blocked_input_messaging: "I can't help with that request. I'm here for questions about SJSU student services, like tutoring, financial aid, wellness, and campus resources."

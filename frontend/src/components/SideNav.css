@@ -1,0 +1,588 @@
+.side-nav {
+	display: flex;
+	flex-direction: column;
+	width: var(--side-nav-width);
+	min-height: 100vh;
+	min-height: 100dvh;
+	padding: 1.15rem 0.85rem 1rem;
+	background: rgba(252, 251, 248, 0.96);
+	border-right: 2px solid #e5e2da;
+	box-shadow: 8px 0 24px rgba(28, 36, 48, 0.025);
+	color: var(--text-primary);
+	transition:
+		width var(--side-nav-duration) var(--side-nav-ease),
+		padding var(--side-nav-duration) var(--side-nav-ease);
+}
+
+.side-nav--desktop {
+	position: fixed;
+	inset: 0 auto 0 0;
+	z-index: 20;
+}
+
+/* The whole strip is the control, so it says so under the cursor. */
+.side-nav--collapsed {
+	padding-right: 0.5rem;
+	padding-left: 0.5rem;
+	cursor: pointer;
+}
+
+.side-nav--mobile,
+.side-nav__backdrop {
+	display: none;
+}
+
+.side-nav__header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.35rem;
+	min-height: 2.5rem;
+	padding: 0 0.3rem;
+}
+
+.side-nav__brand {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+/* Sammy. */
+.side-nav__mark {
+	flex: none;
+	width: auto;
+	height: 2.05rem;
+}
+
+.side-nav__brand-copy {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	font-size: 0.76rem;
+	line-height: 1.15;
+	color: var(--text-muted);
+}
+
+/* Wraps, where the old two-line name was two elements that could not. */
+.side-nav__brand-copy strong {
+	color: var(--text-primary);
+	font-size: 0.79rem;
+	font-weight: 700;
+	line-height: 1.16;
+	overflow-wrap: anywhere;
+}
+
+.side-nav__collapse,
+.side-nav__rail-brand {
+	display: grid;
+	place-items: center;
+	flex: none;
+	padding: 0;
+	border: 0;
+	border-radius: 10px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background 140ms ease, color 140ms ease;
+}
+
+/* Always visible, not revealed on hover: it is the only way back to the rail, and a control you
+ * have to go looking for is one most people never find. */
+.side-nav__collapse {
+	width: 1.95rem;
+	height: 1.95rem;
+}
+
+/* The flop. */
+.side-nav__collapse svg {
+	transform: scaleX(-1);
+}
+
+.side-nav__collapse:hover,
+.side-nav__rail-brand:hover {
+	background: rgba(28, 36, 48, 0.07);
+	color: var(--text-primary);
+}
+
+.side-nav__collapse:focus-visible,
+.side-nav__rail-brand:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+
+.side-nav__rail {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	flex: 1;
+	min-height: 0;
+}
+
+.side-nav__rail-brand {
+	width: 2.5rem;
+	height: 2.5rem;
+}
+
+/* His face and the control occupy one cell and cross-fade in place, so the swap reads as the
+ * mark becoming the button rather than as two things trading places. */
+.side-nav__mark--rail,
+.side-nav__rail-icon {
+	grid-area: 1 / 1;
+	transition:
+		opacity var(--side-nav-duration) var(--side-nav-ease),
+		transform var(--side-nav-duration) var(--side-nav-ease);
+}
+
+.side-nav__mark--rail {
+	height: 1.85rem;
+}
+
+.side-nav__rail-icon {
+	display: grid;
+	place-items: center;
+	opacity: 0;
+	transform: scale(0.72);
+}
+
+/* Hovering the rail, not the picture. */
+.side-nav--collapsed:hover .side-nav__mark--rail,
+.side-nav__rail-brand:focus-visible .side-nav__mark--rail {
+	opacity: 0;
+	transform: scale(0.72);
+}
+
+.side-nav--collapsed:hover .side-nav__rail-icon,
+.side-nav__rail-brand:focus-visible .side-nav__rail-icon {
+	opacity: 1;
+	transform: none;
+}
+
+.side-nav__rail-avatar {
+	display: grid;
+	place-items: center;
+	flex: none;
+	width: 1.85rem;
+	height: 1.85rem;
+	margin-top: auto;
+	border-radius: 50%;
+	background: var(--accent-blue);
+	color: #fff;
+	font-size: 0.78rem;
+	font-weight: 700;
+	line-height: 1;
+	user-select: none;
+}
+
+.side-nav__new-chat {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	width: 100%;
+	margin: 1.4rem 0 1.55rem;
+	padding: 0.72rem 0.85rem;
+	border: 2px solid #ddb000;
+	border-bottom-width: 5px;
+	border-radius: 16px;
+	background: var(--accent-gold);
+	color: var(--btn-primary-text);
+	font: inherit;
+	font-size: 0.86rem;
+	font-weight: 700;
+	cursor: pointer;
+	transition: filter 120ms ease, transform 80ms ease, border-bottom-width 80ms ease;
+}
+
+.side-nav__new-chat:hover {
+	filter: brightness(1.025);
+}
+
+.side-nav__new-chat:active {
+	border-bottom-width: 2px;
+	transform: translateY(3px);
+}
+
+.side-nav__new-chat:disabled,
+.side-nav__chat:disabled {
+	opacity: 0.58;
+	cursor: wait;
+}
+
+.side-nav__new-chat:focus-visible,
+.side-nav__chat:focus-visible,
+.chat-app__nav-toggle:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+.side-nav__history {
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.side-nav__eyebrow {
+	margin: 0 0 0.55rem;
+	padding: 0 0.55rem;
+	color: var(--text-muted);
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+}
+
+.side-nav__list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.48rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.side-nav__chat {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	padding: 0.65rem 0.75rem;
+	border: 2px solid #e1e4e8;
+	border-bottom-width: 4px;
+	border-radius: 15px;
+	background: rgba(255, 255, 255, 0.86);
+	color: var(--text-secondary);
+	font: inherit;
+	font-size: 0.82rem;
+	font-weight: 600;
+	text-align: left;
+	cursor: pointer;
+	transition:
+		background 120ms ease,
+		border-color 120ms ease,
+		color 120ms ease,
+		transform 80ms ease,
+		border-bottom-width 80ms ease;
+}
+
+.side-nav__chat span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.side-nav__chat:hover {
+	border-color: rgba(8, 90, 163, 0.24);
+	background: #fff;
+	color: var(--text-primary);
+}
+
+.side-nav__chat--active {
+	border-color: rgba(8, 90, 163, 0.34);
+	background: #eef7ff;
+	color: var(--accent-blue);
+}
+
+.side-nav__chat:active {
+	border-bottom-width: 2px;
+	transform: translateY(2px);
+}
+
+/* The row is the positioning context for the two controls that sit over the end of the title. */
+.side-nav__row {
+	position: relative;
+}
+
+.side-nav__row-actions {
+	position: absolute;
+	/* Inside the button's border box, never across it. */
+	inset: 2px 2px 4px auto;
+	border-radius: 0 13px 11px 0;
+	display: flex;
+	align-items: center;
+	gap: 0.15rem;
+	padding-left: 0.9rem;
+	/* The fade is what keeps a truncated title from colliding with the icons: the text runs
+	 * under a gradient rather than being cut at a hard edge. */
+	background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff 0.9rem);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 120ms ease;
+}
+
+.side-nav__chat--active + .side-nav__row-actions {
+	background: linear-gradient(to right, rgba(238, 247, 255, 0), #eef7ff 0.9rem);
+}
+
+/* Focus-within, not hover alone: the controls have to be reachable by keyboard. */
+.side-nav__row:hover .side-nav__row-actions,
+.side-nav__row:focus-within .side-nav__row-actions {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.side-nav__row-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.7rem;
+	height: 1.7rem;
+	padding: 0;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background 120ms ease, color 120ms ease;
+}
+
+.side-nav__row-icon:hover {
+	background: rgba(28, 36, 48, 0.07);
+	color: var(--text-primary);
+}
+
+.side-nav__row-icon--danger:hover {
+	background: rgba(176, 42, 42, 0.1);
+	color: #b02a2a;
+}
+
+.side-nav__row-icon:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.side-nav__rename,
+.side-nav__confirm {
+	display: flex;
+	gap: 0.35rem;
+	padding: 0.5rem 0.55rem;
+	border: 2px solid rgba(8, 90, 163, 0.28);
+	border-radius: 15px;
+	background: #fff;
+}
+
+.side-nav__rename {
+	align-items: center;
+}
+
+.side-nav__confirm {
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.side-nav__rename-input {
+	min-width: 0;
+	flex: 1;
+	padding: 0.3rem 0.4rem;
+	border: 1px solid #d8dbe0;
+	border-radius: 9px;
+	background: #fff;
+	color: var(--text-primary);
+	font: inherit;
+	font-size: 0.82rem;
+	font-weight: 600;
+}
+
+.side-nav__confirm-copy {
+	margin: 0;
+	color: var(--text-secondary);
+	font-size: 0.78rem;
+	line-height: 1.35;
+}
+
+.side-nav__confirm-actions {
+	display: flex;
+	gap: 0.35rem;
+}
+
+.side-nav__row-action {
+	flex-shrink: 0;
+	padding: 0.32rem 0.55rem;
+	border: 1px solid #d8dbe0;
+	border-radius: 9px;
+	background: #f6f7f9;
+	color: var(--text-secondary);
+	font: inherit;
+	font-size: 0.76rem;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.side-nav__row-action:hover {
+	background: #eef1f5;
+	color: var(--text-primary);
+}
+
+.side-nav__row-action--danger {
+	border-color: rgba(176, 42, 42, 0.35);
+	background: #fdf0f0;
+	color: #b02a2a;
+}
+
+.side-nav__row-action:disabled {
+	opacity: 0.55;
+	cursor: wait;
+}
+
+.side-nav__row-icon:focus-visible,
+.side-nav__row-action:focus-visible,
+.side-nav__rename-input:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+/* Touch has no hover, so the controls are simply always there. */
+@media (hover: none) {
+	.side-nav__row-actions {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+.side-nav__account {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	margin-top: auto;
+	padding-top: 1rem;
+	border-top: 1px solid rgba(28, 36, 48, 0.08);
+}
+
+.side-nav__account-label {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 0.67rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.side-nav__account-email {
+	margin: 0;
+	overflow: hidden;
+	color: var(--text-primary);
+	font-size: 0.78rem;
+	font-weight: 600;
+	line-height: 1.3;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.side-nav__logout {
+	width: 100%;
+}
+
+.side-nav__logout .pressable__face {
+	padding: 0.55rem 0.85rem;
+	font-size: 0.78rem;
+}
+
+.side-nav__history-note {
+	margin: 0.75rem 0.45rem 0;
+	padding-top: 0;
+	color: var(--text-muted);
+	font-size: 0.67rem;
+	line-height: 1.35;
+}
+
+.side-nav__history-note--error {
+	color: var(--accent-red, #a3282f);
+}
+
+/* Sits at the right end of the row it belongs to, so a title that is being fetched does not
+ * reflow the list. */
+.side-nav__chat-status {
+	flex: none;
+	margin-left: auto;
+	padding-left: 0.5rem;
+	color: var(--text-muted);
+	font-size: 0.7rem;
+	font-weight: 600;
+}
+
+.chat-app__nav-toggle {
+	display: none;
+}
+
+@media (max-width: 1040px) {
+	.side-nav--desktop {
+		display: none;
+	}
+
+	.side-nav__backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 49;
+		display: block;
+		padding: 0;
+		border: 0;
+		background: rgba(28, 36, 48, 0.28);
+		cursor: default;
+	}
+
+	.side-nav--mobile {
+		position: fixed;
+		inset: 0 auto 0 0;
+		z-index: 50;
+		display: flex;
+		width: min(calc(var(--side-nav-width) + 2rem), calc(100vw - 3rem));
+		box-shadow: 18px 0 42px rgba(28, 36, 48, 0.16);
+	}
+
+	.chat-app__nav-toggle {
+		position: fixed;
+		top: 1rem;
+		left: 1rem;
+		z-index: 15;
+		display: grid;
+		place-items: center;
+		/* Footprint and position are load-bearing for the mobile header (the talk-pill's max-
+		 * width is measured against them) and are unchanged. */
+		width: 2.65rem;
+		height: 2.65rem;
+		padding: 0;
+		border: var(--control-border) solid var(--btn-ghost-edge);
+		border-bottom-color: transparent;
+		border-radius: var(--control-radius);
+		background: rgba(255, 255, 255, 0.9);
+		box-shadow:
+			0 var(--control-edge) 0 var(--btn-ghost-edge),
+			0 5px 16px rgba(28, 36, 48, 0.08);
+		color: var(--accent-blue);
+		cursor: pointer;
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+		transition: box-shadow 80ms ease, transform 80ms ease;
+	}
+
+	.chat-app__nav-toggle:active {
+		transform: translateY(var(--control-edge));
+		box-shadow:
+			0 0 0 var(--btn-ghost-edge),
+			0 2px 8px rgba(28, 36, 48, 0.08);
+	}
+}
+
+/* The drawer at phone widths: four fifths of the viewport, so the remaining fifth stays a
+ * visible sliver of chat under the scrim. */
+@media (max-width: 860px) {
+	.side-nav--mobile {
+		width: 80vw;
+		/* The drag is horizontal; vertical scrolling inside the drawer must still work. */
+		touch-action: pan-y;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.side-nav__new-chat,
+	.side-nav__chat,
+	.side-nav__row-actions,
+	.side-nav__row-icon,
+	.chat-app__nav-toggle,
+	.side-nav,
+	.side-nav__collapse,
+	.side-nav__rail-brand,
+	.side-nav__mark--rail,
+	.side-nav__rail-icon {
+		transition: none;
+	}
+}

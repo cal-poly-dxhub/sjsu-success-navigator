@@ -1,0 +1,83 @@
+/* A place is a map, a name, the line under it, and a way to get there. */
+.place-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.8rem;
+	padding: 1.05rem 1.2rem 1.2rem;
+	border-radius: 18px;
+	background: #ffffff;
+	border: 1px solid rgba(8, 90, 163, 0.18);
+	box-shadow:
+		0 8px 24px rgba(28, 36, 48, 0.07),
+		0 2px 8px rgba(28, 36, 48, 0.04);
+	box-sizing: border-box;
+}
+
+.place-card__figure {
+	margin: 0;
+	display: block;
+}
+
+.place-card__image {
+	display: block;
+	width: 100%;
+	height: auto;
+	/* The render's own 4:3, stated so the box is reserved before the bytes land and the column
+	 * does not jump. */
+	aspect-ratio: 4 / 3;
+	object-fit: cover;
+	border-radius: 12px;
+	border: 1px solid rgba(28, 36, 48, 0.12);
+	/* The tiles' own paper colour, so a slow image does not flash white inside its frame. */
+	background: #e8eae2;
+}
+
+.place-card__head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+}
+
+.place-card__name {
+	margin: 0;
+	font-size: 1.15rem;
+	font-weight: 750;
+	line-height: 1.3;
+	color: var(--text-primary);
+	/* A building name is a proper noun somebody may want to copy or read out. */
+	user-select: text;
+}
+
+.place-card__address {
+	margin: 0;
+	font-size: 0.95rem;
+	line-height: 1.5;
+	color: var(--text-secondary);
+	user-select: text;
+	/* "Diaz Compean Student Union West, entrance across from the Engineering Building" has
+	 * nowhere to break on a 320px viewport without this. */
+	overflow-wrap: anywhere;
+}
+
+.place-card__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.6rem;
+}
+
+.place-card__credit {
+	margin: 0;
+	font-size: 0.7rem;
+	line-height: 1.4;
+	color: var(--text-muted);
+}
+
+@media (max-width: 30rem) {
+	.place-card {
+		padding: 0.95rem 1rem 1.1rem;
+	}
+
+	.place-card__actions > * {
+		width: 100%;
+	}
+}

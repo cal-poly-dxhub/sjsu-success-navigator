@@ -1,0 +1,3 @@
+# The chat Lambda's deps layer. The camelCase wire contract lives in pydantic's aliases;
+# boto3 comes from the runtime.
+pydantic>=2,<3

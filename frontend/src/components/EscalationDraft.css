@@ -1,0 +1,125 @@
+/* The draft reads as a piece of mail, not as another card. */
+.escalation-draft {
+	display: flex;
+	flex-direction: column;
+	gap: 0.85rem;
+	padding: 1.15rem 1.25rem 1.25rem;
+	border-radius: 18px;
+	background: #ffffff;
+	border: 1px solid rgba(8, 90, 163, 0.18);
+	box-shadow:
+		0 8px 24px rgba(28, 36, 48, 0.07),
+		0 2px 8px rgba(28, 36, 48, 0.04);
+	box-sizing: border-box;
+}
+
+.escalation-draft__head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+}
+
+.escalation-draft__headline {
+	margin: 0;
+	font-size: 1.05rem;
+	font-weight: 750;
+	color: var(--accent-blue);
+}
+
+.escalation-draft__note {
+	margin: 0;
+	font-size: 0.85rem;
+	line-height: 1.45;
+	color: var(--text-secondary);
+}
+
+/* The header block of an email: label on the left, value on the right, one ruled row each. */
+.escalation-draft__fields {
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	border-top: 1px solid rgba(28, 36, 48, 0.09);
+}
+
+.escalation-draft__field {
+	display: flex;
+	gap: 0.75rem;
+	align-items: baseline;
+	padding: 0.45rem 0;
+	border-bottom: 1px solid rgba(28, 36, 48, 0.09);
+}
+
+.escalation-draft__label {
+	flex: 0 0 4.25rem;
+	margin: 0;
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--text-muted);
+}
+
+.escalation-draft__value {
+	margin: 0;
+	min-width: 0;
+	font-size: 0.92rem;
+	line-height: 1.4;
+	color: var(--text-primary);
+	/* An address is one long unbroken token. */
+	overflow-wrap: anywhere;
+}
+
+.escalation-draft__body {
+	margin: 0;
+	/* The draft's own paragraph breaks, kept, because a <pre> is what makes the text on screen
+	 * the text in the mail client. */
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	/* The page's own family rather than a monospace stack: this is a letter a person will read,
+	 * not code, and the ruled fields above already say "email" without it. */
+	font: inherit;
+	font-size: 0.95rem;
+	line-height: 1.55;
+	color: var(--text-primary);
+	background: #fbfaf8;
+	border: 1px solid rgba(28, 36, 48, 0.08);
+	border-radius: 12px;
+	padding: 0.85rem 0.9rem;
+	/* Selectable and obviously so: the copy button is the convenience, and this is the
+	 * guarantee behind it. */
+	user-select: text;
+}
+
+.escalation-draft__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.6rem;
+}
+
+.escalation-draft__hint:empty {
+	display: none;
+}
+
+.escalation-draft__hint {
+	margin: 0;
+	font-size: 0.82rem;
+	line-height: 1.45;
+	color: var(--text-secondary);
+}
+
+@media (max-width: 30rem) {
+	.escalation-draft {
+		padding: 1rem;
+	}
+
+	/* The label column stops paying for itself at this width: the address gets more room
+	 * stacked under its own label than beside it. */
+	.escalation-draft__field {
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.escalation-draft__actions > * {
+		width: 100%;
+	}
+}

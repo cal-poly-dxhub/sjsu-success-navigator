@@ -1,0 +1,17 @@
+kind,id,label,detail,href,when,in_default_panel,note
+safety,emergency-911,Call 911,"Immediate danger to life or safety, right now",tel:911,someone is in immediate physical danger or a life-threatening situation is happening now,no,
+safety,crisis-988,Call or text 988,"Suicide & Crisis Lifeline, 24/7",https://988lifeline.org/,"thoughts of suicide or self-harm, or an emotional crisis they cannot cope with",yes,
+safety,after-hours,Call 408-924-5678,Urgent medical or mental health support after hours,tel:4089245678,an urgent medical or mental health need outside business hours,yes,
+safety,caps,CAPS same-day support,Counseling & Psychological Services at SJSU,https://www.sjsu.edu/wellness/access-services/counseling/index.php,"needs to talk to a counselor soon, during business hours",yes,
+safety,sas,Survivor Advocacy Services (confidential),"Campus survivor advocate: 408-924-7300, survivoradvocate@sjsu.edu",https://www.sjsu.edu/wellness/access-services/survivor-advocacy-services.php,"sexual violence, relationship abuse, or stalking, and confidential support that does not trigger a report",no,
+safety,upd,University Police Department,"Campus emergencies: 911, or 408-924-2222 around the clock",https://www.sjsu.edu/police/,a crime or an unsafe situation on campus,no,
+safety,crisis-page,Emergency & crisis page,Official SJSU wellness guidance,https://www.sjsu.edu/wellness/access-services/emergency-crisis.php,,yes,
+cares,sjsu-cares-phone,Phone,408.924.1234,,,no,
+cares,sjsu-cares-request-form,Request assistance form,,https://cm.maxient.com/reportingform.php?SanJoseStateUniv&layout_id=12,,no,
+cares,sjsu-cares-contact-page,Contact page,,https://www.sjsu.edu/sjsucares/about/contact-us.php,,no,
+cares,sjsu-cares-services-index,All assistance categories,,https://www.sjsu.edu/sjsucares/get-assistance/index.php,,no,"SJSU's own index, kept current by SJSU rather than by us."
+cares,sjsu-cares-food,Food assistance,,https://www.sjsu.edu/sjsucares/get-assistance/food-assistance/index.php,,no,
+cares,sjsu-cares-housing,Housing assistance,,https://www.sjsu.edu/sjsucares/get-assistance/housing-assistance/index.php,,no,
+cares,sjsu-cares-financial,Financial assistance,,https://www.sjsu.edu/sjsucares/get-assistance/financial-assistance/index.php,,no,
+cares,sjsu-cares-parenting,Parenting students,,https://www.sjsu.edu/sjsucares/resources/parenting-students/index.php,,no,
+escalation,sjsu-cares,SJSU Cares,sjsucares@sjsu.edu,,,no,"The mailbox an escalation draft is addressed to (config.yaml escalation.contact) and the address behind the SJSU Cares modal's email link. One row, because it is one mailbox."

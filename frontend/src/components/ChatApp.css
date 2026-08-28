@@ -1,0 +1,232 @@
+.chat-app {
+	--sammy-offset-y: 4rem;
+	--sammy-stage-margin-top: 2rem;
+
+	position: relative;
+	min-height: 100vh;
+	min-height: 100dvh;
+	color: var(--text-primary);
+	font-family: 'Nunito Sans', Verdana, sans-serif;
+	background: var(--bg-deep);
+	isolation: isolate;
+	overflow-x: clip;
+}
+
+/* Mobile only. Above the breakpoint the header does not exist and this is display:none. */
+.chat-app__header-veil {
+	display: none;
+}
+
+.chat-app__background {
+	position: fixed;
+	inset: 0;
+	z-index: 0;
+	pointer-events: none;
+	background-color: var(--bg-deep);
+	/* Authored at 480px, painted at 480px. */
+	background-image: url('/paper-grain.svg');
+	background-size: 480px 480px;
+	background-repeat: repeat;
+	background-position: 0 0;
+	will-change: background-position;
+}
+
+/* Collapsing the rail is one token changing. */
+@media (min-width: 1041px) {
+	.chat-app--nav-collapsed {
+		--side-nav-width: var(--side-nav-width-collapsed);
+	}
+}
+
+.chat-app__content {
+	min-height: 100vh;
+	min-height: 100dvh;
+	margin-left: var(--side-nav-width);
+	transition: margin-left var(--side-nav-duration) var(--side-nav-ease);
+}
+
+/* The 70rem cap is the old 1120px one, in the unit that now scales (see Layout.astro). */
+.chat-app__stage {
+	position: relative;
+	z-index: 2;
+	display: grid;
+	gap: 1.5rem;
+	width: min(max(70rem, 62vw), calc(100% - 2rem));
+	margin: 0 auto;
+	padding: 2.25rem 0 7.5rem;
+	overflow: visible;
+}
+
+.chat-app__stage--split {
+	grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+	column-gap: 0;
+	row-gap: 0;
+	align-items: start;
+}
+
+.chat-app__stage--split .chat-app__sammy-col {
+	width: 100%;
+	padding-top: var(--sammy-offset-y);
+}
+
+.chat-app__stage--split .chat-app__sammy-stack {
+	align-items: flex-start;
+	justify-content: center;
+}
+
+.chat-app__stage--split .sammy-stage {
+	margin-top: var(--sammy-stage-margin-top);
+	margin-left: auto;
+	margin-right: auto;
+}
+
+.chat-app__panel {
+	min-width: 0;
+}
+
+.chat-app__panel--swapped-hidden {
+	opacity: 0 !important;
+	visibility: hidden;
+	pointer-events: none;
+}
+
+.chat-app__sammy-col {
+	position: sticky;
+	top: 5.25rem;
+	min-width: 0;
+	overflow: visible;
+}
+
+.chat-app__sammy-stack {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	width: 100%;
+	overflow: visible;
+}
+
+.chat-app__dock {
+	position: fixed;
+	left: var(--side-nav-width);
+	transition: left var(--side-nav-duration) var(--side-nav-ease);
+	right: 0;
+	bottom: calc(3.25rem + env(safe-area-inset-bottom));
+	z-index: 5;
+	padding: 0 1rem;
+	/* Background: linear-gradient(to top, rgba(247, 245, 241, 0.98) 55%, rgba(247, 245, 241,
+	 * 0)); */
+	pointer-events: none;
+}
+
+.chat-app__dock-inner {
+	pointer-events: auto;
+	/* 45rem is the old 720px, in the unit that scales with the rest of the composition. */
+	width: min(45rem, 100%);
+	margin: 0 auto;
+}
+
+@media (max-width: 1040px) {
+	.chat-app__content {
+		margin-left: 0;
+	}
+
+	.chat-app__dock {
+		left: 0;
+	}
+}
+
+/* Mobile. */
+@media (max-width: 860px) {
+	.chat-app {
+		/* Cleared by the fixed header controls: 1rem inset plus the taller of the two (the
+		 * talk-to-a-person pill), plus air. */
+		--mobile-header-h: 4.75rem;
+		/* Cleared by the fixed composer: 1rem inset plus its own height, plus air. */
+		--mobile-dock-h: 5.25rem;
+	}
+
+	.chat-app__header-veil {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		z-index: 4;
+		display: block;
+		height: var(--mobile-header-h);
+		background: linear-gradient(
+			to bottom,
+			var(--bg-deep) 45%,
+			color-mix(in srgb, var(--bg-deep) 70%, transparent) 78%,
+			transparent 100%
+		);
+		pointer-events: none;
+	}
+
+	.chat-app__stage--split {
+		grid-template-columns: 1fr;
+	}
+
+	.chat-app__panel,
+	.chat-app__sammy-col {
+		position: relative;
+		top: auto;
+	}
+
+	.chat-app__sammy-col {
+		order: -1;
+	}
+
+	.chat-app__stage {
+		padding-top: var(--mobile-header-h);
+		padding-bottom: 7rem;
+	}
+
+	.chat-app__dock {
+		bottom: calc(1rem + env(safe-area-inset-bottom));
+		padding: 0 0.85rem;
+	}
+
+	/* Landing: the avatar is the focal element, the greeting sits under it, and the whole group
+	 * is centred in what is left between the header and the composer. */
+	.chat-app--landing .chat-app__stage {
+		min-height: calc(100dvh - var(--mobile-dock-h));
+		align-content: center;
+		row-gap: 0.85rem;
+		padding-bottom: 0;
+	}
+
+	.chat-app--landing .chat-app__stage--split .chat-app__sammy-col {
+		padding-top: 0;
+	}
+
+	.chat-app--landing .chat-app__stage--split .sammy-stage {
+		width: min(72%, 16.5rem);
+		margin-top: 0;
+	}
+
+	/* The viewport-filling active turn is scroll room for a thread; on the landing there is no
+	 * thread yet and it would push the avatar off centre. */
+	.chat-app--landing .conversation-exchange--active {
+		min-height: 0;
+		padding-bottom: 0;
+	}
+
+	.chat-app--landing .conversational-bubble,
+	.chat-app--landing .conversation-turn__static-bubble {
+		margin: 0 auto;
+	}
+
+	/* Active chat: the avatar is gone and the thread has that space. */
+	.chat-app--active .chat-app__sammy-col {
+		display: none;
+	}
+}
+
+/* The rail's travel is layout, not decoration, so under a motion preference it simply arrives
+ * at the new width. */
+@media (prefers-reduced-motion: reduce) {
+	.chat-app__content,
+	.chat-app__dock {
+		transition: none;
+	}
+}

@@ -1,0 +1,5 @@
+# For the one-off scripts here. Shipped to no Lambda and installed by no CI job.
+
+pillow>=11,<13
+# A stock python.org install on macOS ships no CA bundle, so the HTTPS fetch fails without it.
+certifi>=2024.2.2

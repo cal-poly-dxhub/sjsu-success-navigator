@@ -1,0 +1,18 @@
+.user-prompt {
+	align-self: flex-end;
+	width: min(100%, 22rem);
+	margin-left: auto;
+	padding: 0.7rem 0.95rem;
+	border-radius: 1.15rem 1.15rem 0.45rem 1.15rem;
+	background: rgba(8, 90, 163, 0.09);
+	border: 1px solid rgba(8, 90, 163, 0.12);
+	box-shadow: 0 4px 14px rgba(8, 90, 163, 0.06);
+}
+
+.user-prompt__text {
+	margin: 0;
+	font-size: clamp(0.88rem, 1.8vw, 0.98rem);
+	line-height: 1.4;
+	font-weight: 600;
+	color: var(--text-primary);
+}

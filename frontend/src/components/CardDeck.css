@@ -1,0 +1,175 @@
+.card-deck {
+	display: grid;
+	/* Auto-fill, not auto-fit: a lone card keeps one track's width instead of stretching across
+	 * the panel, so a card is the same size whatever the count. */
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	/* Depth for the turn-over. Far enough back that a card flips rather than lunges. */
+	perspective: 1400px;
+	/* Each card is as tall as its own content. Nothing stretches to match its row. */
+	align-items: start;
+	gap: 0.85rem;
+	width: 100%;
+}
+
+/* A click while cards are still in the air does nothing rather than landing on a card that is
+ * about to move out from under the pointer. */
+.card-deck--dealing {
+	pointer-events: none;
+}
+
+.card-deck__item {
+	min-width: 0;
+	/* Top centre: `rotateY` pivots on the origin, so a left origin lands the card a width away. */
+	transform-origin: top center;
+	transform-style: preserve-3d;
+}
+
+/* Each face is pushed a hair along its own normal, and that `translateZ` decides which shows. */
+.card-deck__front {
+	backface-visibility: hidden;
+}
+
+/* Scoped to the deal, because the two-face arrangement only exists during one. */
+.card-deck--dealing .card-deck__front {
+	transform: translateZ(1px);
+}
+
+/* The same plain card back the waiting deck shows, because it is the same deck. */
+.card-deck__back {
+	position: absolute;
+	inset: 0;
+	border-radius: 0.85rem;
+	backface-visibility: hidden;
+	transform: rotateY(180deg) translateZ(1px);
+	background: linear-gradient(165deg, #ffffff 0%, #fbfaf7 100%);
+	border: 1px solid rgba(8, 90, 163, 0.14);
+	box-shadow:
+		0 6px 14px rgba(8, 90, 163, 0.09),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Nothing is ever face down when the group is presented directly. */
+.card-deck:not(.card-deck--dealing) .card-deck__back {
+	display: none;
+}
+
+/* No `will-change: transform` here, deliberately, and its absence is the fix for an entrance
+ * that looked soft the moment it started. */
+
+/* The waiting deck: the stack the cards are about to be dealt off, drawn while the model is
+ * still writing them. */
+/* The row the waiting deck sits in, laid out on the card grid's own tracks rather than as a
+ * loose flex row. */
+.waiting-deck-row {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
+	gap: 0.85rem;
+	align-items: start;
+	width: 100%;
+	min-width: 0;
+	margin-top: 0.35rem;
+}
+
+.waiting-deck {
+	position: relative;
+	/* The same number as `waitingDeckHeightPx` in lib/deckTuning.ts, or the stack changes size. */
+	height: var(--waiting-deck-h, 198px);
+}
+
+.waiting-deck__card {
+	position: absolute;
+	inset: 0;
+	/* Depth is fixed: no card ever changes its place in the stack, so the one written first is
+	 * the one on top and nothing has to restack mid-move. */
+	/* The real card's radius. */
+	border-radius: 20px;
+	overflow: hidden;
+	transform-origin: top center;
+	/* The pose is written by CardDeck.tsx every frame, see deckFrame. */
+	will-change: transform;
+	/* A plain card, face down. */
+	background: linear-gradient(165deg, #ffffff 0%, #fbfaf7 100%);
+	border: 1px solid rgba(8, 90, 163, 0.14);
+	box-shadow:
+		0 6px 14px rgba(8, 90, 163, 0.09),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+
+/* A card withheld. */
+.card-ghost {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	border-radius: inherit;
+}
+
+.card-ghost__inner {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: var(--deck-w, 100%);
+	/* The fallback is for the waiting deck, which sets none of these: it is already the deck's
+	 * own size, so there is nothing to counter-scale. */
+	height: var(--deck-h, 198px);
+	transform: scale(calc(1 / var(--deck-sx, 1)), calc(1 / var(--deck-sy, 1)));
+	transform-origin: top left;
+	display: flex;
+	flex-direction: column;
+	/* The real card's own padding and gap. */
+	gap: 0.55rem;
+	padding: 0.9rem 0.95rem 1rem;
+	box-sizing: border-box;
+}
+
+/* One line of type, as A bar. */
+.card-ghost__bar {
+	flex: none;
+	background: currentColor;
+	border-radius: 0.2rem;
+}
+
+.card-ghost__title {
+	height: 0.72rem;
+	width: 58%;
+	color: var(--accent-blue);
+	opacity: 0.5;
+}
+
+/* The description: two lines, the second short, which is what an ending paragraph does. */
+.card-ghost__line {
+	height: 0.55rem;
+	width: 100%;
+	color: var(--card-body-color, #2a3440);
+	opacity: 0.26;
+}
+
+.card-ghost__line--short {
+	width: 71%;
+}
+
+.card-ghost__actions {
+	display: flex;
+	gap: 0.4rem;
+	margin-top: auto;
+}
+
+/* A control, not a line of type: solid in its own colour at the real control radius, and empty. */
+.card-ghost__button {
+	flex: none;
+	height: 1.65rem;
+	border-radius: var(--control-radius);
+	opacity: 0.62;
+}
+
+.card-ghost__button--source {
+	width: 27%;
+	background: var(--btn-secondary-face);
+	color: #ffffff;
+}
+
+.card-ghost__button--followup {
+	width: 33%;
+	background: var(--btn-primary-face);
+	color: #1a2f4a;
+}

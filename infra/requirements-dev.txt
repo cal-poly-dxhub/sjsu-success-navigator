@@ -1,0 +1,2 @@
+# Same pytest pin as app/ and scraper/, so all three suites behave identically.
+pytest==8.4.2

@@ -1,0 +1,7 @@
+# Install alongside requirements.txt, which the tests need too. Same pytest pin as infra/
+# and scraper/, so all three suites behave identically.
+pytest==8.4.2
+
+# Real RS256 on both sides: a stubbed library would pass the token tests while verifying
+# nothing. Here rather than requirements.txt, so no deployed artifact grows it.
+pyjwt[crypto]>=2.8,<3

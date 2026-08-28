@@ -1,0 +1,233 @@
+/* Brand colours come only from the theme tokens: var(--accent-blue) is the primary, var(--sjsu-
+ * gold) is an accent only, var(--sjsu-gray) is the neutral. */
+.cares {
+	position: fixed;
+	inset: 0;
+	z-index: 30;
+	display: grid;
+	place-items: center;
+	padding: 0.75rem;
+}
+
+.cares__backdrop {
+	position: absolute;
+	inset: 0;
+	border: 0;
+	padding: 0;
+	background: color-mix(in srgb, var(--accent-blue) 42%, rgba(0, 0, 0, 0.62));
+	backdrop-filter: blur(6px);
+	cursor: pointer;
+}
+
+.cares__panel {
+	position: relative;
+	z-index: 1;
+	display: flex;
+	flex-direction: column;
+	width: min(30rem, 100%);
+	max-height: min(90vh, 46rem);
+	overflow: hidden auto;
+	border-radius: 16px;
+	background: #fff;
+	overflow-wrap: anywhere;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+
+/* Masthead: the blue field over a gold rule is the surface's identity mark. */
+.cares__masthead {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 0.75rem;
+	padding: 0.95rem 1rem;
+	border-bottom: 4px solid var(--sjsu-gold);
+	background: var(--accent-blue);
+	color: #fff;
+}
+
+.cares__identity {
+	min-width: 0;
+}
+
+.cares__eyebrow {
+	margin: 0;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	opacity: 0.85;
+}
+
+.cares__title {
+	margin: 0.15rem 0 0;
+	font-size: 1.5rem;
+	font-weight: 800;
+	line-height: 1.1;
+}
+
+.cares__close {
+	flex: 0 0 auto;
+	display: inline-grid;
+	place-items: center;
+	width: 2.25rem;
+	height: 2.25rem;
+	border: 1px solid rgba(255, 255, 255, 0.45);
+	border-radius: 999px;
+	background: transparent;
+	color: #fff;
+	font: inherit;
+	font-size: 1.4rem;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.cares__close:hover,
+.cares__close:focus-visible {
+	background: rgba(255, 255, 255, 0.16);
+}
+
+.cares__body {
+	display: grid;
+	gap: 0.85rem;
+	padding: 1rem;
+}
+
+.cares__intro {
+	margin: 0;
+	color: var(--text-secondary);
+	font-size: 0.95rem;
+	line-height: 1.5;
+}
+
+/* The three controls below are .pressable, not bespoke rectangles: this panel's buttons were
+ * the ones that read as belonging to a different product. */
+.cares__primary .pressable__face {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.15rem;
+	padding: 0.8rem 1rem;
+	text-align: left;
+}
+
+.cares__primary-label {
+	font-size: 1.02rem;
+	font-weight: 800;
+}
+
+.cares__primary-hint {
+	font-size: 0.82rem;
+	opacity: 0.9;
+}
+
+.cares__direct {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+	gap: 0.6rem;
+}
+
+.cares__direct-link .pressable__face {
+	padding: 0.65rem 0.85rem;
+	border-color: color-mix(in srgb, var(--accent-blue) 22%, #fff);
+	border-bottom-color: transparent;
+	color: var(--accent-blue);
+	font-size: 0.92rem;
+}
+
+.cares__direct-link:hover .pressable__face {
+	border-color: color-mix(in srgb, var(--accent-blue) 45%, #fff);
+	border-bottom-color: transparent;
+	background: color-mix(in srgb, var(--accent-blue) 5%, #fff);
+}
+
+.cares__facts {
+	display: grid;
+	gap: 0.5rem;
+	margin: 0;
+}
+
+.cares__fact dt {
+	color: var(--sjsu-gray);
+	font-size: 0.7rem;
+	font-weight: 800;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+}
+
+.cares__fact dd {
+	margin: 0.12rem 0 0;
+	color: var(--text-secondary);
+	font-size: 0.9rem;
+	line-height: 1.45;
+}
+
+/* Gold is the recommendation marker. */
+.cares__service {
+	--pressable-edge: var(--sjsu-gold);
+}
+
+.cares__service .pressable__face {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.2rem;
+	padding: 0.8rem 0.9rem;
+	border-color: color-mix(in srgb, var(--sjsu-gray) 30%, #fff);
+	border-bottom-color: transparent;
+	text-align: left;
+}
+
+.cares__service:hover .pressable__face {
+	border-color: color-mix(in srgb, var(--accent-blue) 35%, #fff);
+	border-bottom-color: transparent;
+}
+
+.cares__service-badge {
+	color: var(--sjsu-gray);
+	font-size: 0.68rem;
+	font-weight: 800;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.cares__service-title {
+	color: var(--accent-blue);
+	font-size: 1rem;
+	font-weight: 800;
+}
+
+.cares__service-desc {
+	color: var(--text-secondary);
+	font-size: 0.88rem;
+	line-height: 1.45;
+}
+
+.cares__more {
+	display: grid;
+	gap: 0.55rem;
+	padding-top: 0.15rem;
+}
+
+.cares__more a {
+	color: var(--accent-blue);
+	font-size: 0.9rem;
+	font-weight: 700;
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.cares__note {
+	margin: 0;
+	padding-top: 0.15rem;
+	border-top: 1px solid color-mix(in srgb, var(--sjsu-gray) 35%, transparent);
+	color: var(--sjsu-gray);
+	font-size: 0.82rem;
+	line-height: 1.45;
+}
+
+.cares__panel :focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 2px;
+}
+
+.cares__masthead :focus-visible {
+	outline-color: #fff;
+}
