@@ -1,25 +1,8 @@
-"""Load and VALIDATE the repo-root config.yaml for the CDK app.
+"""Load and validate the repo-root config.yaml for the CDK app.
 
-config.yaml is the single source of truth for changeable knobs. This module resolves it
-relative to __file__ so it works no matter what the current working directory is.
-
-Layout: this file is <repo>/infra/infra/config.py, so the repo root is parents[2] and
-config.yaml sits directly under it.
-
-WHY VALIDATORS EXIST AT ALL, given the stack synthesizes fine without them: the stack is
-L1 `Cfn*` all the way down, and L1 constructs do NOT enforce CloudFormation's property
-constraints at synth. A name that violates a service's pattern, a dimension the embedding
-model does not emit, a wildcard CORS origin - every one of those synthesizes clean and
-first fails at deploy, some of them AFTER creating half the stack. These functions move
-that enforcement to synth, where it costs nothing to be wrong.
-
-NAMING CONVENTION, which every later stack section inherits: no global name is written in
-the stack. Bucket, knowledge base, index, function and schedule names all derive from this
-file, and the derivation lives HERE rather than inline in the stack, so there is exactly
-one place a name is spelled. The consequence, accepted deliberately (gav does the same):
-config.yaml carries literal names, so standing the stack up a SECOND time in one account
-means editing config.yaml first. Two deploys of an unedited config collide on the vector
-bucket name and the KB name. That is a config edit, not a code change.
+The stack is L1 `Cfn*` all the way down and L1 constructs enforce no property
+constraints at synth, so these validators move that enforcement to where being wrong
+costs nothing. Every global name derives from here, so each is spelled once.
 """
 
 import re
@@ -30,38 +13,23 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config.yaml"
-# Every SJSU fact the app states, as CSV. Read at SYNTH as well as at runtime, for the reason
-# resolve_seed_pages gives: a broken file should fail `cdk synth` rather than deploy.
+# Read at synth as well as at runtime, so a broken file fails `cdk synth` rather than deploy.
 _DATA_DIR = _REPO_ROOT / "data"
 
-# Bedrock's name pattern for AWS::Bedrock::KnowledgeBase.Name and
-# AWS::Bedrock::DataSource.Name, verbatim from the CloudFormation resource reference
-# (verified 2026-08-05). Read it as up to 100 groups of "one alphanumeric, then AT MOST ONE
-# - or _". So it rejects a LEADING separator and any doubled separator ("--"), it ALLOWS a
-# trailing one, and the group count caps the name at 200 characters. The data source name is
-# BUILT by folding the chunk config into the KB name (see resolve_data_source_name), so it is
-# the likelier of the two to trip this - which is why it is checked here, at synth, rather
-# than discovered when the deploy fails.
+# Bedrock's own pattern, verbatim: up to 100 groups of one alphanumeric and at most one
+# separator, so a leading or doubled separator is rejected and a trailing one is not.
 _BEDROCK_NAME_RE = re.compile(r"^([0-9a-zA-Z][_-]?){1,100}$")
 
-# S3 Vectors bucket + index names: 3-63 chars, and the charset is the one the service's
-# own ARN pattern admits - `[a-z0-9][a-z0-9-.]{1,61}[a-z0-9]` (verified against the
-# CreateVectorBucket / CreateIndex API reference, 2026-08-05). Lowercase only; no
-# underscores, which is the difference from the Bedrock pattern above and an easy way to
-# author a config that half-validates.
+# Lowercase only and no underscores, which is the difference from the Bedrock pattern above.
 _S3_VECTORS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 _S3_VECTORS_NAME_MIN = 3
 _S3_VECTORS_NAME_MAX = 63
 
-# S3 Vectors caps non-filterable metadata keys at 10 PER INDEX, and the setting is
-# IMMUTABLE after the index is created - so exceeding it is not a deploy that fails and
-# gets fixed, it is an index that has to be replaced (taking the KB with it).
+# Immutable after the index is created, so exceeding it means replacing the index.
 _MAX_NON_FILTERABLE_KEYS = 10
 
-# Vector dimensions the embedding model actually emits. Titan Text Embeddings v2 supports
-# 1024 (default), 512 and 256 (verified against the Bedrock model reference, 2026-08-05).
-# The index dimension MUST equal the model's output or every ingestion fails, and the
-# index dimension is immutable, so a mismatch is another replacement rather than a fix.
+# The index dimension must equal the model's output or every ingestion fails, and it is
+# immutable, so a mismatch is another replacement rather than a fix.
 _EMBEDDING_MODEL_DIMENSIONS = {
     "amazon.titan-embed-text-v2:0": (1024, 512, 256),
 }
@@ -69,34 +37,18 @@ _EMBEDDING_MODEL_DIMENSIONS = {
 _DIMENSION_MIN = 1
 _DIMENSION_MAX = 4096
 
-# Bedrock's chunking strategies. v1 uses FIXED_SIZE (gav's baseline); the others are
-# listed so an unsupported value is named as unsupported rather than silently passed to a
-# CfnDataSource that will reject it at deploy.
+# Listed so an unsupported value is named here rather than rejected at deploy.
 _CHUNKING_STRATEGIES = ("FIXED_SIZE", "NONE", "HIERARCHICAL", "SEMANTIC")
 
-# Columns data/urls.csv must carry. `section` is load-bearing beyond provenance: it reaches
-# the metadata sidecars, and the card builder keys its deprioritization and its follow-up
-# buttons off it. A blank section degrades SILENTLY (a card just stops being deprioritized
-# and loses its tailored follow-up), which is why it is required here rather than defaulted.
+# `section` is required rather than defaulted because a blank one degrades silently.
 _SEED_COLUMNS = ("url", "section", "title")
 
-# The chat Lambda's own timeout, in seconds. NOT a config knob, and not arbitrary: an HTTP
-# API integration's timeoutInMillis maxes at 30,000 ms and cannot be raised by a quota
-# request, so 29 is the ceiling minus one - the function's own timeout wins, and the failure
-# is diagnosable in its logs rather than only as a gateway 504. It lives here, beside the
-# validator that checks chat.converse_deadline_seconds against it, so the deadline and the
-# timeout it must sit under cannot drift apart in two files.
+# Not a knob: an HTTP API integration tops out at 30,000 ms, so this is the ceiling minus
+# one and the function's own timeout wins. Here, beside the validator that reads it.
 CHAT_LAMBDA_TIMEOUT_SECONDS = 29
 
-# Bedrock guardrail constraints, verified against the CreateGuardrail /
-# GuardrailContentFilterConfig API reference (2026-08-05). Every one of these is enforced by
-# the service and NOT by the L1 CfnGuardrail, so without these checks a bad value first
-# surfaces as a failed change set:
-#   - name:                  1-50 chars matching [0-9a-zA-Z-_]+ (note: no dots, unlike the
-#                            S3 Vectors pattern, and shorter than the Bedrock KB pattern)
-#   - blockedInputMessaging: 1-500 chars, and it is REQUIRED
-#   - filter type:           one of the six harmful categories
-#   - filter strength:       NONE | LOW | MEDIUM | HIGH
+# Enforced by the service and not by the L1, so without these a bad value first surfaces
+# as a failed change set.
 _GUARDRAIL_NAME_RE = re.compile(r"^[0-9a-zA-Z_-]+$")
 _GUARDRAIL_NAME_MAX = 50
 _GUARDRAIL_MESSAGE_MAX = 500
@@ -110,72 +62,39 @@ _GUARDRAIL_FILTER_TYPES = (
 )
 _GUARDRAIL_FILTER_STRENGTHS = ("NONE", "LOW", "MEDIUM", "HIGH")
 
-# Bedrock's own range for Retrieve's numberOfResults (verified against
-# KnowledgeBaseVectorSearchConfiguration, 2026-08-05). Out of range is a runtime
-# ValidationException on every single query - not a deploy failure, which makes it worse:
-# the stack comes up clean and every request 502s.
+# Out of range is a runtime exception on every query, not a deploy failure, so the stack
+# comes up clean and every request 502s.
 _NUMBER_OF_RESULTS_MIN = 1
 _NUMBER_OF_RESULTS_MAX = 100
 
-# Floors for the card field caps. Not design minimums - they are dropped-digit detectors,
-# set low enough that any deliberate value clears them and high enough that 60-for-600,
-# 9-for-90 or 12-for-120 does not. See resolve_cards.
-# The floor on chat.title_max_chars, and the same dropped-digit guard the card caps carry:
-# 8 is a plausible typo for 80 and would fail silently, truncating every conversation name
-# in the sidebar to a fragment while rejecting every title the model wrote for being too
-# long. Twenty characters is roughly three words, which is the shortest a title can be and
-# still name anything.
+# Dropped-digit detectors rather than design minimums: low enough that any deliberate value
+# clears them, high enough that 60-for-600 or 8-for-80 does not.
 _CONVERSATION_TITLE_MIN_CHARS = 20
 
 _CARD_TITLE_MIN_CHARS = 20
 _CARD_DESC_MIN_CHARS = 100
 _CARD_FOLLOWUP_MIN_CHARS = 20
 
-# The floor on escalation.max_chars, and the same dropped-digit detector one size up: 120
-# is a plausible typo for 1200 and would take the feature off the air rather than shorten
-# anything, because this is the one cap whose violation drops the offer. Three hundred
-# characters is about a paragraph, which is the shortest a message to a person can be and
-# still say what happened. See resolve_escalation.
+# The same detector one size up, and this is the one cap whose violation drops the offer
+# rather than shortening anything.
 _ESCALATION_MIN_CHARS = 300
 
-# DynamoDB table names: 3-255 characters of letters, digits, '_', '-' and '.' (verified
-# against the CreateTable API reference, 2026-08-11). Wider than the S3 Vectors charset -
-# uppercase and underscores are both legal here - which is exactly why it gets its own
-# pattern rather than borrowing one of the two above.
-#
-# A bad name is a deploy failure, not a synth failure, and the table it fails on is the one
-# holding conversation history: CloudFormation REPLACES a table to change its name, so a
-# rename discovered after the first deploy takes the history with it.
+# Wider than the S3 Vectors charset, which is why it is its own pattern. A rename discovered
+# after the first deploy replaces the table and takes the history with it.
 _DYNAMODB_TABLE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
 _DYNAMODB_TABLE_NAME_MIN = 3
 _DYNAMODB_TABLE_NAME_MAX = 255
 
-# Geographic prefixes that mark a model id as a CROSS-REGION INFERENCE PROFILE rather than a
-# bare on-demand foundation model. The two need different IAM shapes (see the chat Lambda's
-# role in infra_stack.py), so the distinction is resolved here, once.
+# A profile and a bare model id need different IAM shapes, so the distinction lives here.
 _INFERENCE_PROFILE_PREFIXES = ("us", "eu", "apac", "us-gov")
 
-# THE SAML PROVIDER'S NAME, AND THE ONE VALUE IN THIS FILE THAT IS NOT A KNOB. It is named
-# for the provider's ROLE in this pool, never for whose Okta org is behind it, so the same
-# name serves the rehearsal org today and SJSU's tenant later with only the metadata URL
-# changing.
-#
-# RENAMING IT IS NOT A RENAME, IT IS A MIGRATION. A federated user's Cognito username is
-# `<providerName>_<nameid>`, so a different name mints a NEW user - new `sub`, which is the
-# DynamoDB partition key (docs/accounts-and-storage.md, Storage) - and orphans every
-# conversation the old identity wrote. There is no CloudFormation update path either:
-# ProviderName is the identity provider's physical id, so an edit REPLACES the resource.
-#
-# It lives here rather than inline in the stack for the same reason every other name does
-# (see the naming convention at the top of this file): one place it is spelled. It is a
-# constant rather than a config key because it is the one thing that must NOT differ between
-# the rehearsal org and SJSU's - a config key is an invitation to set it to "SJSU".
+# Named for the provider's role, never for whose org is behind it, and a constant rather
+# than a key because a key is an invitation to set it to "SJSU". Renaming it is a migration:
+# a federated username is `<providerName>_<nameid>`, so a new name mints a new `sub`, which
+# is the DynamoDB partition key, and orphans every conversation the old identity wrote.
 OKTA_PROVIDER_NAME = "Okta"
 
-# The Okta-side attribute this pool maps to `email`. A DEFAULT rather than a required key:
-# `email` is the usual name, and an org that spells it otherwise (a SAML namespace URI, or
-# `emailAddress`) sets `okta.email_attribute` instead of editing code. Cognito takes the
-# USERNAME from NameID, so username is deliberately not mappable and not mapped.
+# A default, so an org that spells it otherwise sets a key instead of editing code.
 _DEFAULT_OKTA_EMAIL_ATTRIBUTE = "email"
 
 
@@ -198,8 +117,7 @@ def _require_mapping(config: Dict[str, Any], section: str) -> Dict[str, Any]:
 
 
 def _positive_int(block: Dict[str, Any], section: str, key: str) -> int:
-    """A positive integer knob, or a synth-time error. `bool` is rejected explicitly
-    because it is an int subclass in Python, so `True` would otherwise pass as 1."""
+    """`bool` is rejected explicitly, or `True` would pass as 1."""
     value = block.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{section}.{key} must be a positive integer (got {value!r}).")
@@ -243,16 +161,7 @@ def _check_s3_vectors_name(name: str, field: str) -> str:
 
 
 def resolve_knowledge_base(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `knowledge_base` block: KB name, embedding model, vector dimension.
-
-    The embedding model and its 1024 dimensions are INHERITED FROM GAV, not chosen here
-    (docs/synthesis.md, "Decisions (2026-08-05)") - gav's exact vector-store shape, which
-    is what makes its KB section a copy rather than a re-derivation.
-
-    The dimension is cross-checked against what the embedding model actually emits: they
-    must be equal or every ingestion fails with a ValidationException, and since the index
-    dimension is immutable the fix is an index replacement (which takes the KB with it).
-    """
+    """The `knowledge_base` block: KB name, embedding model, vector dimension."""
     kb_cfg = _require_mapping(config, "knowledge_base")
     name = _check_bedrock_name(
         _non_empty_str(kb_cfg, "knowledge_base", "name"), "knowledge_base.name"
@@ -272,8 +181,7 @@ def resolve_knowledge_base(config: Dict[str, Any]) -> Dict[str, Any]:
                 "the index dimension is immutable - so this is an index replacement, not a fix."
             )
     elif not (_DIMENSION_MIN <= dimension <= _DIMENSION_MAX):
-        # An embedding model this file has no table for: fall back to S3 Vectors' own range
-        # rather than pretending to know the model's output sizes.
+        # No table for this model, so fall back to S3 Vectors' own range.
         raise ValueError(
             f"knowledge_base.vector_dimension must be {_DIMENSION_MIN}-{_DIMENSION_MAX} "
             f"(got {dimension}); S3 Vectors rejects anything outside that range."
@@ -287,13 +195,7 @@ def resolve_knowledge_base(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_vector_store(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `vector_store` block: S3 Vectors bucket/index names and index shape.
-
-    `non_filterable_metadata_keys` is the trap worth validating: Bedrock's internal
-    metadata keys are filterable by default and blow S3 Vectors' filterable-metadata limit,
-    failing EVERY ingestion, and the setting is immutable once the index exists. Capped at
-    10 keys per index by the service.
-    """
+    """The `vector_store` block: S3 Vectors bucket/index names and index shape."""
     vs_cfg = _require_mapping(config, "vector_store")
     vector_bucket_name = _check_s3_vectors_name(
         _non_empty_str(vs_cfg, "vector_store", "vector_bucket_name"),
@@ -345,21 +247,7 @@ def resolve_vector_store(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_chunking(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `chunking` block, plus the name suffix that encodes it.
-
-    FIXED_SIZE 600 tokens / 20% overlap is INHERITED FROM GAV as the starting baseline
-    (docs/synthesis.md), to be retuned with the eval once an account exists - not a value
-    chosen against this corpus.
-
-    CHANGING CHUNKING IS A DATA-SOURCE REPLACEMENT, NOT A CONFIG TWEAK. Bedrock chunking is
-    immutable, so any edit here makes CloudFormation replace the data source - and it
-    replaces by creating the new one BEFORE deleting the old, which collides on a fixed name
-    and kills the deploy mid-update with `409 AlreadyExists`. `name_suffix` (gav's trick) is
-    what keeps the replacement name distinct; resolve_data_source_name folds it in. Two
-    further consequences of a chunking edit, neither visible at synth: the replacement data
-    source starts EMPTY, and `cdk deploy` does not refill it (the install trigger only
-    re-fires on scraper change), so ingestion needs a manual kick afterward.
-    """
+    """The `chunking` block, plus the name suffix that encodes it."""
     chunking_cfg = _require_mapping(config, "chunking")
     strategy = _non_empty_str(chunking_cfg, "chunking", "strategy")
     if strategy not in _CHUNKING_STRATEGIES:
@@ -387,34 +275,20 @@ def resolve_chunking(config: Dict[str, Any]) -> Dict[str, Any]:
         "strategy": strategy,
         "max_tokens": max_tokens,
         "overlap_percentage": overlap,
-        # e.g. "fixedsize-600t20p". Underscores are dropped rather than kept because this
-        # rides inside a Bedrock name, and the pattern allows at most one separator between
-        # alphanumeric groups.
+        # Underscores are dropped because this rides inside a Bedrock name.
         "name_suffix": f"{strategy.lower().replace('_', '')}-{max_tokens}t{overlap}p",
     }
 
 
 def resolve_data_source_name(config: Dict[str, Any]) -> str:
-    """The KB's S3 data source name, with the chunking configuration folded in.
-
-    THE NAME CARRIES THE CHUNKING CONFIG ON PURPOSE - see resolve_chunking for why a fixed
-    name turns a chunking edit into a failed deploy. Built here rather than in the stack so
-    the fold and the pattern check live in one place: the fold is what makes the name long
-    and separator-heavy enough to violate Bedrock's name pattern, so the two belong together.
-    """
+    """The KB's S3 data source name, with the chunking configuration folded in."""
     kb_name = resolve_knowledge_base(config)["name"]
     suffix = resolve_chunking(config)["name_suffix"]
     return _check_bedrock_name(f"{kb_name}-s3-{suffix}", "the derived data source name")
 
 
 def resolve_scraper(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `scraper` block: single daily schedule, HTTP knobs, and the crawl-list filename.
-
-    ONE schedule, no tiers (docs/synthesis.md): 203 curated pages are cheap enough to sweep
-    daily, and change gating means an unchanged day pays only the Lambda run. A missing cron
-    is validated rather than defaulted because its failure mode is a Lambda that nothing ever
-    invokes - a corpus that silently stops refreshing, visible only as stale answers later.
-    """
+    """The `scraper` block: single daily schedule, HTTP knobs, and the crawl-list filename."""
     scraper_cfg = _require_mapping(config, "scraper")
     schedule_cron = _non_empty_str(scraper_cfg, "scraper", "schedule_cron")
     if not (schedule_cron.startswith("cron(") and schedule_cron.endswith(")")):
@@ -433,13 +307,7 @@ def resolve_scraper(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def data_file_path(name: str) -> Path:
-    """Absolute path to one file in the repo-root `data/` directory.
-
-    Resolved against the REPO ROOT, not the current working directory: synth runs from infra/
-    and the facts live at the root (a decision - they are content, they are not infra, and
-    BOTH app/ and frontend/ read them). Everything infra reads out of data/ goes through here,
-    so the directory is named once.
-    """
+    """Absolute path to one file in the repo-root `data/` directory."""
     return _DATA_DIR / name
 
 
@@ -449,19 +317,7 @@ def seed_list_path(config: Dict[str, Any]) -> Path:
 
 
 def resolve_seed_pages(config: Dict[str, Any]) -> List[Dict[str, str]]:
-    """The curated crawl list as `[{"url", "section", "title"}]`, in file order.
-
-    This is the corpus as CONFIGURATION defines it - what a run fetches, and what the
-    stale-object prune keeps in the KB source bucket. Read and checked at synth so a broken
-    list fails the build rather than deploying a scraper with nothing to do.
-
-    Every check here guards a failure that is otherwise SILENT:
-      - a missing or empty file  -> a scraper that fetches nothing and prunes the entire
-        knowledge base on its first run
-      - a missing `section`      -> cards lose their deprioritization and their tailored
-        follow-up button, with nothing in the logs to say why
-      - a duplicate URL          -> the page is fetched twice per run for one S3 object
-    """
+    """The curated crawl list as `[{"url", "section", "title"}]`, in file order."""
     path = seed_list_path(config)
     if not path.exists():
         raise ValueError(
@@ -470,8 +326,7 @@ def resolve_seed_pages(config: Dict[str, Any]) -> List[Dict[str, str]]:
             "nothing - and prunes everything."
         )
 
-    # Imported here rather than at module scope: csv is needed by this one function, and
-    # keeping the import local mirrors how narrowly the crawl list is read.
+    # Local, because this is the only function in the file that reads a CSV.
     import csv
 
     with open(path, newline="", encoding="utf-8") as fh:
@@ -519,18 +374,7 @@ def resolve_seed_pages(config: Dict[str, Any]) -> List[Dict[str, str]]:
 
 
 def resolve_guardrail(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `guardrail` block: ONE guardrail, PROMPT_ATTACK on input only.
-
-    The shape is deliberately narrow (docs/synthesis.md): the deterministic safety intercept
-    runs FIRST, then this screens the bare query, then the loop starts. A content filter for
-    anything but prompt injection would pre-empt the intercept and the system prompt's crisis
-    handling, so the config is allowed to name any of Bedrock's six categories but the
-    project only configures the one that is an attack on the prompt itself.
-
-    Output strength is NOT a config knob and is forced to NONE below: this guardrail is only
-    ever applied with source=INPUT, so a non-zero output strength would be a claim the
-    deployment does not make.
-    """
+    """The `guardrail` block: one guardrail, PROMPT_ATTACK on input only."""
     guardrail_cfg = _require_mapping(config, "guardrail")
 
     name = _non_empty_str(guardrail_cfg, "guardrail", "name")
@@ -587,8 +431,7 @@ def resolve_guardrail(config: Dict[str, Any]) -> Dict[str, Any]:
                 f"guardrail.content_filters[{index}].input_strength must be one of "
                 f"{', '.join(_GUARDRAIL_FILTER_STRENGTHS)} (got {input_strength!r})."
             )
-        # outputStrength is REQUIRED by the API but meaningless here (input-only screen), so
-        # it is set rather than read. NONE is also what Bedrock requires for PROMPT_ATTACK.
+        # Required by the API and meaningless on an input-only screen, so it is set, not read.
         resolved_filters.append(
             {
                 "type": filter_type,
@@ -605,14 +448,7 @@ def resolve_guardrail(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `generation` block: the Converse model and its inference knobs.
-
-    `is_inference_profile` is resolved HERE rather than in the stack because it decides the
-    IAM shape: a geographic-prefixed id ("us.anthropic...") is a cross-region inference
-    profile, which needs InvokeModel on the profile ARN PLUS the underlying foundation-model
-    ARNs, while a bare id needs one foundation-model ARN. Getting it wrong is an
-    AccessDeniedException on every generation - a stack that deploys clean and never answers.
-    """
+    """The `generation` block: the Converse model and its inference knobs."""
     generation_cfg = _require_mapping(config, "generation")
     model_id = _non_empty_str(generation_cfg, "generation", "model_id")
     title_model_id = _non_empty_str(generation_cfg, "generation", "title_model_id")
@@ -620,12 +456,8 @@ def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
     head = model_id.split(".", 1)[0]
     is_inference_profile = "." in model_id and head in _INFERENCE_PROFILE_PREFIXES
 
-    # The titling model gets the SAME resolution rather than a copy of the answer: it is
-    # invoked the same way (Converse) so it needs the same IAM shape, and a second rule for
-    # deciding profile-versus-bare-id would be a second thing to get wrong. Getting it wrong
-    # here is quieter than for the generation model - a denied titling call is swallowed and
-    # every conversation keeps its fallback title - which is exactly why it is resolved
-    # here, where the branch is visible, rather than left to be discovered from a log.
+    # The same resolution, not a copy of the answer: a denied titling call is swallowed, so
+    # a second rule for profile-versus-bare-id would fail quietly.
     title_head = title_model_id.split(".", 1)[0]
     title_is_profile = (
         "." in title_model_id and title_head in _INFERENCE_PROFILE_PREFIXES
@@ -643,8 +475,7 @@ def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "model_id": model_id,
-        # The foundation-model id behind a profile is the id minus its geographic prefix.
-        # None for a bare id, where the model id already IS the foundation model.
+        # A profile's foundation model is its id minus the geographic prefix.
         "base_model_id": model_id.split(".", 1)[1] if is_inference_profile else None,
         "is_inference_profile": is_inference_profile,
         "title_model_id": title_model_id,
@@ -658,12 +489,7 @@ def resolve_generation(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_retrieval(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `retrieval` block: how many chunks to ask the KB for, and the relevance floor.
-
-    Both are runtime knobs rather than deploy-time ones, which is exactly why they are
-    validated here: a numberOfResults out of Bedrock's 1-100 range does not fail the deploy,
-    it fails every query afterwards.
-    """
+    """The `retrieval` block: how many chunks to ask the KB for, and the relevance floor."""
     retrieval_cfg = _require_mapping(config, "retrieval")
     number_of_results = _positive_int(retrieval_cfg, "retrieval", "number_of_results")
     if not _NUMBER_OF_RESULTS_MIN <= number_of_results <= _NUMBER_OF_RESULTS_MAX:
@@ -688,11 +514,7 @@ def resolve_retrieval(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_request(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `request` block: the server-side query length cap.
-
-    The client's maxlength is advisory UX; this is the real control. The platform limits
-    (API Gateway 10 MB, Lambda 6 MB) are far too high to protect a paid Bedrock call.
-    """
+    """The `request` block: the server-side query length cap."""
     request_cfg = _require_mapping(config, "request")
     return {
         "max_query_chars": _positive_int(request_cfg, "request", "max_query_chars"),
@@ -700,19 +522,7 @@ def resolve_request(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `chat` block: the agent loop's own limits.
-
-    `max_converse_iterations` is the loop's safety cap. Camp capped at 6 with a literal
-    default and no log line when it was reached, so a request that burned six Converse calls
-    and fell through to the non-agentic fallback was indistinguishable from a normal answer.
-    It is config here, and the handler logs when it hits (docs/build-plan.md).
-
-    `converse_deadline_seconds` is the OTHER half of that cap, and the one that actually
-    bounds a request: iterations bound how many model calls happen, not how long they take.
-    It must leave room under the function's own timeout for the work that happens after the
-    loop returns, so it is validated against CHAT_LAMBDA_TIMEOUT_SECONDS rather than merely
-    being positive - a deadline at or past the timeout is the same as having none.
-    """
+    """The `chat` block: the agent loop's own limits."""
     chat_cfg = _require_mapping(config, "chat")
     deadline = _positive_int(chat_cfg, "chat", "converse_deadline_seconds")
     title_deadline = _positive_int(chat_cfg, "chat", "title_deadline_seconds")
@@ -736,12 +546,8 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
             "room for the card shaping and serialisation that run after the loop."
         )
 
-    # The two budgets are SEQUENTIAL inside one invocation - the loop runs, then the title
-    # call - so they have to fit under the function's timeout together. Checked here rather
-    # than left to runtime because the runtime degradation is invisible: the handler takes
-    # the minimum with Lambda's remaining time, so an oversized pair does not fail, it just
-    # means titling never gets a turn and every conversation quietly keeps its fallback
-    # name. That reads as a bad titling model rather than a config error.
+    # Sequential inside one invocation, so they have to fit under the timeout together. An
+    # oversized pair does not fail at runtime, it just means titling never gets a turn.
     if deadline + title_deadline >= CHAT_LAMBDA_TIMEOUT_SECONDS:
         raise ValueError(
             f"chat.converse_deadline_seconds ({deadline}) plus "
@@ -755,10 +561,7 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
             chat_cfg, "chat", "max_converse_iterations"
         ),
         "max_history_messages": _positive_int(chat_cfg, "chat", "max_history_messages"),
-        # The read endpoints' caps. Validated the same way as the loop caps and for the
-        # same reason - a zero or a negative here is a sidebar that lists nothing and a
-        # conversation that opens blank, which looks like data loss rather than a typo in
-        # config.yaml.
+        # A zero here is a blank sidebar, which looks like data loss rather than a typo.
         "max_conversations_listed": _positive_int(
             chat_cfg, "chat", "max_conversations_listed"
         ),
@@ -766,36 +569,14 @@ def resolve_chat(config: Dict[str, Any]) -> Dict[str, Any]:
             chat_cfg, "chat", "max_conversation_messages"
         ),
         "converse_deadline_seconds": deadline,
-        # The conversation title's length cap and the titling call's own wall-clock budget.
-        # Positive-checked for the same reason as everything above: neither can fail a
-        # deploy, and a zero or negative in either is a feature that silently never works -
-        # a cap of zero rejects every title the model writes AND truncates the fallback to
-        # nothing, and a deadline of zero means the call is never attempted at all. Both
-        # would look exactly like "the model is bad at titles".
+        # A zero in either is a feature that silently never works and reads as a bad model.
         "title_max_chars": title_max_chars,
         "title_deadline_seconds": title_deadline,
     }
 
 
 def resolve_chat_history(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `chat_history` block: the name of the one conversation-history table.
-
-    ONE table for everything - conversation headers and messages both, partitioned on the
-    Cognito `sub` and separated by a `CONV#`/`MSG#` sort-key prefix (docs/accounts-and-storage.md,
-    Storage). Partitioning on the user is a SECURITY property rather than a modelling
-    convenience: the Lambda derives the partition key from the JWT, so there is no filter
-    that can be forgotten.
-
-    The name is the only value that comes from config. The key schema, the billing mode and
-    the TTL attribute are properties the application code must agree with byte for byte, and
-    none of them can be changed on a live table without either a replacement (key schema) or
-    a disable/enable cycle (TTL) - so they are stated once in the stack, where the comment
-    explaining each of them can sit beside it, rather than being knobs that read as tunable.
-
-    Validated here rather than left to the deploy for the usual reason: this is an L1-shaped
-    property that CloudFormation checks on CreateTable, and a rejected CreateTable is a
-    failed deploy partway through a stack update.
-    """
+    """The `chat_history` block: the name of the one conversation-history table."""
     history_cfg = _require_mapping(config, "chat_history")
     table_name = _non_empty_str(history_cfg, "chat_history", "table_name")
     if not (_DYNAMODB_TABLE_NAME_MIN <= len(table_name) <= _DYNAMODB_TABLE_NAME_MAX):
@@ -813,21 +594,7 @@ def resolve_chat_history(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_cards(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `cards` block: the model-emitted card contract's length and count caps.
-
-    These are validated at synth for the same reason the retrieval knobs are - none of them
-    can fail a deploy, and all of them change what a student sees on every answer afterwards.
-
-    The one relationship worth checking is `max_retrieval_results` against `max_cards`. The
-    model cites a source by the integer id it was handed, so it cannot produce more distinct
-    cards than it was shown sources: a ceiling above the number of results is a ceiling that
-    can never be reached, which reads like a decision and is really an arithmetic mistake.
-
-    The character floors exist to catch a dropped digit. `desc_max_chars: 60` is a plausible
-    typo for 600 and would not fail anything - it would just truncate every description to a
-    fragment, on every answer, and the prompt would faithfully instruct the model to write
-    them that way.
-    """
+    """The `cards` block: the model-emitted card contract's length and count caps."""
     cards_cfg = _require_mapping(config, "cards")
 
     max_cards = _positive_int(cards_cfg, "cards", "max_cards")
@@ -863,19 +630,7 @@ def resolve_cards(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_http_api(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The `http_api` block: the v1 cost fence.
-
-    With no billing alarm until v2, these three numbers plus the Cognito gate are the only
-    thing between a public endpoint and an unbounded Bedrock bill. They are validated
-    rather than defaulted for that reason - a missing throttle is not "unlimited by
-    choice", it is an unfenced paid endpoint.
-
-    They bound DIFFERENT things, which is why all three exist:
-      - rate/burst bound how many invocations START per second.
-      - reserved concurrency bounds how many run AT ONCE, which rate alone does not: at
-        10 rps against a 29-second budget, ~290 invocations can be in flight.
-    Neither bounds a single runaway invocation; the loop's deadline and iteration cap do.
-    """
+    """The `http_api` block: the v1 cost fence."""
     http_cfg = _require_mapping(config, "http_api")
     rate = _positive_int(http_cfg, "http_api", "throttling_rate_limit")
     burst = _positive_int(http_cfg, "http_api", "throttling_burst_limit")
@@ -895,28 +650,7 @@ def resolve_http_api(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_rate_limit(config: Dict[str, Any]) -> Optional[int]:
-    """The `rate_limit` block: how many messages one user may send per UTC day.
-
-    Returns None when the block is absent or the limit is 0, and the stack then omits the
-    environment variable entirely - the same gate `resolve_cost_model` below uses, for the
-    same reason: "off" should be one state with one spelling, not a zero the application
-    has to be trusted to interpret. app/settings.py reads an unset variable as disabled, so
-    the two layers agree without either of them carrying a second default.
-
-    OFF IS NOT AN ERROR. A stack that wants no per-user cap is a decision (a closed pilot
-    where every account is known), so a missing block does not fail synth.
-
-    WHAT IT BOUNDS, stated because the other three numbers in this file sound like they
-    already cover it: http_api's throttle bounds invocations STARTED per second and its
-    reserved concurrency bounds invocations running AT ONCE, both across everybody. Neither
-    can tell two students apart, so neither bounds what one account spends. This is the
-    only number here that does.
-
-    NEGATIVE IS AN ERROR rather than another spelling of off. A negative limit would make
-    the condition `count < :limit` false on the very first message of the day, so every
-    student would be refused their first question - and it would read as a disabled feature
-    in config.yaml rather than as the total outage it is.
-    """
+    """The `rate_limit` block: how many messages one user may send per UTC day."""
     rate_cfg = config.get("rate_limit")
     if rate_cfg is None:
         return None
@@ -926,8 +660,7 @@ def resolve_rate_limit(config: Dict[str, Any]) -> Optional[int]:
     limit = rate_cfg.get("daily_message_limit")
     if limit is None:
         return None
-    # Booleans are ints in Python, so `daily_message_limit: true` would otherwise resolve to
-    # a limit of exactly one message per day.
+    # Booleans are ints, so `daily_message_limit: true` would be a limit of one a day.
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ValueError(
             f"rate_limit.daily_message_limit must be an integer (got {limit!r}). Use 0 or "
@@ -944,24 +677,7 @@ def resolve_rate_limit(config: Dict[str, Any]) -> Optional[int]:
 
 
 def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The `cost_model` block: rates x measured usage for the demo cost panel.
-
-    Returns None when the block is absent or `enabled` is false, and the stack then omits
-    `costModel` from config.json entirely - which is the whole gate. The frontend renders
-    the cost section inside its settings panel only when the key is present, so turning the
-    breakdown off is a config edit rather than a code change. The settings panel around it
-    is not gated by this and never was meant to be - it holds the language picker, which is
-    for the student. That matters for the Okta federation landing next: it
-    provisions any SJSU student just in time, and this surface must not show them what the
-    system costs to run.
-
-    OFF IS NOT AN ERROR, so a disabled block is not validated past `enabled`. A half-filled
-    block somebody is still measuring should not fail `cdk synth` while the panel is off.
-
-    EVERY NUMBER IS REQUIRED WHEN IT IS ON, with no defaults anywhere. A missing rate would
-    otherwise reach the browser as `undefined`, and the arithmetic there would render "$NaN"
-    on a page whose entire purpose is being checkable. Failing at synth names the key.
-    """
+    """The `cost_model` block: rates x measured usage for the demo cost panel."""
     cost_cfg = config.get("cost_model")
     if not cost_cfg:
         return None
@@ -980,8 +696,7 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         resolved: Dict[str, float] = {}
         for key in keys:
             value = block.get(key)
-            # Booleans are ints in Python and would sail through an isinstance check, which
-            # is exactly the kind of typo (`enabled: true` pasted into a rate) worth naming.
+            # Booleans are ints, and `enabled: true` pasted into a rate is the typo to name.
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
                     f"cost_model.{block_name}.{key} must be a number (got {value!r}). "
@@ -1048,10 +763,8 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ),
     )
 
-    # A question that costs nothing means the measured block was never filled in, and the
-    # panel would confidently show $0.00 for a system that bills real Bedrock tokens. That
-    # is the one wrong number worth failing synth over: a zero reads as a measurement, not
-    # as a placeholder.
+    # A question that costs nothing means the block was never filled in, and a zero on the
+    # panel reads as a measurement rather than a placeholder.
     if measured["model_calls_avg"] <= 0 or measured["context_tokens_per_call_base"] <= 0:
         raise ValueError(
             "cost_model.measured.model_calls_avg and .context_tokens_per_call_base must be "
@@ -1073,42 +786,11 @@ def resolve_cost_model(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The `streaming` block: the WebSocket API that streamed a reply as it was written.
+    """The `streaming` block, which nothing builds from any more.
 
-    NOTHING READS THIS ANY MORE, and that is stated here rather than left to be discovered.
-    The WebSocket transport is gone - the API, its three functions, its `$connect`
-    authorizer and its connection records - and the streaming app that replaced it pushes
-    every delta (there is no per-frame charge on a response-streamed HTTP body) and attaches
-    no output guardrail. So `enabled`, the two batching numbers and `output_guardrail` all
-    configure a thing that is not built. `validate_config` still calls this, so a malformed
-    block is still a synth failure rather than a silent one, and the shapes below are still
-    the shapes; what is missing is a consumer.
-
-    IT IS LEFT HERE ON PURPOSE. Removing it is a config-SCHEMA change with its own test
-    surface and its own argument about what happens to a deployment whose config.yaml still
-    carries the key - a different commit from removing a transport.
-
-    Returns None when the block is absent or `enabled` is false. Same gate shape as
-    resolve_cost_model: off should be one state with one spelling.
-
-    THE BATCHING NUMBERS ARE HERE BECAUSE THEY ARE A COST CONTROL, not a feel knob. Every
-    push down a WebSocket is a billable API Gateway message, so a naive one-message-per-
-    token stream multiplies the message count by roughly the token count for no visible
-    benefit - the frontend already animates arriving text at ~108 characters a second, and
-    the model outruns that. Batching to a few hundred characters puts a turn in the low
-    tens of messages.
-
-    OUTPUT GUARDRAIL DEFAULTS OFF, AND ASYNC IS UNREPRESENTABLE. When it is on the stack
-    attaches this stack's guardrail to ConverseStream in `sync` mode, which is the only
-    mode this code can emit: `async` releases chunks to the student BEFORE they are
-    scanned, which is not a screen, and it does not support PII masking. The default is
-    off because it is measured (2026-08-12, us-west-2, claude-sonnet-4-6, n=4 real
-    questions): sync mode moved the model's time to first token from a median of 1.12s to
-    6.75s while total stream time barely moved, because sync mode holds the response back
-    and scans it in large chunks. That is most of this feature's benefit spent on a screen
-    that, with today's guardrail, cannot fire - the one filter is PROMPT_ATTACK with
-    outputStrength forced to NONE and there is no PII policy, so it scans output and can
-    never intervene on it. Turn it on the day a policy is added that can.
+    The WebSocket transport is gone and the app that replaced it pushes every delta,
+    so `enabled`, the batching numbers and `output_guardrail` all configure a thing that
+    is not built. Left here because removing it is a config-schema change of its own.
     """
     streaming_cfg = config.get("streaming")
     if not streaming_cfg:
@@ -1120,8 +802,7 @@ def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     def _bounded_int(key: str, minimum: int, maximum: int) -> int:
         value = streaming_cfg.get(key)
-        # Booleans are ints in Python, so `delta_min_chars: true` would resolve to 1 - one
-        # gateway message per character, which is the exact bill this block exists to bound.
+        # Booleans are ints, so `delta_min_chars: true` would resolve to 1.
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(
                 f"streaming.{key} must be an integer (got {value!r})."
@@ -1139,32 +820,21 @@ def resolve_streaming(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         )
 
     return {
-        # Floor of 1 would be one message per character; the ceiling keeps a batch under a
-        # size where the reader can see the text arrive in blocks rather than flow.
+        # A floor of 1 is one message per character; the ceiling keeps text flowing.
         "delta_min_chars": _bounded_int("delta_min_chars", 16, 2000),
-        # How long a partial batch may wait before it is pushed anyway. Without it the tail
-        # of a reply - the last few characters, under the batch size - would never be sent
-        # as a delta and the preview would stall short of the final payload.
+        # Without it the tail of a reply, under the batch size, would never be sent at all.
         "delta_max_delay_ms": _bounded_int("delta_max_delay_ms", 50, 5000),
         "output_guardrail": output_guardrail,
     }
 
 
-# The `kind` an escalation destination carries in data/contacts.csv. Fixed here rather than
-# configurable: the point of the column is that a row's kind says what the app may do with it,
-# and a deployment that could rename the kind could address a student's message to a crisis
-# hotline's row.
+# Fixed rather than configurable: a deployment that could rename the kind could address a
+# student's message to a crisis hotline's row.
 _ESCALATION_CONTACT_KIND = "escalation"
 
 
 def _escalation_recipient(contact_id: str) -> str:
-    """The mailbox on one `escalation` row of data/contacts.csv, or a ValueError naming it.
-
-    Read at SYNTH, so a config key pointing at a row that was renamed or deleted fails the
-    build. The runtime never reads this file for the address - the stack stamps what this
-    returns into ESCALATION_RECIPIENT - so this is the only reader, and a wrong id here is a
-    deploy that does not happen rather than an escalation offer that goes nowhere.
-    """
+    """The mailbox on one `escalation` row of data/contacts.csv, or a ValueError naming it."""
     path = data_file_path("contacts.csv")
     if not path.exists():
         raise ValueError(
@@ -1172,8 +842,7 @@ def _escalation_recipient(contact_id: str) -> str:
             "fact this app states lives in the repo-root data/ directory; see its README."
         )
 
-    # Imported here rather than at module scope, exactly as resolve_seed_pages does it: csv
-    # is needed by these two functions and nothing else in this file.
+    # Local, for the reason resolve_seed_pages does the same.
     import csv
 
     with open(path, newline="", encoding="utf-8") as fh:
@@ -1209,36 +878,7 @@ def _escalation_recipient(contact_id: str) -> str:
 
 
 def resolve_escalation(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The `escalation` block: the email draft a turn can offer to send to a human.
-
-    Returns None when the block is absent or `contact` is blank, and the stack then sets no
-    ESCALATION_* variables on the chat function and stamps no `escalationRecipient` into
-    config.json. THE ABSENCE IS THE GATE, the shape resolve_cost_model and resolve_okta
-    already use, and here it reaches further than either: with no address the system prompt
-    never mentions the tag (app/prompts.py), so the model is not taught a contract whose
-    output the server would drop, and the browser has no recipient, so the component is not
-    in the page at all.
-
-    OFF IS NOT AN ERROR. A deployment with nowhere to route a student is the honest state of
-    an install that has not agreed a mailbox with the campus yet.
-
-    `contact` NAMES A ROW, IT IS NOT AN ADDRESS. It used to be the address itself, written
-    out here - and the same mailbox was written out again in frontend/src/lib/sjsuCares.ts as
-    the SJSU Cares email, with nothing comparing the two. So config now points at an
-    `escalation` row in data/contacts.csv and the address is read from it: one mailbox, one
-    row, and repointing the drafts is still one line of config. The returned key stays
-    `recipient`, because what the stack stamps is still an address.
-
-    THE ADDRESS IS VALIDATED SHALLOWLY - one `@`, no whitespace - and deliberately not with
-    a full RFC 5322 pattern. What is being caught is a data mistake that would otherwise
-    surface as a mail client refusing to open in front of a student: an empty local part, a
-    display name pasted in with the address, a stray comma making it two recipients. One
-    recipient, because the draft is addressed to one office.
-
-    `max_chars` is the draft prose's guard, and it is the one cap in this file whose
-    violation DROPS rather than truncates (app/escalation.py), so its floor is generous: a
-    dropped digit here would silently stop the feature working rather than shorten anything.
-    """
+    """The `escalation` block: the email draft a turn can offer to send to a human."""
     escalation_cfg = config.get("escalation")
     if not escalation_cfg:
         return None
@@ -1298,26 +938,7 @@ def resolve_escalation(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The `okta` block: the SAML identity provider federated into the chat user pool.
-
-    Returns None when the block is absent or `metadata_url` is absent/empty, and the stack
-    then creates no identity provider at all and leaves the human app client on COGNITO
-    alone - which is the whole gate, the same shape resolve_cost_model uses. THE ABSENCE IS
-    THE GATE, not a flag beside the value: a URL is the only thing a provider cannot be
-    built without, so there is no state where the key is filled in and the provider is off.
-
-    OFF IS NOT AN ERROR. A deployment with no metadata URL is the local-accounts-only stack
-    that exists today, so an absent block must not fail `cdk synth`. THE SAME KEY SET THREE
-    WAYS is the point: empty for local-only, one org's URL for a federation rehearsal,
-    SJSU's later - all without a code change.
-
-    A METADATA URL RATHER THAN AN UPLOADED FILE, deliberately. Cognito re-fetches a URL on
-    its own, so the IdP's signing certificate rotating on the Okta side is not an outage
-    waiting on somebody to notice and re-upload a file.
-
-    The Okta-side attribute NAME is config because it genuinely differs between orgs; what
-    it maps TO is not, because that is this pool's own `email` attribute.
-    """
+    """The `okta` block: the SAML identity provider federated into the chat user pool."""
     okta_cfg = config.get("okta")
     if not okta_cfg:
         return None
@@ -1333,10 +954,8 @@ def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "or empty to run on local accounts with no identity provider."
         )
     metadata_url = metadata_url.strip()
-    # HTTPS ONLY, and not merely on principle: Cognito fetches this document itself, and it
-    # carries the signing certificate every assertion is verified against. Over http that
-    # fetch is a trivially forgeable trust anchor for the whole federation. Cognito rejects
-    # a non-https URL at CreateIdentityProvider, so this moves the failure to synth.
+    # This document carries the signing certificate every assertion is verified against, so
+    # over http the fetch is a forgeable trust anchor for the whole federation.
     if not metadata_url.startswith("https://"):
         raise ValueError(
             f"okta.metadata_url must be an https:// URL (got {metadata_url!r}). Cognito "
@@ -1344,10 +963,8 @@ def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "plain http would be a forgeable trust anchor - and Cognito rejects it anyway."
         )
 
-    # Absent means `email`, which is what an Okta org usually calls it. Present means the
-    # deployer looked; an empty string means they half-looked, and that is an error rather
-    # than a silent fall back to the default - an unmapped email is a federated account with
-    # no address on it, which shows up as a blank sidebar label rather than as a failure.
+    # Absent means the default; empty means somebody half-looked, and an unmapped email is
+    # a blank sidebar label rather than a failure.
     email_attribute = okta_cfg.get("email_attribute", _DEFAULT_OKTA_EMAIL_ATTRIBUTE)
     if not isinstance(email_attribute, str) or not email_attribute.strip():
         raise ValueError(
@@ -1356,8 +973,7 @@ def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         )
 
     return {
-        # Not read from config - see OKTA_PROVIDER_NAME. Returned here so the stack takes
-        # the name from the same resolved block as everything else about the provider.
+        # Returned so the stack takes it from the same block as the rest of the provider.
         "provider_name": OKTA_PROVIDER_NAME,
         "metadata_url": metadata_url,
         "email_attribute": email_attribute.strip(),
@@ -1365,16 +981,7 @@ def resolve_okta(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def validate_config(config: Dict[str, Any]) -> None:
-    """Run every validator, discarding the results.
-
-    The stack calls this ONCE at the top of __init__, before any construct exists. Without
-    it a validator only fires when the section that happens to consume it has been written,
-    so a config error in a not-yet-built section (a bad guardrail name, a CORS wildcard)
-    would sit undetected until that section lands. Calling everything up front makes `cdk
-    synth` the gate for the WHOLE file from this commit forward, not just the built part.
-
-    Cheap enough to be unconditional: YAML already parsed, plus one pass over a 203-row CSV.
-    """
+    """Run every validator, discarding the results."""
     resolve_knowledge_base(config)
     resolve_vector_store(config)
     resolve_chunking(config)
@@ -1390,41 +997,25 @@ def validate_config(config: Dict[str, Any]) -> None:
     resolve_chat(config)
     resolve_chat_history(config)
     resolve_cards(config)
-    # Returns None when the per-user cap is off, which is a decision rather than an error -
-    # but a non-integer or negative limit still fails synth here, where the message can name
-    # the key, rather than deploying a stack that refuses every student's first question.
+    # None when the cap is off, but a bad limit still fails here rather than deploying a
+    # stack that refuses every student's first question.
     resolve_rate_limit(config)
-    # Returns None when the panel is off, which is a valid config rather than an error -
-    # but an ENABLED block with a bad rate still fails synth here, before any construct
-    # exists, rather than reaching a browser as $NaN.
+    # None when the panel is off, but a bad rate still fails here rather than reaching a
+    # browser as $NaN.
     resolve_cost_model(config)
-    # Same shape: None when there is no metadata URL, which is the local-accounts-only
-    # deployment and not an error. A URL that IS set gets checked here rather than at
+    # None with no metadata URL, but a URL that is set is checked here rather than at
     # CreateIdentityProvider, which is a mid-update deploy failure.
     resolve_okta(config)
-    # And again: None when the WebSocket streaming path is off, which is the shipped
-    # default and not an error - but an ENABLED block with a batch size of 1 still fails
-    # synth here, where the message can name the key, rather than deploying an endpoint
-    # that bills one API Gateway message per token.
+    # Still called although nothing builds from it, so a malformed block is a synth failure
+    # rather than a silent one.
     resolve_streaming(config)
-    # Once more: None when no recipient is configured, which is the honest state of an
-    # install that has not agreed a mailbox with the campus yet. A CONFIGURED block with a
-    # malformed address still fails here rather than reaching a student as a mail client
-    # that refuses to open.
+    # None with no recipient, but a malformed address still fails here rather than reaching
+    # a student as a mail client that refuses to open.
     resolve_escalation(config)
 
 
 def resolve_cors_allow_origins(config: Dict[str, Any]) -> List[str]:
-    """The browser origin allowlist for the HTTP API, from config's `cors.allow_origins`.
-
-    There is no safe default here, so a missing/empty list is a synth-time error rather than
-    a silent fallback. A wildcard is rejected outright: the endpoint fans out to paid Bedrock
-    calls, and "*" would let any site drive it from its visitors' browsers.
-
-    CORS is browser-enforced only and is NOT a security boundary (curl ignores it) - stage
-    throttling and the Cognito gate are the actual cost caps. Entries are matched as EXACT
-    full origins, so each is scheme + host with no trailing slash and no path.
-    """
+    """The browser origin allowlist for the HTTP API, from config's `cors.allow_origins`."""
     origins = (config.get("cors") or {}).get("allow_origins")
     if not origins:
         raise ValueError(

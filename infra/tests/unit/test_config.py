@@ -2,14 +2,14 @@
 
 Two things are being tested, and they fail for different reasons:
 
-  1. The REAL config.yaml passes every validator, and resolves to the values
+  1. The real config.yaml passes every validator, and resolves to the values
      docs/synthesis.md decided on. This catches a config edit that drifts from the
      decisions of record.
   2. Each validator actually rejects the bad value it exists to reject. A validator that
-     silently accepts everything is worse than no validator - it reads like a guarantee.
+     silently accepts everything is worse than no validator, it reads like a guarantee.
 
 Every rejection case here is a real deploy failure the validator moves to synth, not a
-hypothetical. Where a bad value would cause a REPLACEMENT of a resource holding data
+hypothetical. Where a bad value would cause a replacement of a resource holding data
 (chunking, index dimension, non-filterable keys), the comment says so.
 
 Run from infra/ with `python -m pytest`.
@@ -48,38 +48,25 @@ def config():
     return copy.deepcopy(load_config())
 
 
-# --- The real config.yaml ----------------------------------------------------------------
-
-
 def test_real_config_passes_every_validator(config):
     """The committed config.yaml survives the full synth-time gate."""
     validate_config(config)
 
 
 def test_real_config_path_is_the_repo_root_file():
-    """Resolved relative to __file__, so synth from infra/ finds the root config.
-
-    The repo root is located the same way config.py locates it - by walking up from a known
-    file - rather than by NAME. Asserting the directory was called
-    "sjsu-student-success-navagator" made this test a property of the checkout rather than of
-    the resolution logic: it failed in every git worktree, where the directory is named after
-    the branch, and it would have failed just as hard on a clone into any other folder. What
-    the resolution actually promises is that the config sits at the repo root, beside infra/
-    and the crawl list, and that is what is checked.
-    """
+    """Resolved relative to __file__, so synth from infra/ finds the root config."""
     repo_root = Path(__file__).resolve().parents[3]
 
     assert DEFAULT_CONFIG_PATH.name == "config.yaml"
     assert DEFAULT_CONFIG_PATH.parent == repo_root
     assert DEFAULT_CONFIG_PATH.exists()
     # The root is the root because these live there too, not because of what it is called.
-    # data/ is the whole SJSU fact base, crawl list included (data/README.md).
     assert (DEFAULT_CONFIG_PATH.parent / "data" / "urls.csv").exists()
     assert (DEFAULT_CONFIG_PATH.parent / "infra").is_dir()
 
 
 def test_knowledge_base_resolves_to_the_decided_values(config):
-    """Titan v2 at 1024 dimensions - gav's exact vector-store shape (docs/synthesis.md)."""
+    """Titan v2 at 1024 dimensions, gav's exact vector-store shape (docs/synthesis.md)."""
     kb = resolve_knowledge_base(config)
     assert kb["name"] == "sjsu-navigator-kb"
     assert kb["embedding_model_id"] == "amazon.titan-embed-text-v2:0"
@@ -92,14 +79,13 @@ def test_vector_store_resolves_to_the_decided_shape(config):
     assert vs["index_name"] == "bedrock-knowledge-base-default-index"
     assert vs["data_type"] == "float32"
     assert vs["distance_metric"] == "cosine"
-    # Bedrock's internal keys. Non-filterable, or every ingestion fails on the
-    # filterable-metadata limit - and the setting is immutable after index creation.
+    # Bedrock's internal keys.
     assert "AMAZON_BEDROCK_TEXT" in vs["non_filterable_metadata_keys"]
     assert "AMAZON_BEDROCK_METADATA" in vs["non_filterable_metadata_keys"]
 
 
 def test_chunking_resolves_to_the_gav_baseline(config):
-    """FIXED_SIZE 600t/20% is inherited from gav, not tuned against this corpus."""
+    """A starting baseline, not a value tuned against this corpus."""
     chunking = resolve_chunking(config)
     assert chunking["strategy"] == "FIXED_SIZE"
     assert chunking["max_tokens"] == 600
@@ -108,9 +94,7 @@ def test_chunking_resolves_to_the_gav_baseline(config):
 
 
 def test_data_source_name_folds_in_the_chunk_config(config):
-    """The chunk config rides in the name so a chunking change (a REPLACEMENT, since
-    chunking is immutable) gets a distinct name instead of colliding on 409 AlreadyExists
-    when CloudFormation creates the replacement before deleting the original."""
+    """The chunk config rides in the name so a chunking change (a replacement, since chunking is immutable) gets a distinct name instead of colliding on 409 AlreadyExists when CloudFormation creates the replacement before deleting the original."""
     assert resolve_data_source_name(config) == "sjsu-navigator-kb-s3-fixedsize-600t20p"
 
 
@@ -137,7 +121,7 @@ def test_seed_pages_match_the_authoritative_crawl_list(config):
     assert len(pages) == 238
     assert len({p["url"] for p in pages}) == 238
     assert all(p["url"].startswith("https://") for p in pages)
-    # `section` is why this list is validated at all - it reaches the metadata sidecars.
+    # `section` is why this list is validated at all, it reaches the metadata sidecars.
     assert all(p["section"] for p in pages)
     assert all(p["title"] for p in pages)
     hosts = {p["url"].split("/")[2] for p in pages}
@@ -145,7 +129,7 @@ def test_seed_pages_match_the_authoritative_crawl_list(config):
 
 
 def test_seed_list_path_is_repo_root_relative(config):
-    """Resolved against the repo root's data/ directory, not the cwd - synth runs from infra/."""
+    """Resolved against the repo root's data/ directory, not the cwd, synth runs from infra/."""
     path = seed_list_path(config)
     assert path.exists()
     assert path.parent == DEFAULT_CONFIG_PATH.parent / "data"
@@ -157,9 +141,7 @@ def test_cors_allow_origins_resolves_to_a_list(config):
 
 
 def test_guardrail_resolves_to_one_input_only_prompt_attack_filter(config):
-    """The decided shape: ONE filter, PROMPT_ATTACK, input side only. Anything else in this
-    list would screen the student's message before the system prompt saw it, pre-empting the
-    crisis handling the prompt owns (docs/synthesis.md)."""
+    """One filter, PROMPT_ATTACK, input side only."""
     guardrail = resolve_guardrail(config)
     assert guardrail["name"] == "sjsu-navigator-input-guardrail"
     assert guardrail["content_filters"] == [
@@ -169,16 +151,13 @@ def test_guardrail_resolves_to_one_input_only_prompt_attack_filter(config):
 
 
 def test_guardrail_output_strength_is_forced_not_configured(config):
-    """output_strength is not a knob. This guardrail is only ever applied with source=INPUT,
-    so a config value here would be a claim the deployment does not make - the resolver
-    overwrites whatever is in the file."""
+    """output_strength is not a knob."""
     config["guardrail"]["content_filters"][0]["output_strength"] = "HIGH"
     assert resolve_guardrail(config)["content_filters"][0]["output_strength"] == "NONE"
 
 
 def test_generation_resolves_the_cross_region_inference_profile(config):
-    """base_model_id and is_inference_profile drive the IAM shape in the stack, so they are
-    pinned here rather than inferred from a string test at the call site."""
+    """base_model_id and is_inference_profile drive the IAM shape in the stack, so they are pinned here rather than inferred from a string test at the call site."""
     generation = resolve_generation(config)
     assert generation["model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert generation["is_inference_profile"] is True
@@ -188,8 +167,7 @@ def test_generation_resolves_the_cross_region_inference_profile(config):
 
 
 def test_bare_model_id_is_not_treated_as_an_inference_profile(config):
-    """The other branch: a bare on-demand id needs ONE foundation-model ARN, and granting it
-    the profile shape instead would be AccessDenied on every generation."""
+    """A bare id needs one foundation-model ARN; the profile shape is AccessDenied."""
     config["generation"]["model_id"] = "anthropic.claude-sonnet-4-6"
     generation = resolve_generation(config)
     assert generation["is_inference_profile"] is False
@@ -205,12 +183,7 @@ def test_retrieval_and_request_resolve_to_camps_tuned_values(config):
 
 
 def test_cards_resolve_to_the_decided_caps(config):
-    """The card contract's numbers, pinned so a later nudge has to be a deliberate edit to a
-    test that says so. The length caps are GUARDS against a runaway response, sitting far
-    above the length the prompt steers toward: desc was 180, sized to the two-sentence
-    editorial target itself, and against a real model that put an ellipsis on nearly every
-    card. Length steering lives in the prompt; the caps exist so a runaway response cannot
-    ship an essay into a card, and cards.py logs a WARNING when one is hit."""
+    """The card contract's numbers, pinned so a later nudge has to be a deliberate edit to a test that says so."""
     cards = resolve_cards(config)
     assert cards["max_cards"] == 4
     assert cards["max_retrieval_results"] == 6
@@ -220,8 +193,7 @@ def test_cards_resolve_to_the_decided_caps(config):
 
 
 def test_card_ceiling_above_the_retrieval_count_is_rejected(config):
-    """A ceiling the model cannot reach. It cites one retrieved id per card, so allowing
-    more cards than results is arithmetic that reads like a decision."""
+    """A ceiling the model cannot reach."""
     config["cards"]["max_retrieval_results"] = 3
     config["cards"]["max_cards"] = 4
     with pytest.raises(ValueError, match="must be at least cards.max_cards"):
@@ -237,9 +209,7 @@ def test_card_ceiling_above_the_retrieval_count_is_rejected(config):
     ],
 )
 def test_card_cap_with_a_dropped_digit_is_rejected(config, key, value):
-    """The failure this catches is silent: nothing errors, every field is just truncated to
-    a fragment forever, and the prompt faithfully instructs the model to write them that
-    way."""
+    """The failure this catches is silent: nothing errors, every field is just truncated to a fragment forever, and the prompt faithfully instructs the model to write them that way."""
     config["cards"][key] = value
     with pytest.raises(ValueError, match=f"cards.{key}"):
         resolve_cards(config)
@@ -252,30 +222,21 @@ def test_missing_cards_block_is_rejected(config):
 
 
 def test_validate_config_covers_the_card_caps(config):
-    """Same reason as the chat block: these are read at RUNTIME by the parser and the prompt
-    builder, so a bad value fails the build rather than every answer after the deploy."""
+    """Same reason as the chat block: these are read at runtime by the parser and the prompt builder, so a bad value fails the build rather than every answer after the deploy."""
     config["cards"]["desc_max_chars"] = 60
     with pytest.raises(ValueError, match="desc_max_chars"):
         validate_config(config)
 
 
 def test_chat_resolves_the_loop_caps(config):
-    """Camp's values, but knobs rather than literals: the iteration cap is what stops a
-    runaway tool-use loop inside a 29-second budget.
-
-    max_history_messages went 12 -> 24 in 0016e76 (twelve exchanges rather than six), which
-    is why this literal moved with it. Restated here rather than read back out of the
-    config: this number is billed in input tokens on EVERY turn, so a change to it should
-    have to be made twice, deliberately, and show up in a diff as this line."""
+    """Camp's values, but knobs rather than literals: the iteration cap is what stops a runaway tool-use loop inside a 29-second budget."""
     chat = resolve_chat(config)
     assert chat["max_converse_iterations"] == 6
     assert chat["max_history_messages"] == 24
 
 
 def test_chat_resolves_the_read_endpoint_caps(config):
-    """Separate numbers from max_history_messages above, and the difference is what they
-    cost: that one is the window the MODEL is shown, billed in tokens on every turn, while
-    these bound one DynamoDB query of already-stored items for the browser."""
+    """Separate numbers from max_history_messages above, and the difference is what they cost: that one is the window the model is shown, billed in tokens on every turn, while these bound one DynamoDB query of already-stored items for the browser."""
     chat = resolve_chat(config)
     assert chat["max_conversations_listed"] == 40
     assert chat["max_conversation_messages"] == 60
@@ -286,14 +247,10 @@ def test_chat_resolves_the_read_endpoint_caps(config):
 )
 @pytest.mark.parametrize("value", [0, -1, 2.5, "40"])
 def test_a_non_positive_read_cap_is_rejected(config, key, value):
-    """A zero here is a sidebar that lists nothing and a conversation that opens blank,
-    which looks like data loss rather than a typo in config.yaml."""
+    """A zero here is a sidebar that lists nothing and a conversation that opens blank, which looks like data loss rather than a typo in config.yaml."""
     config["chat"][key] = value
     with pytest.raises(ValueError, match=key):
         resolve_chat(config)
-
-
-# --- Rejections: guardrail ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -313,8 +270,7 @@ def test_invalid_guardrail_name_is_rejected(config, name):
 
 
 def test_over_long_blocked_input_messaging_is_rejected(config):
-    """Bedrock caps this at 500 characters. It is the text a student actually sees when the
-    screen blocks, so a truncation is a broken message, not a cosmetic one."""
+    """Bedrock caps this at 500 characters."""
     config["guardrail"]["blocked_input_messaging"] = "x" * 501
     with pytest.raises(ValueError, match="at most 500"):
         resolve_guardrail(config)
@@ -328,8 +284,7 @@ def test_empty_content_filters_is_rejected(config):
 
 
 def test_unknown_filter_type_is_rejected(config):
-    """PROMPT_INJECTION is the name everyone reaches for; Bedrock's category is
-    PROMPT_ATTACK, and the wrong one is a deploy-time ValidationException."""
+    """Bedrock's category is PROMPT_ATTACK, and the wrong name is a deploy-time failure."""
     config["guardrail"]["content_filters"] = [
         {"type": "PROMPT_INJECTION", "input_strength": "HIGH"}
     ]
@@ -357,15 +312,11 @@ def test_duplicate_filter_category_is_rejected(config):
 
 
 def test_other_bedrock_filter_categories_are_accepted(config):
-    """The resolver must not hardcode PROMPT_ATTACK. The project only configures that one,
-    but rejecting the rest would be a validator lying about what Bedrock supports."""
+    """The resolver must not hardcode PROMPT_ATTACK."""
     config["guardrail"]["content_filters"] = [
         {"type": "VIOLENCE", "input_strength": "MEDIUM"}
     ]
     assert resolve_guardrail(config)["content_filters"][0]["type"] == "VIOLENCE"
-
-
-# --- Rejections: generation, retrieval, request, chat ------------------------------------
 
 
 @pytest.mark.parametrize("temperature", [-0.1, 1.5, "0.2", True])
@@ -377,8 +328,7 @@ def test_out_of_range_temperature_is_rejected(config, temperature):
 
 @pytest.mark.parametrize("number_of_results", [0, 101, -1])
 def test_number_of_results_outside_bedrocks_range_is_rejected(config, number_of_results):
-    """1-100 is Bedrock's own range for Retrieve. Out of range does not fail the deploy - it
-    fails every query afterwards, which is the whole reason it is checked at synth."""
+    """1-100 is Bedrock's own range for Retrieve."""
     config["retrieval"]["number_of_results"] = number_of_results
     with pytest.raises(ValueError, match="number_of_results"):
         resolve_retrieval(config)
@@ -392,17 +342,14 @@ def test_hundred_results_is_accepted(config):
 
 @pytest.mark.parametrize("min_score", [-0.1, 1.1, 35, "0.35"])
 def test_min_score_outside_the_normalized_range_is_rejected(config, min_score):
-    """The nastiest of these is 35 - a plausible "percent" reading of 0.35. Bedrock scores
-    are normalized to 0-1, so it silently discards EVERY chunk and the bot answers from
-    nothing, with no error anywhere."""
+    """The nastiest of these is 35, a plausible "percent" reading of 0.35."""
     config["retrieval"]["min_score"] = min_score
     with pytest.raises(ValueError, match="min_score"):
         resolve_retrieval(config)
 
 
 def test_missing_chat_block_is_rejected(config):
-    """The loop caps have no safe default: without a cap a tool-use loop can spend the whole
-    29-second budget on Converse calls."""
+    """The loop caps have no safe default: without a cap a tool-use loop can spend the whole 29-second budget on Converse calls."""
     del config["chat"]
     with pytest.raises(ValueError, match="missing the `chat` block"):
         resolve_chat(config)
@@ -421,12 +368,8 @@ def test_non_positive_query_char_cap_is_rejected(config):
         resolve_request(config)
 
 
-# --- Rejections: knowledge_base ----------------------------------------------------------
-
-
 def test_missing_block_is_rejected(config):
-    """A whole block gone. Named explicitly, because the alternative is an AttributeError
-    somewhere in the stack that says nothing about config.yaml."""
+    """Named explicitly, or it is an AttributeError that says nothing about config.yaml."""
     del config["knowledge_base"]
     with pytest.raises(ValueError, match="missing the `knowledge_base` block"):
         resolve_knowledge_base(config)
@@ -440,9 +383,7 @@ def test_block_that_is_not_a_mapping_is_rejected(config):
 
 
 def test_dimension_the_embedding_model_does_not_emit_is_rejected(config):
-    """768 is a plausible-looking embedding size that Titan v2 never returns. Mismatched
-    dimensions fail EVERY ingestion, and the index dimension is immutable - so catching it
-    here is the difference between a synth error and replacing an index."""
+    """768 is a plausible-looking embedding size that Titan v2 never returns."""
     config["knowledge_base"]["vector_dimension"] = 768
     with pytest.raises(ValueError, match="not an output size of"):
         resolve_knowledge_base(config)
@@ -456,8 +397,7 @@ def test_other_titan_v2_dimensions_are_accepted(config):
 
 
 def test_unknown_embedding_model_falls_back_to_the_s3_vectors_range(config):
-    """For a model with no dimension table, don't pretend to know its output sizes - just
-    enforce what S3 Vectors itself enforces."""
+    """For a model with no dimension table, don't pretend to know its output sizes, just enforce what S3 Vectors itself enforces."""
     config["knowledge_base"]["embedding_model_id"] = "some.future-embed-model:0"
     config["knowledge_base"]["vector_dimension"] = 768
     assert resolve_knowledge_base(config)["vector_dimension"] == 768
@@ -484,9 +424,9 @@ def test_boolean_is_not_accepted_as_an_integer(config):
     "name",
     [
         "-leading-hyphen",   # Bedrock's pattern requires an alphanumeric first char
-        "double--hyphen",    # at most ONE separator per alphanumeric group
+        "double--hyphen",    # at most one separator per alphanumeric group
         "has space",
-        "has.dot",           # legal in S3 Vectors names, NOT in Bedrock names
+        "has.dot",           # legal in S3 Vectors names, not in Bedrock names
         "a" * 101,           # over the 100-group cap
     ],
 )
@@ -498,25 +438,17 @@ def test_kb_name_violating_bedrock_pattern_is_rejected(config, name):
 
 
 def test_trailing_separator_is_allowed_by_bedrocks_actual_pattern(config):
-    """Not a typo. Bedrock's pattern is groups of "alnum + at most one separator", so a
-    TRAILING hyphen is legal even though a leading one is not. Pinned because the asymmetry
-    reads like a bug and is the kind of thing a later edit would "fix" into over-rejection."""
+    """A trailing hyphen is legal where a leading one is not, and the asymmetry reads as a bug."""
     config["knowledge_base"]["name"] = "sjsu-navigator-kb-"
     assert resolve_knowledge_base(config)["name"] == "sjsu-navigator-kb-"
 
 
 def test_kb_name_that_only_breaks_once_the_chunk_suffix_is_folded_in(config):
-    """The dangerous case, and the reason the pattern is re-checked after the fold rather
-    than only at the source: a KB name that passes on its own but whose DERIVED data source
-    name is over Bedrock's limit. 90 chars is fine; +"-s3-fixedsize-600t20p" is 111, past
-    the 100-group cap."""
+    """The dangerous case, and the reason the pattern is re-checked after the fold rather than only at the source: a KB name that passes on its own but whose derived data source name is over Bedrock's limit."""
     config["knowledge_base"]["name"] = "a" * 90
     resolve_knowledge_base(config)  # fine by itself
     with pytest.raises(ValueError, match="derived data source name"):
         resolve_data_source_name(config)
-
-
-# --- Rejections: vector_store ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -556,7 +488,7 @@ def test_non_float32_data_type_is_rejected(config):
 
 
 def test_unsupported_distance_metric_is_rejected(config):
-    """S3 Vectors offers cosine and euclidean only - no dotproduct."""
+    """S3 Vectors offers cosine and euclidean only, no dotproduct."""
     config["vector_store"]["distance_metric"] = "dotproduct"
     with pytest.raises(ValueError, match="cosine' or 'euclidean"):
         resolve_vector_store(config)
@@ -568,16 +500,14 @@ def test_euclidean_is_accepted(config):
 
 
 def test_empty_non_filterable_metadata_keys_is_rejected(config):
-    """Dropping these is the trap gav already hit: Bedrock's internal keys are filterable
-    by default and blow the filterable-metadata limit, failing every ingestion."""
+    """Dropping these is the trap gav already hit: Bedrock's internal keys are filterable by default and blow the filterable-metadata limit, failing every ingestion."""
     config["vector_store"]["non_filterable_metadata_keys"] = []
     with pytest.raises(ValueError, match="non_filterable_metadata_keys must be"):
         resolve_vector_store(config)
 
 
 def test_more_than_ten_non_filterable_keys_is_rejected(config):
-    """S3 Vectors caps this at 10 per index, and the setting is immutable - exceeding it
-    means replacing the index (which takes the KB with it), not editing a property."""
+    """S3 Vectors caps this at 10 per index, and the setting is immutable, exceeding it means replacing the index (which takes the KB with it), not editing a property."""
     config["vector_store"]["non_filterable_metadata_keys"] = [f"key-{i}" for i in range(11)]
     with pytest.raises(ValueError, match="at most 10"):
         resolve_vector_store(config)
@@ -597,9 +527,6 @@ def test_duplicate_non_filterable_keys_are_rejected(config):
         resolve_vector_store(config)
 
 
-# --- Rejections: chunking ----------------------------------------------------------------
-
-
 def test_unknown_chunking_strategy_is_rejected(config):
     config["chunking"]["strategy"] = "SLIDING_WINDOW"
     with pytest.raises(ValueError, match="not a Bedrock chunking strategy"):
@@ -607,8 +534,7 @@ def test_unknown_chunking_strategy_is_rejected(config):
 
 
 def test_real_strategy_the_stack_does_not_wire_is_rejected(config):
-    """SEMANTIC is a real Bedrock strategy, but the stack only builds FIXED_SIZE. Accepting
-    it would produce a data source whose name says semantic and whose chunking is fixed."""
+    """SEMANTIC is a real Bedrock strategy, but the stack only builds FIXED_SIZE. So it is rejected here."""
     config["chunking"]["strategy"] = "SEMANTIC"
     with pytest.raises(ValueError, match="only wires FIXED_SIZE"):
         resolve_chunking(config)
@@ -621,36 +547,29 @@ def test_out_of_range_overlap_percentage_is_rejected(config, overlap):
         resolve_chunking(config)
 
 
-# --- Rejections: scraper and the crawl list ----------------------------------------------
-
-
 def test_missing_schedule_cron_is_rejected(config):
-    """Failure mode without this: a Lambda nothing ever invokes, so the corpus quietly
-    stops refreshing and only shows up later as stale answers."""
+    """Failure mode without this: a Lambda nothing ever invokes, so the corpus quietly stops refreshing and only shows up later as stale answers."""
     del config["scraper"]["schedule_cron"]
     with pytest.raises(ValueError, match="scraper.schedule_cron"):
         resolve_scraper(config)
 
 
 def test_unix_style_five_field_cron_is_rejected(config):
-    """EventBridge cron takes SIX fields with a '?' in day-of-month or day-of-week; a bare
-    5-field UNIX expression is a deploy-time rejection otherwise."""
+    """EventBridge cron takes six fields with a '?' in day-of-month or day-of-week; a bare 5-field UNIX expression is a deploy-time rejection otherwise."""
     config["scraper"]["schedule_cron"] = "30 11 * * *"
     with pytest.raises(ValueError, match=r"cron\(\.\.\.\)"):
         resolve_scraper(config)
 
 
 def test_missing_crawl_list_file_is_rejected(config):
-    """The scraper's only source of URLs. Missing means a run that fetches nothing - and
-    whose prune then deletes the entire knowledge base."""
+    """The scraper's only source of URLs."""
     config["scraper"]["url_list_file"] = "does-not-exist.csv"
     with pytest.raises(ValueError, match="does not exist"):
         resolve_seed_pages(config)
 
 
 def test_crawl_list_missing_the_section_column_is_rejected(config, tmp_path):
-    """`section` reaches the metadata sidecars and drives card deprioritization and
-    follow-up buttons. Losing it degrades silently, which is why it is required."""
+    """`section` reaches the metadata sidecars and drives card deprioritization and follow-up buttons."""
     csv_path = tmp_path / "no-section.csv"
     csv_path.write_text("url,title\nhttps://www.sjsu.edu/a,A page\n")
     config["scraper"]["url_list_file"] = str(csv_path)
@@ -697,17 +616,9 @@ def test_header_only_crawl_list_is_rejected(config, tmp_path):
 
 
 def _repointed(config, csv_path):
-    """Point `scraper.url_list_file` at a tmp_path CSV.
-
-    seed_list_path() joins the value to the REPO ROOT, and joining an absolute path onto a
-    root yields the absolute path - so an absolute tmp_path works without loosening the
-    resolution rule that keeps the real list at the repo root.
-    """
+    """Point `scraper.url_list_file` at a tmp_path csv."""
     config["scraper"]["url_list_file"] = str(csv_path)
     return config
-
-
-# --- Rejections: chat_history ------------------------------------------------------------
 
 
 def test_chat_history_resolves_to_the_decided_table_name(config):
@@ -725,45 +636,35 @@ def test_chat_history_resolves_to_the_decided_table_name(config):
     ],
 )
 def test_invalid_table_name_is_rejected(config, name):
-    """DynamoDB rejects these at CreateTable, which fails the DEPLOY partway through a stack
-    update rather than failing the synth."""
+    """DynamoDB rejects these at CreateTable, which fails the deploy partway through a stack update rather than failing the synth."""
     config["chat_history"]["table_name"] = name
     with pytest.raises(ValueError, match="not a valid DynamoDB table name"):
         resolve_chat_history(config)
 
 
 def test_too_short_table_name_is_rejected(config):
-    """3 characters is DynamoDB's floor. Caught here because the likely way to hit it is a
-    truncated or half-edited name, which is exactly the shape that reads fine at a glance."""
+    """3 characters is DynamoDB's floor."""
     config["chat_history"]["table_name"] = "ch"
     with pytest.raises(ValueError, match="3-255 characters"):
         resolve_chat_history(config)
 
 
 def test_missing_chat_history_block_is_rejected(config):
-    """Not defaulted. A generated table name would still deploy and still work, and the
-    stack would quietly stop being reproducible - the name is global, so the next deploy in
-    another account would get a different one."""
+    """Not defaulted: a generated name deploys, works, and stops being reproducible."""
     del config["chat_history"]
     with pytest.raises(ValueError, match="chat_history"):
         resolve_chat_history(config)
 
 
 def test_validate_config_covers_the_history_table(config):
-    """The table holds student data, so a name error must fail the build rather than the
-    deploy: CreateTable is rejected mid-update, after other resources have already changed."""
+    """The table holds student data, so a name error must fail the build rather than the deploy: CreateTable is rejected mid-update, after other resources have already changed."""
     config["chat_history"]["table_name"] = "chat history"
     with pytest.raises(ValueError, match="not a valid DynamoDB table name"):
         validate_config(config)
 
 
-# --- Rejections: cors --------------------------------------------------------------------
-
-
 def test_cors_wildcard_is_rejected(config):
-    """The endpoint fans out to paid Bedrock calls; '*' lets any site drive it from its
-    visitors' browsers. (CORS is browser-enforced only and is not a security boundary -
-    throttling and the Cognito gate are the real caps.)"""
+    """The endpoint fans out to paid Bedrock calls; '*' lets any site drive it from its visitors' browsers."""
     config["cors"]["allow_origins"] = ["*"]
     with pytest.raises(ValueError, match="must not contain"):
         resolve_cors_allow_origins(config)
@@ -789,30 +690,22 @@ def test_cors_allow_origins_as_a_bare_string_is_rejected(config):
         resolve_cors_allow_origins(config)
 
 
-# --- validate_config runs the whole file, not just the built sections --------------------
-
-
 def test_validate_config_catches_an_error_in_an_unbuilt_section(config):
-    """The reason validate_config exists: a CORS wildcard is caught now, at synth, even
-    though the API section that consumes cors.allow_origins has not been written yet."""
+    """The reason validate_config exists: a CORS wildcard is caught now, at synth, even though the API section that consumes cors.allow_origins has not been written yet."""
     config["cors"]["allow_origins"] = ["*"]
     with pytest.raises(ValueError, match="must not contain"):
         validate_config(config)
 
 
 def test_validate_config_covers_the_chat_path_blocks(config):
-    """Same reason, one section further on: the values the chat Lambda reads at RUNTIME
-    (min_score, the iteration cap) are validated at synth, so a bad one fails the build
-    rather than every request after the deploy."""
+    """Same reason, one section further on: the values the chat Lambda reads at runtime (min_score, the iteration cap) are validated at synth, so a bad one fails the build rather than every request after the deploy."""
     config["retrieval"]["min_score"] = 35
     with pytest.raises(ValueError, match="min_score"):
         validate_config(config)
 
 
 def test_the_converse_deadline_must_sit_under_the_lambda_timeout():
-    """The wall-clock cap only works if it fires BEFORE the function is killed. A deadline
-    at or past the timeout never fires: the invocation is billed and the student gets a
-    gateway 504 carrying no answer at all."""
+    """The wall-clock cap only works if it fires before the function is killed."""
     from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
 
     config = copy.deepcopy(load_config())
@@ -822,8 +715,7 @@ def test_the_converse_deadline_must_sit_under_the_lambda_timeout():
 
 
 def test_the_configured_converse_deadline_leaves_room_after_the_loop():
-    """Not just under the timeout - far enough under that card shaping and serialisation,
-    which run after the loop returns, still fit."""
+    """Not just under the timeout, far enough under that card shaping and serialisation, which run after the loop returns, still fit."""
     from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
 
     deadline = resolve_chat(load_config())["converse_deadline_seconds"]
@@ -831,12 +723,7 @@ def test_the_configured_converse_deadline_leaves_room_after_the_loop():
 
 
 def test_the_cost_panel_is_off_by_a_config_flag_and_that_is_not_an_error():
-    """`enabled: false` resolves to None so the stack omits the key from config.json.
-
-    A disabled block is deliberately NOT validated past the flag: somebody re-measuring the
-    numbers should be able to leave the block half-written while the panel is off without
-    failing `cdk synth` for everyone else.
-    """
+    """`enabled: false` resolves to None so the stack omits the key from config.json."""
     from infra.config import resolve_cost_model
 
     config = copy.deepcopy(load_config())
@@ -848,8 +735,7 @@ def test_the_cost_panel_is_off_by_a_config_flag_and_that_is_not_an_error():
 
 
 def test_an_absent_cost_model_block_is_also_off():
-    """A config.yaml with no cost_model at all is a valid config, not a missing section.
-    This is what a fresh install in another account looks like before anyone measures it."""
+    """A config.yaml with no cost_model at all is a valid config, not a missing section."""
     from infra.config import resolve_cost_model
 
     config = copy.deepcopy(load_config())
@@ -859,12 +745,7 @@ def test_an_absent_cost_model_block_is_also_off():
 
 
 def test_an_enabled_cost_model_rejects_a_missing_rate():
-    """Every rate is required when the panel is on, with no defaults anywhere.
-
-    A missing rate would otherwise reach the browser as `undefined`, and the arithmetic
-    there renders "$NaN" - on a page whose entire claim is that the figures are checkable.
-    Failing at synth names the key instead.
-    """
+    """Every rate is required when the panel is on, with no defaults anywhere."""
     from infra.config import resolve_cost_model
 
     config = copy.deepcopy(load_config())
@@ -874,8 +755,7 @@ def test_an_enabled_cost_model_rejects_a_missing_rate():
 
 
 def test_an_enabled_cost_model_rejects_a_free_question():
-    """A zero here reads as a measurement rather than as an unfilled placeholder, and the
-    panel would confidently show $0.00 for a system that bills real Bedrock tokens."""
+    """A zero here reads as a measurement rather than as an unfilled placeholder, and the panel would confidently show $0.00 for a system that bills real Bedrock tokens."""
     from infra.config import resolve_cost_model
 
     config = copy.deepcopy(load_config())
@@ -885,13 +765,7 @@ def test_an_enabled_cost_model_rejects_a_free_question():
 
 
 def test_the_committed_cost_model_prices_a_question_in_a_plausible_range():
-    """The real config.yaml, priced end to end.
-
-    Guards the paste rather than the arithmetic: `measure_usage.py` prints a block a human
-    copies into config.yaml, and a dropped digit there produces a panel that is confidently
-    wrong rather than obviously broken. The bounds are deliberately wide - this catches a
-    factor-of-ten slip, not a re-measurement.
-    """
+    """The real config.yaml, priced end to end."""
     from infra.config import resolve_cost_model
 
     model = resolve_cost_model(load_config())
@@ -908,11 +782,7 @@ def test_the_committed_cost_model_prices_a_question_in_a_plausible_range():
 
 
 def test_the_titling_model_gets_the_same_profile_resolution(config):
-    """One rule for deciding profile-versus-bare-id, not two. The titling model is invoked
-    the same way as the generation model, so it needs the same IAM shape, and getting it
-    wrong here is QUIETER than for the generation model: a denied titling call is swallowed
-    and every conversation keeps its fallback title, which reads as a bad titling model
-    rather than a missing grant."""
+    """One rule for deciding profile-versus-bare-id, not two."""
     generation = resolve_generation(config)
     assert generation["title_model_id"] == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert generation["title_is_inference_profile"] is True
@@ -929,8 +799,7 @@ def test_a_bare_titling_model_id_is_not_treated_as_a_profile(config):
 
 
 def test_a_missing_titling_model_fails_at_synth(config):
-    """Identity, like every other model id here: a default would mean a misconfigured deploy
-    quietly billing a model nobody chose."""
+    """Identity, like every other model id here: a default would mean a misconfigured deploy quietly billing a model nobody chose."""
     del config["generation"]["title_model_id"]
     with pytest.raises(ValueError, match="title_model_id"):
         resolve_generation(config)
@@ -943,18 +812,14 @@ def test_the_title_cap_and_budget_resolve_from_config(config):
 
 
 def test_a_dropped_digit_in_the_title_cap_fails_at_synth(config):
-    """8 is a plausible typo for 80 and would fail silently in the worst way: every sidebar
-    row truncated to a fragment AND every generated title rejected for running past the cap,
-    which together look exactly like a model that cannot write titles."""
+    """8 is a plausible typo for 80 and would fail silently in the worst way: every sidebar row truncated to a fragment and every generated title rejected for running past the cap, which together look exactly like a model that cannot write titles."""
     config["chat"]["title_max_chars"] = 8
     with pytest.raises(ValueError, match="title_max_chars"):
         resolve_chat(config)
 
 
 def test_the_two_deadlines_must_fit_under_the_lambda_timeout_together(config):
-    """They run one after the other in a single invocation. An oversized pair does not fail
-    at runtime - the handler takes the minimum with Lambda's remaining time - it just means
-    titling never gets a turn and every conversation quietly keeps its fallback name."""
+    """They run one after the other in a single invocation."""
     from infra.config import CHAT_LAMBDA_TIMEOUT_SECONDS
 
     config["chat"]["converse_deadline_seconds"] = CHAT_LAMBDA_TIMEOUT_SECONDS - 2
@@ -973,18 +838,8 @@ def test_the_configured_pair_leaves_room_after_both(config):
     )
 
 
-# --- rate_limit ------------------------------------------------------------------------
-
-
 def test_the_committed_config_caps_a_user_at_a_defensible_daily_spend():
-    """The real config.yaml's per-user cap, priced against the real cost model.
-
-    THIS IS THE NUMBER THE FEATURE EXISTS TO MAKE TRUE, so it is checked against what a
-    question actually costs rather than asserted as a literal. The bound it guards is a
-    dropped or added digit: 600 messages a day is not a stricter reading of "60", it is a
-    ten-fold different promise about what one account can spend, and nothing else in this
-    repo would notice.
-    """
+    """The real config.yaml's per-user cap, priced against the real cost model."""
     from infra.config import resolve_cost_model, resolve_rate_limit
 
     config = load_config()
@@ -993,8 +848,7 @@ def test_the_committed_config_caps_a_user_at_a_defensible_daily_spend():
 
     cost = resolve_cost_model(config)
     measured, rates = cost["measured"], cost["rates"]
-    # Input tokens dominate: the retrieved passages ride in them and the loop resends the
-    # whole context on a second call.
+    # Input tokens dominate: the retrieved passages ride in them and the loop resends the whole context on a second call.
     per_question = (
         measured["model_calls_avg"]
         * measured["context_tokens_per_call_base"]
@@ -1008,9 +862,7 @@ def test_the_committed_config_caps_a_user_at_a_defensible_daily_spend():
 
 
 def test_a_zero_limit_is_off_rather_than_a_cap_of_zero():
-    """The gate: 0 resolves to None, the stack omits the variable, and the function reads an
-    absent variable as disabled. A literal 0 reaching the function would be a cap nobody can
-    send a message under."""
+    """The gate: 0 resolves to None, the stack omits the variable, and the function reads an absent variable as disabled."""
     from infra.config import resolve_rate_limit
 
     config = copy.deepcopy(load_config())
@@ -1020,8 +872,7 @@ def test_a_zero_limit_is_off_rather_than_a_cap_of_zero():
 
 
 def test_an_absent_rate_limit_block_is_also_off():
-    """A config.yaml with no rate_limit at all is a valid config - a closed pilot where every
-    account is known is a decision, not a missing section."""
+    """A config.yaml with no rate_limit at all is a valid config, a closed pilot where every account is known is a decision, not a missing section."""
     from infra.config import resolve_rate_limit
 
     config = copy.deepcopy(load_config())
@@ -1031,9 +882,7 @@ def test_an_absent_rate_limit_block_is_also_off():
 
 
 def test_a_negative_limit_is_rejected_rather_than_read_as_off():
-    """A negative limit is not another spelling of disabled. `count < :limit` is false on the
-    first message of the day, so every student is refused their first question - and it reads
-    in config.yaml like a feature that is switched off rather than the outage it is."""
+    """A negative limit is not another spelling of disabled."""
     from infra.config import resolve_rate_limit
 
     config = copy.deepcopy(load_config())
@@ -1044,9 +893,7 @@ def test_a_negative_limit_is_rejected_rather_than_read_as_off():
 
 @pytest.mark.parametrize("bad", ["60", 60.5, True, None])
 def test_a_non_integer_limit_is_rejected(bad):
-    """`true` is the one worth naming: booleans are ints in Python, so a flag pasted here
-    would sail through an isinstance check and resolve to a cap of exactly one message a
-    day."""
+    """`true` is the one worth naming: booleans are ints in Python, so a flag pasted here would sail through an isinstance check and resolve to a cap of exactly one message a day."""
     from infra.config import resolve_rate_limit
 
     config = copy.deepcopy(load_config())
@@ -1058,12 +905,8 @@ def test_a_non_integer_limit_is_rejected(bad):
             resolve_rate_limit(config)
 
 
-# --- Okta federation ---------------------------------------------------------------------
-
-
 def test_the_committed_config_federates_okta_under_the_role_name(config):
-    """The committed file carries a metadata URL, so the provider is on - and it resolves to
-    the ROLE name, never an org's. `Okta` is not a knob (see the next test)."""
+    """The committed file carries a metadata URL, so the provider is on, and it resolves to the role name, never an org's."""
     from infra.config import OKTA_PROVIDER_NAME, resolve_okta
 
     okta = resolve_okta(config)
@@ -1075,14 +918,7 @@ def test_the_committed_config_federates_okta_under_the_role_name(config):
 
 
 def test_the_provider_name_is_not_reachable_from_config(config):
-    """RENAMING IS A MIGRATION, NOT A RENAME: a federated user's Cognito username is
-    `<providerName>_<nameid>`, so a different name mints new `sub` values - the DynamoDB
-    partition key - and orphans every conversation the old identities wrote. ProviderName is
-    also the resource's physical id, so CloudFormation replaces rather than updates it.
-
-    So the name is a module constant and config cannot reach it. A key that looks like it
-    might is ignored, which is the property worth pinning: the day somebody adds
-    `provider_name: SJSU` to config.yaml, this is what says no."""
+    """Renaming mints new `sub` values, which are partition keys, and orphans every conversation."""
     from infra.config import resolve_okta
 
     config["okta"]["provider_name"] = "SJSU"
@@ -1091,9 +927,7 @@ def test_the_provider_name_is_not_reachable_from_config(config):
 
 
 def test_no_metadata_url_means_no_identity_provider(config):
-    """THE ABSENCE IS THE GATE, in the shape resolve_cost_model already uses. Three ways to
-    say "local accounts only", all of them valid configs rather than errors: no block, no
-    key, or an empty value left behind by somebody clearing it."""
+    """The absence is the gate, in the shape resolve_cost_model already uses."""
     from infra.config import resolve_okta
 
     for mutate in (
@@ -1106,14 +940,12 @@ def test_no_metadata_url_means_no_identity_provider(config):
         candidate = copy.deepcopy(config)
         mutate(candidate)
         assert resolve_okta(candidate) is None, candidate.get("okta")
-        # And the whole synth-time gate still passes - off is not a half-configured stack.
+        # And the whole synth-time gate still passes, off is not a half-configured stack.
         validate_config(candidate)
 
 
 def test_a_plain_http_metadata_url_fails_at_synth(config):
-    """Cognito fetches this document itself and trusts the signing certificate inside it, so
-    http would be a forgeable trust anchor for every assertion. Cognito rejects it at
-    CreateIdentityProvider; this moves the failure to synth, before a half-updated stack."""
+    """Cognito fetches this document itself and trusts the signing certificate inside it, so http would be a forgeable trust anchor for every assertion."""
     from infra.config import resolve_okta
 
     config["okta"]["metadata_url"] = "http://integrator-6509951.okta.com/sso/saml/metadata"
@@ -1122,10 +954,7 @@ def test_a_plain_http_metadata_url_fails_at_synth(config):
 
 
 def test_the_okta_side_attribute_name_is_configurable_but_never_blank(config):
-    """Orgs spell the email claim differently - a SAML namespace URI, `emailAddress` - so the
-    name is config. An EMPTY one is an error rather than a silent fall back to the default:
-    the failure it would cause is a federated account with no address on it, which surfaces
-    as a blank sidebar label rather than as a broken deploy."""
+    """Orgs spell the email claim differently, a SAML namespace URI, `emailAddress`, so the name is config."""
     from infra.config import resolve_okta
 
     config["okta"]["email_attribute"] = (
@@ -1142,14 +971,7 @@ def test_the_okta_side_attribute_name_is_configurable_but_never_blank(config):
 
 
 def test_streaming_is_off_unless_the_block_says_otherwise(config):
-    """THE GATE. Absent, empty or `enabled: false` all resolve to None, and the stack then
-    synthesizes no WebSocket API at all. Off is one state, reached three ways.
-
-    This used to also assert that config.yaml itself ships `enabled: false`. It no longer
-    does - the repo now commits streaming ON so the next deploy exercises it - so that line
-    would be asserting a decision rather than a mechanism. What matters here, and what this
-    still pins, is that the RESOLVER defaults to off: the day someone deletes the block,
-    the WebSocket API goes with it rather than defaulting itself back on."""
+    """Off unless the block says otherwise."""
     from infra.config import resolve_streaming
 
     assert load_config()["streaming"]["enabled"] is True, (
@@ -1179,10 +1001,7 @@ def test_an_enabled_block_resolves_its_batching_numbers(config):
 
 
 def test_a_batch_size_of_one_fails_at_synth(config):
-    """EVERY PUSH IS A BILLABLE API GATEWAY MESSAGE, so a batch size of 1 is one message
-    per character - the exact bill this block exists to bound, and invisible in testing
-    because it looks identical on screen. Booleans are rejected for the same reason they
-    are in the rate limit: `true` is an int in Python and would resolve to 1."""
+    """A batch size of 1 was one billable message per character, and looked identical on screen."""
     from infra.config import resolve_streaming
 
     config["streaming"]["enabled"] = True
@@ -1193,8 +1012,7 @@ def test_a_batch_size_of_one_fails_at_synth(config):
 
 
 def test_the_flush_delay_is_bounded_at_both_ends(config):
-    """Too small is a message per token by another route; too large and the tail of a reply
-    - whatever is left under the batch size - sits unsent while the reader waits."""
+    """Too small is a message per token by another route; too large and the tail of a reply, whatever is left under the batch size, sits unsent while the reader waits."""
     from infra.config import resolve_streaming
 
     config["streaming"]["enabled"] = True
@@ -1205,11 +1023,7 @@ def test_the_flush_delay_is_bounded_at_both_ends(config):
 
 
 def test_the_output_guardrail_switch_is_a_boolean_and_defaults_off(config):
-    """It defaults off because it is MEASURED (2026-08-12, us-west-2, claude-sonnet-4-6):
-    attaching the guardrail to ConverseStream in its only safe mode moved time-to-first-token
-    from a median of 1.12s to 6.75s, because sync mode holds the response back and scans it
-    in large chunks. With today's guardrail - PROMPT_ATTACK, outputStrength NONE, no PII
-    policy - that buys a screen that cannot fire."""
+    """It defaults off because it is measured (2026-08-12, us-west-2, claude-sonnet-4-6): attaching the guardrail to ConverseStream in its only safe mode moved time-to-first-token from a median of 1.12s to 6.75s, because sync mode holds the response back and scans it in large chunks."""
     from infra.config import resolve_streaming
 
     config["streaming"]["enabled"] = True
@@ -1219,9 +1033,6 @@ def test_the_output_guardrail_switch_is_a_boolean_and_defaults_off(config):
     config["streaming"]["output_guardrail"] = "yes"
     with pytest.raises(ValueError, match="output_guardrail"):
         resolve_streaming(config)
-
-
-# --- Escalate to a human -----------------------------------------------------------------
 
 
 def test_the_committed_config_carries_an_escalation_recipient(config):
@@ -1236,10 +1047,7 @@ def test_the_committed_config_carries_an_escalation_recipient(config):
 
 
 def test_no_contact_means_no_escalation_path(config):
-    """THE ABSENCE IS THE GATE, the shape resolve_cost_model and resolve_okta already use,
-    and here it reaches furthest: with no address the chat function gets no ESCALATION_*
-    variables, config.json gets no recipient, and the system prompt never mentions the tag.
-    Four ways to say off, all of them valid configs rather than errors."""
+    """The absence is the gate, and here it reaches the function, config.json and the prompt."""
     from infra.config import resolve_escalation
 
     for mutate in (
@@ -1257,10 +1065,7 @@ def test_no_contact_means_no_escalation_path(config):
 
 
 def test_the_committed_config_names_a_row_rather_than_spelling_an_address(config):
-    """The address is NOT in config.yaml any more, and that is the point of the change: the
-    same mailbox is the SJSU Cares panel's email link, and a value spelled in two languages
-    has no test that can see both copies. config.yaml names the row; data/contacts.csv holds
-    the mailbox."""
+    """The same mailbox is the SJSU Cares panel's email link, so it is spelled in data/ once."""
     from infra.config import resolve_escalation
 
     assert config["escalation"]["contact"] == "sjsu-cares"
@@ -1291,13 +1096,7 @@ def _contacts_dir(tmp_path, rows, monkeypatch):
 def test_an_address_a_mail_client_could_not_open_fails_at_synth(
     config, tmp_path, monkeypatch, recipient
 ):
-    """This value goes straight into a mailto the STUDENT's mail client has to open, so a
-    malformed one does not fail a deploy - it fails silently in front of a student, on the
-    one turn that was meant to reach a person. Two mailboxes are their own kind of wrong:
-    every student's message would go to everybody on the list.
-
-    It is checked at SYNTH even though the cell now lives in data/, because a spreadsheet is
-    exactly where a display name gets pasted in with an address."""
+    """This value goes straight into a mailto the student's mail client has to open, so a malformed one does not fail a deploy, it fails silently in front of a student, on the one turn that was meant to reach a person."""
     from infra.config import resolve_escalation
 
     _contacts_dir(
@@ -1310,8 +1109,7 @@ def test_an_address_a_mail_client_could_not_open_fails_at_synth(
 
 
 def test_a_contact_id_that_names_no_row_fails_at_synth(config, tmp_path, monkeypatch):
-    """A renamed or deleted row. Loud at synth rather than an escalation offer addressed to
-    nothing - and loud rather than silently off, because "off" already has a spelling."""
+    """Loud at synth rather than an escalation offer addressed to nothing."""
     from infra.config import resolve_escalation
 
     _contacts_dir(tmp_path, ["escalation,someone-else,Someone,x@sjsu.edu,,,no,"], monkeypatch)
@@ -1320,9 +1118,7 @@ def test_a_contact_id_that_names_no_row_fails_at_synth(config, tmp_path, monkeyp
 
 
 def test_a_contact_of_the_wrong_kind_fails_at_synth(config, tmp_path, monkeypatch):
-    """The `kind` column is what says an address is a place to send a student's own words. A
-    safety row is a crisis line and a cares row may be a link, so neither is addressable -
-    and pointing the drafts at a crisis hotline is the mistake worth failing the build for."""
+    """The `kind` column is what says an address is a place to send a student's own words."""
     from infra.config import resolve_escalation
 
     _contacts_dir(tmp_path, ["safety,sjsu-cares,Crisis,x@sjsu.edu,,,no,"], monkeypatch)
@@ -1331,8 +1127,7 @@ def test_a_contact_of_the_wrong_kind_fails_at_synth(config, tmp_path, monkeypatc
 
 
 def test_two_rows_with_one_id_fail_at_synth(config, tmp_path, monkeypatch):
-    """A duplicated row is a copy somebody never finished editing, and the second one would
-    quietly win - so a student's message would go wherever the later line said."""
+    """A duplicated row is a copy somebody never finished editing, and the second one would quietly win, so a student's message would go wherever the later line said."""
     from infra.config import resolve_escalation
 
     _contacts_dir(
@@ -1348,8 +1143,7 @@ def test_two_rows_with_one_id_fail_at_synth(config, tmp_path, monkeypatch):
 
 
 def test_a_row_with_no_mailbox_fails_at_synth(config, tmp_path, monkeypatch):
-    """`detail` is the address on an escalation row. Empty is a spreadsheet edit that took
-    the feature off the air without saying so."""
+    """`detail` is the address on an escalation row."""
     from infra.config import resolve_escalation
 
     _contacts_dir(tmp_path, ["escalation,sjsu-cares,SJSU Cares,,,,no,"], monkeypatch)
@@ -1358,8 +1152,7 @@ def test_a_row_with_no_mailbox_fails_at_synth(config, tmp_path, monkeypatch):
 
 
 def test_a_blank_subject_fails_at_synth(config):
-    """Staff triage on the subject before they read anything else, and it is the same line
-    on every draft - so an empty one is a deploy-time error rather than a blank in an inbox."""
+    """Staff triage on the subject before they read anything else, and it is the same line on every draft, so an empty one is a deploy-time error rather than a blank in an inbox."""
     from infra.config import resolve_escalation
 
     config["escalation"]["subject"] = "   "
@@ -1368,9 +1161,7 @@ def test_a_blank_subject_fails_at_synth(config):
 
 
 def test_a_dropped_digit_in_the_cap_fails_rather_than_silencing_the_feature(config):
-    """The floor is a dropped-digit detector, like the card caps' - but this cap DROPS the
-    offer instead of shortening it, so 120-for-1200 would take the feature off the air with
-    nothing on screen to say why."""
+    """The floor is a dropped-digit detector, like the card caps', but this cap drops the offer instead of shortening it, so 120-for-1200 would take the feature off the air with nothing on screen to say why."""
     from infra.config import resolve_escalation
 
     config["escalation"]["max_chars"] = 120
