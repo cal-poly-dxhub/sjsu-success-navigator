@@ -70,7 +70,8 @@ draft addressed to SJSU Cares that the student sends from their own mail client.
 - `data/` every SJSU fact this repo states, as CSVs both languages read
 - `scripts/` the OpenStreetMap map renderer
 - `config.yaml` model, chunking, retrieval, card, rate-limit and guardrail settings
-- `docs/` the architecture diagram, the build plan, the eval harness and the system prompt
+- `docs/` the install guide, the architecture diagram, the build plan, the eval harness and
+  the system prompt
 
 ## Architecture
 
@@ -80,18 +81,13 @@ hand. Two pages: a system overview, and the query path through one turn. Open it
 
 ## Deployment
 
+**[`docs/install.md`](docs/install.md) is the install guide**: model access, the one config
+value to set first, `cdk deploy`, and issuing the accounts. Read it before you deploy.
+
 **Prerequisites:** AWS credentials for a bootstrapped account and region, Bedrock model access
 for Claude Sonnet 4.6, Claude Haiku 4.5 and Titan Text Embeddings v2, Python 3.13 (the Lambda
 runtime), Node.js 22, the CDK CLI, and a running Docker daemon. Synth needs Docker: it bundles
 the scraper's manylinux dependency layer and builds the Astro site in a container.
-
-**Set these first,** in `config.yaml`:
-
-- `vector_store.vector_bucket_name` is globally unique across AWS. Change it before the first
-  deploy or creation fails.
-- `okta.metadata_url` points at a rehearsal Okta org. Blank it to deploy with local Cognito
-  accounts only, or point it at your own tenant. The absence of the value is the gate; there is
-  no separate flag.
 
 **Steps:**
 
@@ -116,14 +112,8 @@ what students said, so a destroy then redeploy collides on its name until the le
 renamed or removed by hand.
 
 **Issue accounts.** Self-signup is off, so every account is created by an administrator. The
-stack prints the exact commands as outputs:
-
-- `ChatCreateUserCommand`, once per person, then `ChatSetPasswordCommand` to set a permanent
-  password. Without `--permanent` the account stays in `FORCE_CHANGE_PASSWORD` and managed
-  login answers the redirect with a forced password change instead of a code.
-- `ChatCreateEvalUserCommand`, once, for the eval harness's machine account.
-
-Federating an IdP replaces the first of those wholesale and costs no application change.
+stack prints the exact commands as outputs; the install guide says which to run and in what
+order. Federating an IdP replaces them wholesale and costs no application change.
 
 **Other outputs worth keeping:** `SiteUrl` is the app. `ChatApiUrl` and `ConversationsApiUrl`
 are the gated REST routes. `ChatWebClientId` and `ChatEvalClientId` are the pool's two app
