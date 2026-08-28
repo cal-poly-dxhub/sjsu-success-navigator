@@ -1,24 +1,19 @@
-# SJSU Student Success Navigator - declarative configuration.
-#
-# Single source of truth for changeable knobs. The CDK app in infra/ reads this file
-# (resolved at the repo root, one level up from infra/) and wires the values into the
-# stack. Values here come from docs/synthesis.md "Decisions (2026-08-05)", and infra/config.py
-# validates this file at synth: an invalid value fails `cdk synth` rather than the deploy.
+# The single source of truth for changeable knobs. infra/config.py validates it at synth, so
+# an invalid value fails `cdk synth` rather than the deploy.
 
 knowledge_base:
   name: sjsu-navigator-kb
-  # Titan Text Embeddings v2 -> 1024-dimension vectors (decision: gav's exact shape).
+  # Titan Text Embeddings v2, which emits 1024-dimension vectors.
   embedding_model_id: amazon.titan-embed-text-v2:0
   vector_dimension: 1024
 
 vector_store:
-  # Amazon S3 Vectors store. Semantic-search-only; accepted tradeoff.
+  # Semantic search only, which is the accepted tradeoff for a near-zero-cost store.
   vector_bucket_name: sjsu-navigator-vectors
   index_name: bedrock-knowledge-base-default-index
   data_type: float32
   distance_metric: cosine
-  # Bedrock-internal metadata keys marked NON-filterable at index creation (immutable
-  # afterward) or ingestion fails on S3 Vectors' filterable-metadata limit.
+  # Immutable after index creation, and without them every ingestion fails on the limit.
   non_filterable_metadata_keys:
     - AMAZON_BEDROCK_TEXT
     - AMAZON_BEDROCK_METADATA
@@ -27,47 +22,31 @@ vector_store:
     - x-amz-bedrock-kb-data-source-id
 
 chunking:
-  # Gav baseline (decision); retune with the eval once an account exists. Changing this
-  # is a data-source REPLACEMENT (chunking is immutable in Bedrock).
+  # Changing this replaces the data source, because chunking is immutable in Bedrock.
   strategy: FIXED_SIZE
   max_tokens: 600
   overlap_percentage: 20
 
 scraper:
-  # Single DAILY schedule, no tiers (decision; cost-checked in docs/build-plan.md).
-  # 11:30 UTC is ~3:30am Pacific, a low-traffic window.
+  # One daily sweep, no tiers. 11:30 UTC is about 3:30am Pacific.
   schedule_cron: "cron(30 11 * * ? *)"
-  # The curated crawl list, BY FILENAME INSIDE the repo-root data/ directory (decision - it
-  # is content, and it sits beside every other SJSU fact this repo states; see
-  # data/README.md). Columns url,section,title,static_html,body_text_chars. `section` must
-  # reach the metadata sidecars or cards.py deprioritization degrades silently.
+  # A filename inside repo-root data/, never a path: the layer extracts that directory to /opt.
   url_list_file: urls.csv
   timeout_seconds: 20
   user_agent: "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
 
-# --- Query path (Lambda + HTTP API) ---
+
 
 http_api:
-  # HTTP API (v2), DECIDED - not a REST API. The 30s integration ceiling is permanent
-  # either way, and if this ever needs longer the answer is streaming, which leaves API
-  # Gateway entirely. No WAF follows from that choice (it cannot attach to HTTP API v2).
-  #
-  # Route-level throttling: with no billing alarm in v1, this and reserved concurrency
-  # below are the ONLY cost fence. Note what each one does NOT do: a request-rate
-  # throttle bounds how many invocations start, not how long or how expensive one is.
-  # A single runaway invocation is bounded by the loop's deadline and iteration cap.
+  # With no billing alarm, this and the concurrency ceiling below are the only cost fence.
+  # Neither bounds one runaway invocation; the loop's deadline and iteration cap do.
   throttling_rate_limit: 10
   throttling_burst_limit: 20
-  # Hard ceiling on CONCURRENT chat invocations. Rate limiting alone cannot bound spend
-  # if each request is slow: 10 rps against a 29-second budget is ~290 in flight, all
-  # billing Bedrock tokens. This caps the fleet regardless of how long each one runs.
-  # It also RESERVES this many from the account pool, so the chat function cannot be
-  # starved by the scraper - and cannot starve it either.
+  # A rate limit alone leaves ~290 invocations in flight at 10 rps against a 29-second budget.
   chat_reserved_concurrency: 20
 
 cors:
-  # Browser origin allowlist for the HTTP API. Never "*" - synth rejects it.
-  # The CloudFront distribution domain joins this list at deploy as a token.
+  # Never "*", which synth rejects. The distribution's domain joins this list at deploy.
   allow_origins:
     - http://localhost:4321   # DEV ONLY: astro dev server
 
@@ -77,364 +56,119 @@ request:
 
 retrieval:
   number_of_results: 8
-  # Camp's tuned threshold, against a corpus that no longer exists. Retune with the
-  # eval (build-plan: "retune retrieve_min_score").
+  # Inherited, and tuned against a differently shaped corpus. Retune with the eval.
   min_score: 0.35
 
 cards:
-  # The card contract. The model emits its whole turn as text - prose plus <card> blocks -
-  # and these numbers are the contract's only tunable part. Every one of them reaches BOTH
-  # the parser that enforces it and the system prompt that states it (app/prompts.py builds
-  # the prompt from these values), so there is exactly one place to change a cap. Two
-  # literals would drift, and the drift would be silent: the prompt would promise the model
-  # one budget while the server enforced another.
+  # Every cap here reaches both the parser that enforces it and the prompt that states it,
+  # so the number the model is told is the number the server applies.
   max_cards: 4
-  # How many retrieval results the model is shown per search, deduplicated by URL. Each
-  # carries a small integer id; the model cites ids and never sees or writes a URL.
+  # Deduplicated by URL. The model cites integer ids and never sees or writes a URL.
   max_retrieval_results: 6
-  # A GUARD against a runaway response, not an editorial budget. The editorial judgement -
-  # one or two short sentences, the destination plus the one specific that matters, plus the
-  # office's contacts as bullets when a result carries them - lives in the system prompt and
-  # its canonical examples, which is the layer that actually steers the model. This ceiling
-  # sits several times above that target, so the server truncating (logged at WARNING in
-  # cards.py) means the prompt or the model is broken, not that a normal answer ran a few
-  # words long. The target came down without it: a guard follows the steer down only if you
-  # want variance cut again, which is the bug this number was raised to stop.
-  #
-  # It was 180, sized to the two-sentence target itself, and against a real model that put
-  # an ellipsis on nearly every card: the model routinely wrote a little past the target and
-  # the server cut the text mid-thought. A cap AT the steered length converts ordinary
-  # variance into daily truncation; length steering belongs in the prompt, not in the
-  # cutter (docs/cards-v2.md, Length caps).
+  # A guard against a runaway response, not an editorial budget: length steering lives in the
+  # prompt, and a cap at the steered length turns ordinary variance into daily truncation.
   desc_max_chars: 600
-  # Also a guard. 60 was derived as one line of the narrowest viewport's text column, which
-  # made the layout the editor: a title two words over lost its tail. Titles wrap now (the
-  # card has no fixed height), so the derivation is retired - along with the build-plan item
-  # to re-measure Nunito Sans's advance, which fed nothing but that arithmetic - and 90 is
-  # simply well above any title the prompt asks for.
+  # Also a guard. Titles wrap, so this is not a line length, just a ceiling above the steer.
   title_max_chars: 90
-  # The hidden prompt behind "Tell me more", sent - and shown - as the student's next turn,
-  # where it wraps like any typed message. Already far above the one-question shape the
-  # prompt asks for, so it is unchanged. An over-cap follow-up keeps its button and goes
-  # through whole (truncating would silently ask a different question); the overrun is
-  # logged at WARNING.
+  # An over-cap follow-up keeps its button and goes through whole: a shortened question is a
+  # different question.
   followup_max_chars: 120
 
-# --- Escalate to a human (the email draft) --------------------------------------------
-#
-# ONE MORE MODEL TAG, and the only one whose output leaves the app: on a turn that should
-# reach a person, the model writes <escalate_to_human>...</escalate_to_human> and the
-# server assembles a finished email out of it. The student presses one button, their own
-# mail client opens with the draft in it, and they send it themselves.
-#
-# NOTHING SENDS FROM THIS INFRASTRUCTURE. No SES, no verified sending identity, no
-# server-side send path, and the deliberate consequence is that a staff reply goes back to
-# the address the student actually reads - their own - rather than to a no-reply mailbox
-# nobody owns. It also means the last edit is theirs: what we assemble is a draft.
-#
-# THE ABSENCE OF `recipient` IS THE GATE, in the shape cost_model and okta already use.
-# With it blank or the block missing there is no address to write to, so: the system
-# prompt never mentions the tag, the chat function is given no escalation variables, and
-# config.json carries no recipient - which is what keeps the component out of the browser
-# rather than rendering an offer that goes nowhere.
+# The model writes the words and the server addresses the mail. Nothing sends from here: the
+# student's own client opens with the draft, and the absence of a contact is the gate.
 escalation:
-  # Where the draft is addressed, AS THE ID OF A ROW in data/contacts.csv rather than an
-  # address typed here. SJSU Cares is the destination the app already offers as "Talk to a
-  # person", so it is the same human handoff by another route - and that is exactly why the
-  # address is not written out twice: the mailbox this names is the same one the SJSU Cares
-  # panel emails, and it has one row (kind `escalation`). Point this at a different row to
-  # send the drafts elsewhere; blank it to take the whole feature off.
+  # A row id in data/contacts.csv, not an address: the same mailbox the SJSU Cares panel uses.
   contact: sjsu-cares
-  # The subject line, fixed here rather than model-authored. A subject is the one part of
-  # the message staff triage on before reading it, so it says the same thing every time -
-  # and a model-written subject is a second place a hallucinated specific could land.
+  # Fixed rather than model-authored: staff triage on it, so it says the same thing every time.
   subject: "A student would like to talk with someone"
-  # A GUARD on the draft's prose, and it behaves differently from every cap in `cards`
-  # above: over this, the offer is DROPPED and logged at WARNING, never truncated. A
-  # half-sentence email is worse than no email, and the student cannot see what was cut
-  # until it is already in their outbox.
-  #
-  # Its own number, deliberately exempt from desc_max_chars: a card description is one or
-  # two sentences under a title, and this is a paragraph or two of a message to a person.
-  # Generous against that steer for the same reason the card guards are generous against
-  # theirs - ordinary variance must not trip it.
-  #
-  # It is NOT the mailto budget. The browser measures the PERCENT-ENCODED URL against
-  # ~2,000 characters (Outlook on Windows fails silently past that, and one non-ASCII
-  # character can cost nine), and a draft that passes this cap can still miss that one -
-  # which costs the button, not the draft (frontend/src/lib/mailtoDraft.ts).
+  # The one cap whose violation drops the offer rather than truncating it. It is not the
+  # mailto budget, which the browser measures on the percent-encoded URL.
   max_chars: 1200
 
 chat:
-  # The agent loop's safety cap on Converse round trips. Camp's value (6), but a config
-  # knob rather than a literal default, and the handler LOGS when it hits: camp fell
-  # through to its non-agentic fallback silently, so a request that spent six model calls
-  # looked identical to one that answered on the first.
+  # The loop's cap on Converse round trips, logged when it hits: otherwise a request that
+  # spent six model calls looks identical to one that answered on the first.
   max_converse_iterations: 6
-  # How many previous MESSAGES a turn reads back out of the history table - the Limit on
-  # the one descending query, and the window the model is shown (camp's value). Messages,
-  # not turns: 12 is six exchanges. It used to trim a transcript the CLIENT posted; the
-  # transcript is the server's now (docs/accounts-and-storage.md, Turn lifecycle), so this
-  # bounds a read rather than distrusting a payload. Still a paid-token control either way.
+  # Messages, not turns, so 24 is twelve exchanges. It is the Limit on the one descending
+  # history query and the window the model is shown, so it is a paid-token control.
   max_history_messages: 24
-  # The two READ endpoints' caps (GET /conversations and GET /conversations/{id}), and
-  # deliberately separate numbers from max_history_messages above. That one is the window
-  # the MODEL is shown, paid for in tokens on every single turn, so it is small on purpose.
-  # These bound a browser read of already-stored items: the cost is one DynamoDB query and
-  # the wrong number is a student's own history truncated in front of them.
-  #
-  # Both are the NEWEST n - the list sorts by last activity, the transcript takes the tail -
-  # so hitting either cap hides the oldest, which is the half a student is least likely to
-  # have come back for.
+  # Separate numbers from max_history_messages, which is billed in tokens on every turn.
+  # These bound a browser read, and both take the newest n, so a cap hides the oldest.
   max_conversations_listed: 40
   max_conversation_messages: 60
-  # WALL-CLOCK budget for the whole Converse loop, in seconds. The iteration cap alone
-  # does not bound time: six iterations of a slow model, or one retrieval that stalls,
-  # can outlast the function. Past this the loop stops and returns the best answer it
-  # already has, instead of being killed mid-call - where the invocation is billed and
-  # the student gets a gateway 504 with no response at all.
-  #
-  # 22 against the function's 29-second timeout (itself the HTTP API integration's
-  # non-raisable 30s ceiling minus one): the remainder covers the final card shaping and
-  # JSON serialisation, which happen AFTER the loop returns. The handler additionally
-  # takes the minimum of this and Lambda's own remaining time, so a slow cold start
-  # shortens the budget rather than overrunning it.
+  # The iteration cap bounds calls, not time. The remainder up to the function's timeout
+  # covers the card shaping and serialisation that happen after the loop returns.
   converse_deadline_seconds: 22
-  # The ONE cap on a conversation title, and it is one number on purpose: both things that
-  # can name a conversation are held to it - the model call in app/titles.py (which rejects
-  # a longer reply outright) and the first-message truncation that is its fallback. Two
-  # numbers would drift, and the drift would show as a sidebar whose row lengths depend on
-  # which path happened to name them. It is also the cap on a student's own rename, so a
-  # typed name and a generated one fit the same row.
+  # One number for everything that can name a conversation: the model call, the first-message
+  # fallback, and a student's own rename, so every sidebar row fits the same width.
   title_max_chars: 80
-  # The titling call's OWN wall-clock budget, in seconds. Small deliberately: the student's
-  # answer is already written and about to be returned by the time this runs, so this
-  # number is the most a label may ever cost a turn. Past it the call is not attempted and
-  # the conversation keeps its first-message title, which is a worse name and not a worse
-  # outcome. The handler additionally takes the minimum of this and Lambda's own remaining
-  # time, so a slow answer costs the title rather than the response.
+  # The most a label may ever cost a turn: past it the call is not attempted and the
+  # conversation keeps its first-message title, which is a worse name and not a worse outcome.
   title_deadline_seconds: 3
 
 rate_limit:
-  # THE PER-USER COST FENCE. Everything else in http_api above bounds the SERVICE - a rate
-  # limit on the stage, a concurrency ceiling on the function - and none of it bounds one
-  # account: a single signed-in user can sit inside a 10 rps stage throttle all day and run
-  # up an unbounded bill on their own. An answered message costs roughly $0.026, so this
-  # number times that is the most any one person can spend in a day (~$1.56 at 60).
-  #
-  # Counted against the Cognito `sub` from the validated JWT, in the chat-history table's
-  # own user partition, expired by the table's existing TTL attribute. No new table and no
-  # new AWS resource (docs/accounts-and-storage.md, Storage).
-  #
-  # ATTEMPTS, NOT ANSWERS. The check and the increment happen BEFORE the guardrail screen
-  # and before the model loop, so a refused turn costs nothing - which is the only ordering
-  # that makes this a spend guard rather than a spend report. A turn that fails inside
-  # Bedrock still consumed its allowance, because it still cost money.
-  #
-  # THE GATE, and it is the cost panel's shape: absent or 0 means DISABLED. The stack then
-  # omits the environment variable entirely rather than passing a zero, so "off" is a
-  # config edit rather than a code change and there is no second value that means off.
-  #
-  # FIXED CALENDAR DAY IN UTC, not a sliding window. A sliding window needs a read before
-  # the write and buys precision that a spend guard has no use for. UTC rather than Pacific
-  # because a local-midnight boundary needs a timezone database inside the Lambda; the 429
-  # carries the reset INSTANT and the browser renders it in the student's own time, so what
-  # a student reads is local either way.
+  # The one control that bounds what a single account spends. Attempts rather than answers,
+  # counted before the guardrail and the loop, on a fixed UTC day. Absent or 0 is off.
   daily_message_limit: 60
 
 chat_history:
-  # ONE DynamoDB table for conversation headers and messages, partitioned on the Cognito
-  # `sub` (docs/accounts-and-storage.md, Storage). The name is the only knob: the key
-  # schema, the on-demand billing mode and the TTL attribute are all IMMUTABLE-ish
-  # properties whose values the application code has to agree with, so they are spelled in
-  # the stack rather than here (see the section comment in infra/infra_stack.py).
-  #
-  # Global within an account+region, like the vector bucket and the KB - so a SECOND stack
-  # in one account means editing this first, which is the tradeoff infra/config.py's naming
-  # convention already accepts. Unlike those two, this table is retained on `cdk destroy`,
-  # so a destroy-then-redeploy collides here until the leftover table is renamed or removed
-  # by hand. That is deliberate: the alternative is deleting student transcripts as a side
-  # effect of tearing down infrastructure.
+  # The name is the only knob: the key schema and the TTL attribute live in the stack. The
+  # table is retained on `cdk destroy`, so a redeploy collides until the leftover is gone.
   table_name: sjsu-navigator-chat-history
 
-# --- Progressive replies over a WebSocket ---------------------------------------------
-#
-# ONE KEY, AND IT SHIPS OFF. `enabled: false` (or no block at all) synthesizes NO WebSocket
-# API, no connect authorizer, no streaming Lambdas, and stamps no `streamingApiUrl` into
-# config.json - so the browser has nothing to open a socket to and every student is on
-# POST /chat, which is untouched by all of this and remains the fallback for anyone whose
-# socket fails at any point. The absence IS the gate, the shape `cost_model` and `okta`
-# already use.
-#
-# WHY A WEBSOCKET AND NOT RESPONSE STREAMING. API Gateway response streaming is REST-API
-# only and this is an HTTP API; Lambda response streaming is Node.js/custom-runtime only
-# and the agent loop is Python. Streaming in band therefore means rewriting the loop in
-# another language. A WebSocket keeps the Python and moves the stream out of band.
-#
-# WHAT STREAMS IS A PREVIEW. Prose only, never parsed. Cards, the length caps, dash
-# normalisation and the safety-card decision all come off the COMPLETE reply, in the same
-# code POST /chat runs, and arrive in one final message carrying exactly the payload
-# POST /chat would have returned. The browser renders that, not the preview.
-# THE WEBSOCKET STREAMING BLOCK, AND NOTHING READS IT. The socket it configured is gone:
-# a reply now streams in band out of the FastAPI app behind the site's own /api/* path
-# (app/streaming_app.py), which pushes every delta because an HTTP response body has no
-# per-frame charge, and attaches no output guardrail. These four values are still validated
-# at synth (infra/infra/config.py, resolve_streaming) and consumed by nobody. Removing the
-# block is a config-schema change and its own commit.
+# Nothing reads this block. The socket it configured is gone, a reply streams in band out of
+# the app behind /api/*, and these four values are validated at synth and consumed by nobody.
 streaming:
   enabled: true
-  # How many characters accumulate before a delta is pushed. EVERY PUSH IS A BILLABLE
-  # API Gateway message, so this is a cost control rather than a feel knob: one message per
-  # token would multiply the message count by the token count for nothing a reader can see,
-  # because the typewriter on the other end reveals ~108 characters a second and the model
-  # outruns it either way. At 160, a 1,500-character reply is ~10 messages.
+  # A cost control when a push was a billable gateway message, not a feel knob.
   delta_min_chars: 160
-  # How long a partial batch may wait before it goes anyway. Without it the tail of a reply
-  # - whatever is left under delta_min_chars - would never be pushed, and the preview would
-  # stall a sentence short of the final payload.
+  # Without it the tail of a reply, under delta_min_chars, would never be pushed at all.
   delta_max_delay_ms: 250
-  # Attach this stack's guardrail to ConverseStream. OFF, and measured rather than assumed
-  # (2026-08-12, us-west-2, claude-sonnet-4-6, 4 real questions): turning it on moves the
-  # model's time to first token from a median of 1.12s to 6.75s, because the only safe
-  # stream mode - `sync`, the only one this code can emit - holds the response back and
-  # scans it in large chunks, which is very nearly the buffered path again. What that buys
-  # today is nothing: the guardrail's one filter is PROMPT_ATTACK with outputStrength
-  # forced to NONE and there is no PII policy, so it scans the output and can never
-  # intervene on it. Turn this on the day a policy exists that can, and accept the latency
-  # knowingly. `async` is not an option and is not spellable here - it releases text to the
-  # student before it is scanned, which is not a screen.
+  # Off, and measured: `sync` moved time to first token from 1.12s to 6.75s, and buys nothing
+  # while the one filter is PROMPT_ATTACK with output strength forced to NONE.
   output_guardrail: false
 
-# --- Identity federation (Okta SAML into the chat user pool) --------------------------
-#
-# ONE KEY, SET THREE WAYS, and that is the whole feature. Empty or absent -> no identity
-# provider is created, the human app client offers COGNITO alone, and the local accounts an
-# administrator creates keep working exactly as they do today. A URL -> Cognito's managed
-# login grows a federated button and hands the pool an Okta assertion. The three settings
-# are local-only, a rehearsal org, and SJSU's tenant, and moving between them is this line.
-#
-# The absence IS the gate, in the shape the cost panel already uses (see cost_model below):
-# there is no separate `enabled` flag, because a URL is the one thing an identity provider
-# cannot be built without, so a filled-in URL that does nothing would be a state nobody
-# wants.
-#
-# WHAT IS NOT HERE, AND WHY. The provider's NAME is a constant in infra/config.py, not a
-# knob: a federated user's Cognito username is `<providerName>_<nameid>`, so renaming it
-# mints new `sub` values - the DynamoDB partition key - and orphans every conversation the
-# old identities wrote. It is named `Okta` for its ROLE, never for an org, so the rehearsal
-# tenant and SJSU's share it. Nothing else about the provider is tunable either: the
-# attribute below maps to this pool's own `email`, and the username is taken from the SAML
-# NameID (Cognito does not let it be mapped) - so there is no second mapping to get wrong.
+# The absence of a URL is the gate: no identity provider, and the local accounts keep working.
+# The provider's name is a constant, because renaming it orphans every stored conversation.
 okta:
-  # The Okta app's SAML metadata endpoint. A URL rather than an uploaded file so Cognito
-  # re-fetches it: when the IdP's signing certificate rotates on the Okta side, federation
-  # keeps working instead of failing until somebody re-uploads a document.
-  #
-  # https only - Cognito trusts the signing certificate inside this document, so plain http
-  # would be a forgeable trust anchor (rejected at synth, and by Cognito too).
+  # A URL rather than a file, so a certificate rotation is not an outage. https only, because
+  # this document carries the certificate every assertion is verified against.
   metadata_url: "https://integrator-6509951.okta.com/app/exk16bohofxDxsJS4698/sso/saml/metadata"
-  # The name the Okta side puts on the email claim, mapped to this pool's `email`. Config
-  # because it genuinely differs between orgs - some emit a SAML namespace URI, some
-  # `emailAddress` - and `email` is the common case. Omit the key to accept that default;
-  # do not set it to an empty string.
+  # Config because orgs spell it differently. Omit the key for the default; never blank it.
   email_attribute: email
 
 generation:
-  # Cross-region inference profile (decision). IAM needs profile + foundation-model ARNs.
+  # A cross-region inference profile, so IAM needs the profile and the model ARNs both.
   model_id: us.anthropic.claude-sonnet-4-6
-  # The model that names a conversation (app/titles.py). A SEPARATE, smaller model rather
-  # than reusing model_id above: the task is four words with no retrieval and no tool loop,
-  # it runs inside a budget measured in seconds AFTER the student's answer is already
-  # written, and Haiku is both the cheaper and the one that finishes in time. Resolved
-  # through the same inference-profile branch as model_id, so the stack grants it the same
-  # IAM shape.
-  #
-  # If this id is wrong or the model is not enabled in the account, the failure is the
-  # designed one and not an outage: the titling call errors, the error is swallowed at
-  # WARNING, and every conversation keeps the first-message title it was already given.
-  # That is exactly what shipped first: `us.anthropic.claude-haiku-4-5` was written to
-  # match the shape of model_id above and is not a profile that exists, so every new
-  # conversation logged a ValidationException ("The provided model identifier is invalid")
-  # and kept its first-message title. DO NOT SHORTEN THIS BACK: the two models are not
-  # published under the same convention in this account - Sonnet 4.6 carries the bare
-  # alias, Haiku 4.5 only the dated, versioned form. `aws bedrock list-inference-profiles`
-  # is the authority, not the sibling line.
+  # A separate, cheaper model. Do not shorten it to match the line above: the two are not
+  # published under one convention, and a wrong id here is swallowed at WARNING.
   title_model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
-  # Camp's Converse inference knobs, carried over.
+  # The Converse inference knobs.
   max_tokens: 1200
   temperature: 0.2
 
-# --- Cost model (the demo cost panel) -------------------------------------------------
-#
-# Feeds the frontend's cost panel, stamped into config.json at deploy exactly like the API
-# and pool ids. Nothing here reads a bill: it is published AWS list rates multiplied by
-# MEASURED token usage. No Cost Explorer call, no billing API, no account spend - which is
-# also what makes every figure attributable to THIS stack rather than to an account that
-# also runs other projects. The panel says "estimate" for that reason.
-#
-# THE GATE. `enabled: false` omits the whole block from config.json, so the frontend never
-# renders the button. That is the switch for Okta federation: a just-in-time-provisioned
-# SJSU student must not see operating cost, and turning it off is a config edit, not a
-# code change.
-#
-# THREE PARTS, deliberately kept apart:
-#   rates     - published AWS list prices. Change when AWS changes them, and move `as_of`.
-#   measured  - what one real question consumed, from eval/measure_usage.py against the
-#               DEPLOYED stack. Re-run that script and paste its output after any change
-#               that moves token usage (retrieval.number_of_results, chunking, the system
-#               prompt, cards.max_retrieval_results, generation.max_tokens).
-#   baseline  - what exists at zero traffic, measured against the deployed resources.
-#
-# WHY MEASURED AND NOT DERIVED. Three things make the obvious estimate wrong, and all
-# three are invisible from outside:
-#   - one question is not one model call (the agentic loop re-calls after a tool result,
-#     and each call resends the whole context);
-#   - the retrieved passages ride in the input tokens and dominate them (~89% of the cost);
-#   - the guardrail bills per 1,000-character text unit, not per question.
+# Published AWS list rates times measured usage, so every figure is attributable to this stack
+# rather than to the account around it. `enabled: false` omits the block from config.json.
 cost_model:
-  # The gate. false -> no costModel key in config.json -> no cost section inside the
-  # settings panel. The gear that opens settings is there either way; it holds the
-  # language picker too, which is not a sponsor's instrument.
+  # The gear that opens settings is there either way: it holds the language picker too.
   enabled: true
-  # Shown on the panel. Rates move; a figure with no date is not checkable.
+  # Shown on the panel, because a figure with no date is not checkable.
   as_of: "2026-08-11"
   region: us-west-2
   currency: USD
 
-  # Published AWS list prices for us-west-2. Every line except the two generation rates was
-  # read from the AWS Price List API on 2026-08-11 (`aws pricing get-products`, location
-  # "US West (Oregon)"), so they are checkable against the service rather than trusted.
-  #
-  # THE TWO GENERATION RATES ARE THE EXCEPTION, and the exception is the API's, not ours:
-  # the Price List API does not publish rates for the newer Bedrock Anthropic models. All
-  # 1,008 us-west-2 AmazonBedrock price rows were paged on 2026-08-11 and none names a
-  # Claude Sonnet model. These two therefore come from the published Bedrock pricing page
-  # and are the one pair a reader has to take on the date rather than re-derive. Recheck
-  # both when `as_of` moves.
+  # Read from the AWS Price List API, so they are checkable. The two generation rates are the
+  # exception: the API publishes no Claude Sonnet row, so recheck them when `as_of` moves.
   rates:
     generation_input_per_1m: 3.00        # Claude Sonnet 4.6 input (pricing page)
     generation_output_per_1m: 15.00      # Claude Sonnet 4.6 output (pricing page)
-    # THE TITLING CALL IS A SECOND MODEL. chat.title_model_id is Haiku, not the Sonnet
-    # that answers, so its tokens are recorded in their own fields (app/usage.py,
-    # record_title_call) and priced here rather than folded into the two rates above -
-    # which is what the panel did until eval/measure_usage.py --audit put the tally
-    # beside Bedrock's own usage blocks and showed the title's tokens arriving in the
-    # generation bucket.
-    #
-    # THESE TWO ARE A CEILING, NOT THE MODEL'S RATE, and that is deliberate rather than
-    # lazy. The Price List API publishes no Claude 4.x row at all (all 1,008 us-west-2
-    # AmazonBedrock rows paged 2026-08-20: the only Claude rows are 2.0, 2.1, Instant,
-    # 3 Haiku and 3 Sonnet) and the pricing page's Anthropic table does not survive being
-    # fetched. So rather than invent a Haiku rate, these hold the generation rate: the
-    # title model is the cheaper of the two, so this cannot understate the bill, and the
-    # panel's figure does not move until somebody can read the page. Fix them the day it
-    # can be read - one line each, and nothing else has to change.
+    # A second model writes the title, so its tokens are priced apart. These hold the
+    # generation rate, which is a ceiling: the title model is the cheaper of the two.
     title_input_per_1m: 3.00             # >= Claude Haiku 4.5 input; see above
     title_output_per_1m: 15.00           # >= Claude Haiku 4.5 output; see above
     embedding_per_1m: 0.02               # TitanEmbeddingV2-Text-input-tokens
     guardrail_content_per_1k_units: 0.15 # Guardrail-ContentPolicyUnitsConsumed
-    # NO sensitive-information (PII) rate: this stack's guardrail is PROMPT_ATTACK only,
-    # so there is no PII policy for a line to price.
+    # No PII rate: this stack's guardrail is PROMPT_ATTACK only, so there is no policy to price.
     vector_query_per_1m: 2.50            # Vectors-Request-Tier3 ($0.0000025/request)
     vector_storage_per_gb_month: 0.06    # Vectors-TimedStorage-ByteHrs
     vector_put_per_gb: 0.20              # Vectors-Put-Bytes
@@ -447,107 +181,57 @@ cost_model:
     dynamodb_write_per_1m: 0.625         # on-demand write request units
     dynamodb_read_per_1m: 0.125          # on-demand read request units
 
-  # What ONE question actually consumed. From eval/run_eval.py through the deployed
-  # endpoint, folded up by eval/measure_usage.py --from-eval, which reads this stack's own
-  # model, knowledge base, guardrail and prompt out of the deployed chat Lambda's
-  # environment. See that script for the one thing it cannot measure - the Lambda line
-  # below - and docs/eval-harness.md for why the depth slope is still measured locally.
+  # What one question actually consumed, through the deployed endpoint and folded up by
+  # eval/measure_usage.py --from-eval.
   measured:
     at: "2026-08-20"
-    # 40 questions from eval/ground-truth.yaml, taken by an even stride so the run keeps the
-    # set's own mix of behaviors (RAG answers and safety triage alike - there is no pre-model
-    # phrase gate, so a safety turn costs a full model call and excluding it would flatter
-    # the average). `eval/run_eval.py --sample 40`, then `measure_usage.py --from-eval`.
-    #
-    # THESE 40 WENT THROUGH THE FRONT DOOR - API Gateway, the chat Lambda, the daily cap, the
-    # store - signed in as the eval machine account, rather than through the loop run in a
-    # local process. What that buys is that the numbers describe the deployed system whole.
-    # What it costs is that one wire `usage` block cannot say which model spent what, so the
-    # three generation figures below are taken from Bedrock's OWN per-model CloudWatch
-    # counters over the run's window, reconciled against the run's wire totals call for call
-    # and token for token before anything is derived from them.
+    # An even stride through eval/ground-truth.yaml, so the run keeps the set's own mix: a
+    # safety turn costs a full model call, and excluding it would flatter the average.
     sample_questions: 40
-    # GENERATION Converse invocations per question - the answering model only. Above 1
-    # because the loop re-calls after a tool result: 45 calls over the 40 questions.
+    # The answering model only, and above 1 because the loop re-calls after a tool result.
     model_calls_avg: 1.12
-    # Input tokens for ONE generation call: system prompt + card contract + history + the
-    # retrieved passages. Measured PER CALL rather than per question so the loop-length
-    # effect and the history-depth effect stay separable; the panel multiplies them back.
+    # Per call rather than per question, so the loop-length and depth effects stay separable.
     context_tokens_per_call_base: 10427
-    # The depth effect, isolated by a controlled experiment: the SAME question asked in
-    # front of 0..4 prior turns, three probes, every probe at every depth. Identical
-    # question means identical retrieval, so the only thing moving is the replayed
-    # transcript. Measuring it the obvious way instead - walking a conversation - measures
-    # nothing, because each turn asks a DIFFERENT question and the retrieval difference
-    # (thousands of tokens) swamps the history difference (tens).
-    #
-    # NOTHING MULTIPLIES THIS TODAY. The conversation half of the panel does not need it -
-    # it prices real tokens, which already carry whatever history was replayed - and the
-    # projection half has no honest figure for how long an average conversation runs. It is
-    # measured and stated rather than dropped, because the day a conversation-length figure
-    # exists this is the other half of that arithmetic.
+    # Isolated by asking one question at each depth: walking a real conversation measures
+    # nothing, because the retrieval difference swamps the history one. Nothing reads it today.
     context_tokens_per_call_per_prior_turn: 80
     output_tokens_avg: 283
     retrievals_avg: 1.18
-    # Content-filter text units per question. A text unit covers 1,000 characters and there
-    # is exactly one ApplyGuardrail call per question, over the student's bare question, so
-    # this is 1 for anything under 1,000 chars; request.max_query_chars caps the ceiling
-    # at 2. All 40 came back 1.
+    # A text unit covers 1,000 characters, and one screen runs over the bare question.
     guardrail_content_units_avg: 1.0
-    # Tokens embedded per retrieval (the student's question, which the retriever embeds).
-    # MEASURED now, off the embedding model's own token counter over the same window: 47
-    # retrievals, 12 tokens each. It was 100, which was an assumption and a generous one -
-    # a student's question is a sentence, not a paragraph.
+    # Measured off the embedding model's own counter: a question is a sentence, not a paragraph.
     retrieval_query_tokens: 12
-    # NOT MEASURED BY THE HARNESS, and the panel says so: a Lambda's billed duration is
-    # reported after the invocation ends, so nothing inside the request can observe it.
-    # This is the mean billed duration of 196 REAL /chat invocations over 30 days
-    # (CloudWatch REPORT lines) times the function's configured 1024 MB. Well under a tenth
-    # of a cent against a roughly 4-cent question.
+    # Not measurable inside a request: billed duration is reported after the invocation ends,
+    # so this is the mean of real invocations from CloudWatch, times the configured memory.
     chat_lambda_gb_seconds: 4.28
-    # Also priced rather than measured: read off the turn's write path in app/history.py
-    # (the student's message, the reply, and the conversation header) and its one
-    # descending history query.
+    # Read off the turn's write path in app/history.py rather than measured.
     chat_dynamodb_writes: 3
     chat_dynamodb_reads: 2
 
-  # What exists when nobody is asking anything. Inputs, not answers: the panel multiplies
-  # these by the rates above and itemizes the result, so the floor can be checked rather
-  # than trusted. Measured against the deployed stack on 2026-08-11.
+  # What exists at zero traffic. Inputs rather than answers, so the floor can be checked.
   baseline:
-    # S3 Standard across both buckets: the KB source bucket (888,745 B) and the site
-    # bucket (1,548,535 B).
+    # S3 Standard across the KB source bucket and the site bucket.
     s3_stored_bytes: 2437280
-    # S3 Vectors: 414 vectors in the live index. The per-vector size is measured, not
-    # assumed - 1024 float32 dimensions (4,096 B) plus the chunk text and Bedrock's
-    # metadata keys, averaged over a 30-vector sample.
+    # The per-vector size is measured over a sample, not assumed from the dimension count.
     vector_count: 414
     vector_bytes_each: 7288
-    # Tokens embedded by ONE full re-ingestion: 414 chunks at a measured mean of 2,131
-    # characters each, at the usual 4-characters-per-token approximation.
+    # One full re-ingestion, at the usual four-characters-per-token approximation.
     ingest_embedded_tokens: 220567
-    # Scraper Lambda: 512 MB, mean billed duration 202s over the 9 runs logged so far.
-    # (Nine rather than thirty because the stack is younger than the window - the KB was
-    # created 2026-08-05. The cadence below comes from the cron, not from that count.)
+    # Mean billed duration over the runs logged so far, which is fewer than a full month.
     scraper_seconds_per_run: 202
     scraper_memory_gb: 0.5
-    # Scraper INVOCATIONS per month, from scraper.schedule_cron above: one run daily.
+    # Invocations per month, from scraper.schedule_cron above.
     scrapes_per_month: 30.4
-    # RE-INDEXES per month - how often a run actually finds changed content and pays for
-    # embeddings plus S3 Vectors writes. A SEPARATE number from scrapes_per_month on
-    # purpose: most runs find nothing new, so counting every scrape as a re-index would
-    # overstate this line several-fold. An assumption about how often SJSU edits its site,
-    # not a measurement - nobody can measure it for you.
+    # How often a run finds changed content and pays to re-embed it. Most runs find nothing,
+    # so this is deliberately not scrapes_per_month, and it is an assumption, not a measurement.
     reindexes_per_month: 4
-    # Also an assumption, and an upper bound for that reason. Shown as its own line item.
+    # Also an assumption, and an upper bound for that reason.
     deploys_per_month: 4
-    # CloudWatch Logs across the stack's five log groups (398,510 B at rest today). Stated
-    # as a monthly INGEST figure, which is the thing the rate prices.
+    # A monthly ingest figure across the stack's log groups, which is what the rate prices.
     log_gb_per_month: 0.02
 
 guardrail:
-  # ONE guardrail, PROMPT_ATTACK on input only, applied AFTER the deterministic safety
-  # intercept (ordering is load-bearing - docs/synthesis.md).
+  # One guardrail, PROMPT_ATTACK on the input side only. Safety triage belongs to the model.
   name: sjsu-navigator-input-guardrail
   content_filters:
     - type: PROMPT_ATTACK

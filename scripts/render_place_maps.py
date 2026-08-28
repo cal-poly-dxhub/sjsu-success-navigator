@@ -1,31 +1,6 @@
 """Render one static map image per campus building, from OpenStreetMap tiles.
 
-RUN BY HAND, NOT IN CI, and only when a coordinate in data/buildings.csv changes:
-
-    python -m pip install -r scripts/requirements.txt
-    python scripts/render_place_maps.py
-
-It reads the buildings table out of data/buildings.csv - through app/places.py, so it sees the
-same rows the location card resolves against and not a second reading of the file - and writes
-frontend/public/places/<key>.webp, which is committed. The deployed site serves those images from its own origin, so a student
-reading an answer makes no request to any third party - not on render, not on a press.
-
-WHY NOT GOOGLE'S STATIC MAPS API, which returns exactly this picture in one request: it
-requires an API key and a billing account, which this project deliberately does not have,
-and its terms forbid storing what it returns - so "fetch once and commit" is precisely the
-thing they prohibit. Map tiles carry no such restriction. The rendered OSM tile layer is
-CC-BY-SA and the underlying data is ODbL; both permit redistribution with attribution, which
-is drawn into the corner of every image below.
-
-WHY THE STANDARD OSM STYLE, when CARTO serves the same data at zoom 20 with proper @2x
-retina tiles and looks cleaner: their styles render campus buildings as anonymous blocks.
-The standard style prints "Student Services Center" under the pin, and that label is the
-reason the picture helps anybody. Sharpness lost, meaning kept.
-
-IT IS A LIGHT, ONE-OFF FETCH BY DESIGN. Sixteen catalogue entries share five buildings, so a
-full run pulls on the order of forty tiles once. That sits inside the tile usage policy;
-a build step that re-fetched on every deploy would not, which is why this is not wired into
-one.
+By hand, not in CI, and only when a coordinate in data/buildings.csv changes.
 """
 
 from __future__ import annotations
@@ -57,15 +32,8 @@ USER_AGENT = (
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TILE_PX = 256
 
-# 152 METRES OF GROUND, and every number here follows from that rather than being picked.
-# tile.openstreetmap.org serves the standard layer up to z19 and 400s above it, so tightening
-# the frame means cropping less ground: at z19's 0.2374 m/px, 640 px is 152 m, and the
-# building is the subject instead of a speck beside a car park.
-#
-# 640 px is ALSO ENOUGH DENSITY, which reads as wrong until you check the card it goes in:
-# the panel is capped at 32 rem (about 512 px) and is roughly 320 px on a phone, so this is
-# above 1x on a desktop and about 2x on mobile. An earlier pass rendered 1000 px wide FOR
-# retina, and all that extra width bought was more car park.
+# 152 metres of ground at z19, which is the tightest the standard layer serves, and enough
+# density for a panel capped at 32 rem.
 WIDTH, HEIGHT = 640, 480
 ZOOM = 19
 
@@ -89,7 +57,7 @@ def fetch_tile(z: int, x: int, y: int) -> Image.Image:
 
 
 def render(lat: float, lon: float) -> Image.Image:
-    """A WIDTH x HEIGHT image centred exactly on the point, with a pin on it."""
+    """One image centred exactly on the point, with a pin on it."""
     centre_x, centre_y = world_pixels(lat, lon, ZOOM)
     left, top = centre_x - WIDTH / 2, centre_y - HEIGHT / 2
 
@@ -115,14 +83,12 @@ def render(lat: float, lon: float) -> Image.Image:
 
     draw = ImageDraw.Draw(image, "RGBA")
     mid_x, mid_y = WIDTH // 2, HEIGHT // 2
-    # A ringed dot rather than a teardrop: a teardrop needs a font or a mask, and this is
-    # unambiguous about WHICH pixel it means at any size.
+    # A ringed dot rather than a teardrop: unambiguous about which pixel it means, at any size.
     draw.ellipse((mid_x - 26, mid_y - 26, mid_x + 26, mid_y + 26), fill=(0, 85, 162, 46))
     draw.ellipse((mid_x - 15, mid_y - 15, mid_x + 15, mid_y + 15), fill=(255, 255, 255, 255))
     draw.ellipse((mid_x - 10, mid_y - 10, mid_x + 10, mid_y + 10), fill=(0, 85, 162, 255))
 
-    # Attribution drawn into the image, so it travels with the picture even if the file is
-    # ever viewed on its own. The card repeats it in HTML for anything reading the page.
+    # Drawn in, so the attribution travels with the picture when the file is viewed alone.
     box = draw.textbbox((0, 0), ATTRIBUTION)
     pad, text_w, text_h = 8, box[2] - box[0], box[3] - box[1]
     draw.rectangle(

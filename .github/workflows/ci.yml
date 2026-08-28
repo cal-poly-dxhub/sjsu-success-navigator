@@ -1,15 +1,8 @@
 name: CI
 
-# The gate every PR has to clear. Until now a PR reported "no checks reported" and the
-# only thing standing between a broken branch and main was a human remembering to run
-# four commands in four directories - so this workflow IS those four commands, run on
-# the same Python and Node the deployment uses.
-#
-# Every job runs on every PR, with no path filters. That looks wasteful for a
-# frontend-only change until you notice the infra suite synthesizes the stack, and synth
-# BUILDS the frontend (see the infra job below) and reads the repo-root config.yaml - so
-# a filter keyed on paths would skip the suite most likely to catch the break. The whole
-# run is a few minutes; correctness is worth more than the minutes.
+# The four commands a merge has to clear, on the same Python and Node the deployment uses.
+# No path filters: synth builds the frontend and reads config.yaml, so a path filter would
+# skip the suite most likely to catch the break.
 on:
   pull_request:
   push:
@@ -30,8 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
-      # One suite failing should not hide the state of the other two - the whole point of
-      # a check run is knowing everything that is broken, not the first thing.
+      # One suite failing must not hide the state of the other two.
       fail-fast: false
       matrix:
         suite: [app, scraper, infra]
@@ -40,31 +32,21 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          # 3.13 is not a preference, it is the Lambda runtime: infra_stack.py pins
-          # _LAMBDA_PYTHON = Runtime.PYTHON_3_13, and the local venvs are 3.13 too.
-          # Testing on anything else tests code that will never run.
+          # The Lambda runtime, pinned as _LAMBDA_PYTHON in infra_stack.py.
           python-version: '3.13'
           cache: pip
           cache-dependency-path: ${{ matrix.suite }}/requirements*.txt
 
-      # Runtime deps AND dev deps: each suite's requirements-dev.txt says so in its own
-      # header comment, because the tests import what the Lambda imports (pydantic in
-      # app/, httpx and trafilatura in scraper/, aws-cdk-lib in infra/).
+      # Both files, because the tests import what the Lambda imports.
       - name: Install dependencies
         working-directory: ${{ matrix.suite }}
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
-      # `python -m pytest`, never bare `pytest`: -m puts the working directory on
-      # sys.path, which is what makes `from infra.config import ...` resolve to
-      # infra/infra/ and the app suite's flat `from settings import ...` resolve at all.
-      #
-      # The infra suite is the slow one (~90s) and the one that needs Docker: synth
-      # bundles the scraper's manylinux deps layer and builds the Astro site inside
-      # node:22-alpine, and its assertions read the staged output. The runner ships
-      # Docker, so this works unattended - if that ever stops being true, this job is
-      # where it shows up.
+      # `python -m pytest`, never bare `pytest`: -m puts the working directory on sys.path,
+      # which is what makes the app suite's flat imports resolve at all. The infra suite
+      # needs Docker, because synth bundles a deps layer and builds the site in a container.
       - name: Run tests
         working-directory: ${{ matrix.suite }}
         run: python -m pytest -q
@@ -78,25 +60,18 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          # 22 to match _NODE_BUILD_IMAGE (node:22-alpine) in infra_stack.py. If this
-          # build passes and the containerized one in the infra job fails, the two Node
-          # versions drifting apart is the first thing to check.
+          # Matches _NODE_BUILD_IMAGE in infra_stack.py, so the two builds cannot drift.
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # `npm ci` for the same reason the deploy bundling uses it: it installs exactly the
-      # lockfile and fails loudly when package.json and the lockfile disagree, so CI
-      # cannot pass on a tree that would not deploy.
+      # `npm ci` installs exactly the lockfile, so CI cannot pass on a tree that would not deploy.
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
 
-      # This duplicates the build the infra job does inside a container, deliberately. It
-      # is faster and it NAMES the failure: a red "frontend build" says the site is
-      # broken, where a red "infra tests" could be the stack, the config, or the site.
-      # There is no typecheck step - TypeScript is not a dependency of this project, so
-      # astro build strips types without checking them.
+      # Duplicates the infra job's containerized build, because it names the failure: a red
+      # "frontend build" says the site is broken, where a red "infra tests" could be anything.
       - name: Build
         working-directory: frontend
         run: npm run build
