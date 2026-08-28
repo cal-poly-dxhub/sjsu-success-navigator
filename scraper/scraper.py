@@ -1,7 +1,7 @@
 """Static-source scraper for the curated SJSU student-services page list.
 
 One extraction entry point over HTML and PDF, no link-following, and a crawl list that
-raises rather than returning a short one; see docs/scraper.md.
+raises rather than returning a short one.
 """
 
 from __future__ import annotations
@@ -32,8 +32,7 @@ DEFAULT_TIMEOUT = 20.0
 DEFAULT_USER_AGENT = "SJSUNavigatorScraper/1.0 (+https://www.sjsu.edu/)"
 DEFAULT_OUTPUT_DIR = "./scraper_output"
 
-# The crawl list's required columns. The file carries two more (static_html,
-# body_text_chars) that are page-selection evidence rather than scraper input.
+# The file carries two more that are page-selection evidence rather than scraper input.
 SEED_COLUMNS = ("url", "section", "title")
 
 # The Latin-1 view of a UTF-8-encoded U+FFFD; see _scrub_replacement_chars.
@@ -47,7 +46,7 @@ _HASH_LEN = 8
 
 
 class SeedListError(Exception):
-    """The crawl list is missing, empty, or malformed. Fatal by design - see load_seed_pages."""
+    """The crawl list is missing, empty, or malformed. Fatal by design."""
 
 
 class ExtractionError(Exception):
@@ -56,7 +55,7 @@ class ExtractionError(Exception):
 
 @dataclass
 class ScrapeResult:
-    """Outcome of scraping one page. `ok` gates whether markdown and metadata are populated."""
+    """`ok` gates whether markdown and metadata are populated."""
 
     url: str
     slug: str
@@ -68,11 +67,9 @@ class ScrapeResult:
     error: Optional[str] = None
 
 
-# --- The crawl list. Every check is duplicated at synth in infra/infra/config.py. ----------
-
-
+# Every check below is duplicated at synth by infra/infra/config.py's resolve_seed_pages.
 def load_seed_pages(path) -> List[Dict[str, str]]:
-    """The crawl list as `[{"url", "section", "title"}]`, in file order. Never empty."""
+    """In file order, and never empty: a short list is indistinguishable from a small one."""
     path = Path(path)
     if not path.exists():
         raise SeedListError(
@@ -128,12 +125,11 @@ def load_seed_pages(path) -> List[Dict[str, str]]:
 
 
 def seed_urls(pages) -> List[str]:
-    """Just the URLs, in list order. What the prune keys off, never a run's successes."""
+    """What the prune keys off, never a run's successes."""
     return [page["url"] for page in pages]
 
 
 def slugify_url(url: str) -> str:
-    """Map a URL to a deterministic, filesystem-safe filename stem."""
     parts = urllib.parse.urlsplit(url)
     base = f"{parts.netloc}{parts.path}".lower()
     readable = _SLUG_RE.sub("-", base).strip("-")[:_SLUG_MAX_READABLE].strip("-")
@@ -144,7 +140,6 @@ def slugify_url(url: str) -> str:
 
 
 def _now_iso() -> str:
-    """Current UTC time as an ISO-8601 'Z' string (second precision)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -157,7 +152,7 @@ def build_metadata(
     *,
     timestamp: Optional[str] = None,
 ) -> dict:
-    """Metadata sidecar for one page. `timestamp` is injectable so tests stay deterministic."""
+    """`timestamp` is injectable so tests stay deterministic."""
     return {
         "source_url": url,
         "fetched_url": fetched_url,
@@ -177,7 +172,7 @@ def _scrub_replacement_chars(text: Optional[str]) -> Optional[str]:
 
 
 def _flatten_markdown_tables(markdown: Optional[str]) -> Optional[str]:
-    """Turn markdown-table rows into plain prose lines, because the KB wants flat text."""
+    """Table rows become plain prose lines, because the KB wants flat text."""
     if not markdown:
         return markdown
     out = []
@@ -192,20 +187,17 @@ def _flatten_markdown_tables(markdown: Optional[str]) -> Optional[str]:
 
 
 def _extract_title(html: str) -> Optional[str]:
-    """Best-effort page title via trafilatura metadata; None if unavailable."""
     try:
         meta = trafilatura.extract_metadata(html)
-    except Exception:  # trafilatura metadata extraction is best-effort; never fatal
+    except Exception:  # best effort, never fatal
         return None
     title = getattr(meta, "title", None) if meta is not None else None
     return title or None
 
 
-# --- Template-aware supplement pass; see docs/scraper.md, The HTML supplement pass. --------
-
 _CONTACT_BAND_CLASS = "o-region--contact"
 
-# Block-level tags whose text stands alone as one line. Collected whole, never revisited.
+# Collected whole, never revisited: each stands alone as one line.
 _BLOCK_TAGS = {
     "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "td", "th", "dt", "dd",
     "blockquote", "figcaption", "caption", "address", "summary", "pre",
@@ -215,7 +207,7 @@ _SKIP_TAGS = {
     "script", "style", "noscript", "template", "iframe", "svg", "form", "button",
     "select", "option", "label", "nav", "header", "footer", "aside",
 }
-# ARIA equivalents, because the LibGuides template marks its navbar role="banner" on a div.
+# ARIA equivalents: the LibGuides template marks its navbar role="banner" on a div.
 _SKIP_ROLES = {"banner", "navigation", "contentinfo", "search", "complementary"}
 
 # Below this many characters a block is a widget label, not content.
@@ -226,8 +218,7 @@ _DEDUP_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _parse_tree(html: str):
-    """lxml tree for the supplement pass, or None. Best effort: a page it cannot parse still
-    gets its trafilatura extraction. <br> tails gain a space, or facts glue together."""
+    """Best effort. <br> tails gain a space, or facts either side glue together."""
     try:
         tree = lxml_html.fromstring(html)
     except Exception:
@@ -238,12 +229,11 @@ def _parse_tree(html: str):
 
 
 def _block_text(el) -> str:
-    """One element's visible text as a single scrubbed line."""
     return _scrub_replacement_chars(_WS_RE.sub(" ", el.text_content()).strip())
 
 
 def _dedup_key(text: str) -> str:
-    """Letters and digits only, lowercased - the identity of a block for dedup purposes."""
+    """Letters and digits only: a block's identity for dedup."""
     return _DEDUP_RE.sub("", text.lower())
 
 
@@ -269,7 +259,7 @@ def _collect_blocks(el, blocks: List[str]) -> None:
         text = _block_text(el)
         if len(text) >= _MIN_BLOCK_CHARS:
             blocks.append(text)
-        return  # collected whole - do not revisit descendants
+        return  # collected whole, so do not revisit descendants
     for child in el:
         _collect_blocks(child, blocks)
 
@@ -285,8 +275,7 @@ def _content_region(tree):
 
 
 def _contact_band_blocks(tree) -> List[str]:
-    """Text blocks of the www.sjsu.edu contact band(s), outermost containers only. Descends
-    from the band's children, because its root carries a role _collect_blocks skips."""
+    """From the band's children, because its root carries a role _collect_blocks skips."""
     nodes = tree.xpath(f'//*[contains(@class, "{_CONTACT_BAND_CLASS}")]')
     node_set = set(nodes)
     blocks: List[str] = []
@@ -299,7 +288,6 @@ def _contact_band_blocks(tree) -> List[str]:
 
 
 def _merge_new_blocks(seen: str, blocks: List[str]) -> tuple[List[str], str]:
-    """The blocks whose normalised text is not already in `seen`. Returns (kept, seen)."""
     added: List[str] = []
     for block in blocks:
         key = _dedup_key(block)
@@ -310,13 +298,11 @@ def _merge_new_blocks(seen: str, blocks: List[str]) -> tuple[List[str], str]:
     return added, seen
 
 
-# --- PDF extraction; see docs/scraper.md, PDF extraction. ----------------------------------
-
 # Page numbers are folded away, or no running footer carrying one is ever seen twice.
 _PDF_DIGITS_RE = re.compile(r"\d+")
 # Furniture is short by nature; the cap stops a repeated real sentence being mistaken for it.
 _PDF_FURNITURE_MAX_CHARS = 120
-# A line must repeat on this share of pages AND on two pages absolutely.
+# A line must repeat on this share of pages and on two pages absolutely.
 _PDF_FURNITURE_MIN_SHARE = 0.6
 _PDF_FURNITURE_MIN_PAGES = 2
 # The floor for "this document is actually text".
@@ -326,11 +312,10 @@ _PDF_MIN_LETTER_RATIO = 0.5
 
 
 def _pdf_page_lines(data: bytes) -> List[List[str]]:
-    """Each page's text as a list of whitespace-normalised, non-empty lines."""
     try:
         reader = pypdf.PdfReader(io.BytesIO(data))
         raw_pages = [(page.extract_text() or "") for page in reader.pages]
-    except Exception as exc:  # noqa: BLE001 - encrypted, truncated, or malformed: all the same here
+    except Exception as exc:  # noqa: BLE001 (encrypted, truncated or malformed are all one case)
         raise ExtractionError(f"PDF could not be parsed ({type(exc).__name__}: {exc})") from exc
 
     pages: List[List[str]] = []
@@ -345,7 +330,7 @@ def _pdf_page_lines(data: bytes) -> List[List[str]]:
 
 
 def _furniture_keys(pages: List[List[str]]) -> set:
-    """The digit-normalised lines that repeat across pages often enough to be running furniture."""
+    """Lines repeating across enough pages to be running furniture, with digits normalised."""
     if len(pages) < _PDF_FURNITURE_MIN_PAGES:
         return set()
     page_counts: Dict[str, int] = {}
@@ -361,7 +346,7 @@ def _furniture_keys(pages: List[List[str]]) -> set:
 
 
 def _has_usable_text(text: str) -> bool:
-    """Whether extracted text is prose a knowledge base can use, rather than scan residue."""
+    """Prose a knowledge base can use, rather than scan residue."""
     letters = sum(1 for ch in text if ch.isalpha())
     if letters < _PDF_MIN_LETTERS:
         return False
@@ -370,7 +355,7 @@ def _has_usable_text(text: str) -> bool:
 
 
 def extract_pdf(data: bytes, url: Optional[str] = None) -> tuple[Optional[str], str]:
-    """Extract (title, text) from a PDF. Raises ExtractionError if it holds no usable text."""
+    """Raises ExtractionError when the document holds no usable text."""
     pages = _pdf_page_lines(data)
     furniture = _furniture_keys(pages)
     kept = [
@@ -398,7 +383,7 @@ def extract_pdf(data: bytes, url: Optional[str] = None) -> tuple[Optional[str], 
 
 
 def _is_pdf(content_type: str, body: bytes) -> bool:
-    """PDF by magic bytes first, declared content type second: the bytes are the document."""
+    """Magic bytes first, declared content type second: the bytes are the document."""
     head = body[:1024].lstrip()
     if head.startswith(b"%PDF-"):
         return True
@@ -413,14 +398,13 @@ def extract_document(
     content_type: str,
     url: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """THE extraction entry point: (title, content) for one document, whatever its format."""
+    """The one extraction entry point, whatever the document's format."""
     if _is_pdf(content_type, body):
         return extract_pdf(body, url=url)
     return extract_markdown(text, url=url)
 
 
 def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-    """Extract (title, content markdown) from a page's HTML."""
     body = trafilatura.extract(
         html,
         url=url,
@@ -456,7 +440,7 @@ def extract_markdown(html: str, url: Optional[str] = None) -> tuple[Optional[str
 
 
 def scrape_page(page: Dict[str, str], client: httpx.Client) -> ScrapeResult:
-    """Fetch + extract one crawl-list page. Never raises: failures become ok=False results."""
+    """Never raises: a failure becomes an ok=False result."""
     url = page["url"]
     section = page["section"]
     slug = slugify_url(url)
@@ -477,8 +461,7 @@ def scrape_page(page: Dict[str, str], client: httpx.Client) -> ScrapeResult:
             error=f"{exc.__class__.__name__}: {exc}",
         )
 
-    # One extraction path for both formats. response.text honours the declared charset;
-    # the PDF branch reads response.content, which must stay bytes.
+    # `response.text` honours the declared charset; the PDF branch needs the raw bytes.
     try:
         title, markdown = extract_document(
             response.content,
@@ -487,8 +470,7 @@ def scrape_page(page: Dict[str, str], client: httpx.Client) -> ScrapeResult:
             url=url,
         )
     except ExtractionError as exc:
-        # ERROR, not WARNING: this does not resolve itself on the next run. It is a
-        # curation bug and should read as one.
+        # ERROR, not WARNING: a curation bug does not resolve itself on the next run.
         LOG.error("extraction failed: %s (%s)", url, exc)
         return ScrapeResult(url=url, slug=slug, section=section, ok=False, error=str(exc))
 
@@ -505,7 +487,7 @@ def scrape_page(page: Dict[str, str], client: httpx.Client) -> ScrapeResult:
 
     # The extracted title wins, with the crawl list's curated title as the fallback.
     title = title or page.get("title") or None
-    # The page introduces itself: Bedrock embeds only chunk text, never the sidecar.
+    # The page introduces itself, because Bedrock embeds chunk text and never the sidecar.
     if title:
         markdown = f"# {title}\n\n{markdown}"
     metadata = build_metadata(url, str(response.url), title, section, markdown)
@@ -527,7 +509,7 @@ def scrape_pages(
     user_agent: str = DEFAULT_USER_AGENT,
     client: Optional[httpx.Client] = None,
 ) -> List[ScrapeResult]:
-    """Scrape each page in order, continuing past failures. One result per input page."""
+    """Continues past failures: one result per input page, in order."""
     owns_client = client is None
     if owns_client:
         client = httpx.Client(
@@ -543,8 +525,7 @@ def scrape_pages(
 
 
 def write_result(result: ScrapeResult, output_dir) -> Optional[Path]:
-    """Write `<slug>.md` and `<slug>.json` for a successful result. Local-only, no-op on
-    a failure. Returns the markdown path."""
+    """Local only, and a no-op on a failure. Returns the markdown path."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if not result.ok:
@@ -559,8 +540,7 @@ def write_result(result: ScrapeResult, output_dir) -> Optional[Path]:
 
 
 def load_scraper_config(config_path=None) -> dict:
-    """Read the `scraper:` block from the repo-root config.yaml. CLI-only: the Lambda gets
-    these values as environment variables from the stack."""
+    """CLI only: the Lambda gets these values as environment variables from the stack."""
     import yaml
 
     if config_path is None:
@@ -571,7 +551,7 @@ def load_scraper_config(config_path=None) -> dict:
 
 
 def main(argv=None) -> int:
-    """CLI: scrape the crawl list, or a `--section` slice of it, to `output_dir`."""
+    """Scrape the crawl list, or a `--section` slice of it, to `output_dir`."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(
         description="Scrape the curated SJSU page list to clean markdown + metadata sidecars."
@@ -590,8 +570,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_scraper_config(args.config)
-    # Resolved inside repo-root data/, the directory Lambda extracts to /opt, so a local run
-    # and a deployed run read the same file.
+    # Inside repo-root data/, which Lambda extracts to /opt, so both runs read one file.
     list_path = args.url_list or (
         Path(__file__).resolve().parents[1] / "data" / cfg.get("url_list_file", "urls.csv")
     )

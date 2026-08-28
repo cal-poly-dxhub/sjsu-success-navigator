@@ -1,8 +1,4 @@
-"""Unit tests for the local scraper. No live network: HTTP is mocked via httpx.MockTransport.
-
-The extraction behaviours these pin, and the audit numbers behind them, are in
-docs/scraper.md.
-"""
+"""The local scraper. No live network: HTTP is mocked via httpx.MockTransport."""
 
 import csv
 import json
@@ -47,7 +43,7 @@ FIXTURE_HTML = """
 </html>
 """
 
-# Replacement-char garbage baked into a page's own SOURCE; see docs/scraper.md, Extraction.
+# Replacement-char garbage baked into a page's own source.
 FIXTURE_MOJIBAKE_HTML = (
     "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Counseling Services</title></head>"
     "<body><main><article><h1>Counseling Services</h1>"
@@ -57,7 +53,7 @@ FIXTURE_MOJIBAKE_HTML = (
     "</article></main></body></html>"
 )
 
-# University pages use tables for LAYOUT as well as data, so trafilatura emits empty cells.
+# University pages use tables for layout as well as data, so trafilatura emits empty cells.
 FIXTURE_TABLE_HTML = (
     "<!DOCTYPE html><html><head><title>Financial Aid Deadlines</title></head><body><main><article>"
     "<h1>Financial Aid Deadlines</h1>"
@@ -91,9 +87,6 @@ def _page(url="https://www.sjsu.edu/advising/", section="academic-advising", tit
     return {"url": url, "section": section, "title": title}
 
 
-# --- The crawl list: a bad list must raise, never come back short ------------------------------
-
-
 def test_load_seed_pages_reads_required_columns_and_ignores_the_rest(tmp_path):
     pages = scraper.load_seed_pages(_seed_file(tmp_path, SEED_HEADER + SEED_ROWS))
     assert pages == [
@@ -117,7 +110,7 @@ def test_load_seed_pages_preserves_file_order(tmp_path):
 
 
 def test_a_missing_crawl_list_raises_rather_than_scraping_nothing(tmp_path):
-    # THE failure this guard exists for: [] here would prune the whole knowledge base.
+    # The failure this guard exists for: [] here would prune the whole knowledge base.
     with pytest.raises(scraper.SeedListError, match="not found"):
         scraper.load_seed_pages(tmp_path / "absent.csv")
 
@@ -134,8 +127,7 @@ def test_an_empty_crawl_list_raises(tmp_path):
 
 @pytest.mark.parametrize("dropped", scraper.SEED_COLUMNS)
 def test_a_missing_required_column_raises_naming_the_column(tmp_path, dropped):
-    # `section` is as required as `url`: it rides into the metadata sidecar, and a page
-    # missing it would be an invisible gap rather than a loud one.
+    # `section` rides into the sidecar, so a page missing it is an invisible gap.
     columns = [c for c in ("url", "section", "title") if c != dropped]
     body = ",".join(columns) + "\n" + ",".join(f"v-{c}" for c in columns) + "\n"
     with pytest.raises(scraper.SeedListError, match=dropped):
@@ -204,9 +196,6 @@ def test_seed_urls_is_the_configured_corpus_in_order():
     assert scraper.seed_urls(pages) == ["https://x/a", "https://x/b"]
 
 
-# --- slugify -----------------------------------------------------------------------------------
-
-
 def test_slugify_is_deterministic():
     url = "https://www.sjsu.edu/advising/index.php"
     assert scraper.slugify_url(url) == scraper.slugify_url(url)
@@ -228,9 +217,6 @@ def test_slugify_distinct_urls_do_not_collide():
 def test_slugify_root_path_becomes_index():
     slug = scraper.slugify_url("https://www.sjsu.edu/")
     assert slug.startswith("www-sjsu-edu-index-") or slug.startswith("www-sjsu-edu-")
-
-
-# --- metadata ----------------------------------------------------------------------------------
 
 
 def test_build_metadata_shape_and_injected_timestamp():
@@ -260,9 +246,6 @@ def test_metadata_has_required_attribution_keys():
         assert key in md
 
 
-# --- extraction (static fixture, no network) ---------------------------------------------------
-
-
 def test_extract_markdown_keeps_article_drops_boilerplate():
     title, markdown = scraper.extract_markdown(FIXTURE_HTML, url="https://www.sjsu.edu/advising/")
     assert markdown, "expected non-empty markdown from the fixture"
@@ -274,8 +257,6 @@ def test_extract_markdown_keeps_article_drops_boilerplate():
     # Title extracted (site suffix may or may not be trimmed by trafilatura).
     assert title and "Academic Advising" in title
 
-
-# --- the template supplement pass (static fixtures, no network) ---------------------------
 
 FIXTURE_SJSU_TEMPLATE_HTML = """
 <!DOCTYPE html>
@@ -316,7 +297,7 @@ FIXTURE_SJSU_TEMPLATE_HTML = """
 </html>
 """
 
-# A landing page that is ONLY tiles, with no paragraph for trafilatura to anchor on.
+# A landing page that is only tiles, with no paragraph for trafilatura to anchor on.
 FIXTURE_TILES_ONLY_HTML = """
 <!DOCTYPE html>
 <html><head><title>Get Help | Library</title></head>
@@ -335,8 +316,7 @@ FIXTURE_TILES_ONLY_HTML = """
 
 
 def test_contact_band_reaches_the_markdown():
-    """The band lives outside <main> with role="complementary": exactly what an article
-    extractor is right to drop and we cannot afford to lose."""
+    """Outside <main> and role="complementary": right to drop, and impossible to lose."""
     _, markdown = scraper.extract_markdown(FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php")
     assert markdown
     assert "408-924-1601" in markdown
@@ -365,8 +345,7 @@ def test_supplement_pass_adds_nothing_twice():
 
 
 def test_the_contact_band_leads_the_document():
-    """The band is assembled FIRST, not appended, so contacts land in chunk 1 beside the
-    title (2026-08-10; see docs/scraper.md, The HTML supplement pass)."""
+    """Assembled first, not appended, so contacts land in chunk one beside the title."""
     _, markdown = scraper.extract_markdown(
         FIXTURE_SJSU_TEMPLATE_HTML, url="https://www.sjsu.edu/bursar/index.php"
     )
@@ -383,8 +362,7 @@ def test_tiles_only_page_still_extracts():
 
 
 def test_supplement_pass_skips_chrome_marked_by_aria_role():
-    """The LibGuides template marks its navbar role="banner" on a plain div, so tag names
-    alone do not exclude it."""
+    """The LibGuides navbar is a plain div, so tag names alone do not exclude it."""
     tree = scraper._parse_tree(FIXTURE_TILES_ONLY_HTML)
     blocks = []
     # The whole body, not the content region: the banner sits outside role="main".
@@ -399,9 +377,6 @@ def test_supplement_pass_survives_unparseable_html():
     assert markdown is None
     title, markdown = scraper.extract_markdown("<<<not really html", url="https://www.sjsu.edu/garbage/")
     assert title is None or isinstance(title, str)
-
-
-# --- PDF extraction (real PDF bytes, no network) -----------------------------------------------
 
 
 def _build_pdf(pages) -> bytes:
@@ -461,14 +436,14 @@ def test_extract_pdf_returns_the_prose():
 
 
 def test_extract_pdf_strips_the_running_footer_from_every_page():
-    """The whole point of the furniture pass: chunking is FIXED_SIZE and page-blind."""
+    """The whole point of the furniture pass: chunking is fixed-size and page-blind."""
     _title, text = scraper.extract_pdf(_build_pdf(FIXTURE_PDF_PAGES))
     assert "Email Etiquette for Students" not in text
     assert "1 of 2" not in text and "2 of 2" not in text
 
 
 def test_extract_pdf_keeps_a_line_that_appears_on_only_one_page():
-    """Furniture is what REPEATS. A heading that happens to be short is content, not furniture."""
+    """Furniture is what repeats: a short heading is content, not furniture."""
     pages = [["Sample Email"] + FIXTURE_PDF_PAGES[0][1:], FIXTURE_PDF_PAGES[1]]
     _title, text = scraper.extract_pdf(_build_pdf(pages))
     assert "Sample Email" in text
@@ -481,13 +456,13 @@ def test_extract_pdf_returns_no_title_so_the_curated_one_wins():
 
 
 def test_a_pdf_with_no_text_raises_loudly():
-    """A scan or an image-only deck. It must NEVER become a titled, contentless KB document."""
+    """A scan must never become a titled, contentless knowledge base document."""
     with pytest.raises(scraper.ExtractionError, match="no usable text"):
         scraper.extract_pdf(_build_pdf([[], [], []]))
 
 
 def test_a_pdf_with_only_a_scrap_of_text_raises_loudly():
-    """The dangerous case: not empty, so a truthiness check passes, but a caption's worth of text."""
+    """Not empty, so a truthiness check passes, but only a caption's worth of text."""
     with pytest.raises(scraper.ExtractionError, match="no usable text"):
         scraper.extract_pdf(_build_pdf([["Figure 1"], ["Figure 2"]]))
 
@@ -495,9 +470,6 @@ def test_a_pdf_with_only_a_scrap_of_text_raises_loudly():
 def test_unparseable_pdf_bytes_raise_extraction_error_not_a_stray_exception():
     with pytest.raises(scraper.ExtractionError, match="could not be parsed"):
         scraper.extract_pdf(b"%PDF-1.4\nthis is not a pdf")
-
-
-# --- one extraction path -----------------------------------------------------------------------
 
 
 def test_extract_document_routes_html_to_the_html_extractor():
@@ -531,9 +503,6 @@ def test_extract_document_does_not_send_html_to_the_pdf_extractor_on_a_wrong_hea
     assert "Monday through Friday" in markdown
 
 
-# --- replacement-char scrubbing (baked-in source mojibake, no network) -------------------------
-
-
 def test_scrub_replacement_chars():
     assert scraper._scrub_replacement_chars("studentï¿½s") == "students"  # "ï¿½" triple
     assert scraper._scrub_replacement_chars("a�b") == "ab"  # bare U+FFFD
@@ -550,9 +519,6 @@ def test_extract_markdown_scrubs_baked_in_mojibake():
     assert "ï¿½" not in markdown, "baked-in 'ï¿½' garbage still present"
     assert "�" not in markdown, "bare U+FFFD still present"
     assert "students mental health" in markdown  # "student[ï¿½]s" -> garbage stripped
-
-
-# --- table flattening (layout tables -> flat prose, no network) --------------------------------
 
 
 def test_flatten_markdown_tables_unit():
@@ -586,9 +552,6 @@ def test_extract_markdown_flattens_layout_tables_to_prose():
     assert "Email: fao@sjsu.edu" in markdown
     assert "San Jose, CA 95192" in markdown
     assert "# Financial Aid Deadlines" in markdown
-
-
-# --- fetch handling (mocked) -------------------------------------------------------------------
 
 
 def _client(handler) -> httpx.Client:
@@ -662,8 +625,7 @@ def test_scrape_page_heading_uses_the_curated_title_fallback():
 
 
 def test_scrape_page_falls_back_to_the_curated_title():
-    # A page whose <title> trafilatura cannot read must still cite as something a student
-    # recognises rather than as a null.
+    # An unreadable <title> must still cite as something a student recognises.
     def handler(request):
         return httpx.Response(
             200,
@@ -718,7 +680,7 @@ def test_scrape_page_with_no_extractable_content_fails_gracefully():
 
 
 def test_scrape_page_handles_a_pdf_and_titles_it_from_the_crawl_list():
-    """End to end through the same call the Lambda makes: no branch on format at the call site."""
+    """The same call the Lambda makes: no branch on format at the call site."""
     def handler(request):
         return httpx.Response(
             200,
@@ -774,9 +736,6 @@ def test_scrape_pages_continues_past_a_failure():
     assert results[1].section == "financial-aid"
 
 
-# --- write_result (tmp dir) --------------------------------------------------------------------
-
-
 def test_write_result_creates_md_and_json(tmp_path):
     result = scraper.ScrapeResult(
         url="https://www.sjsu.edu/advising/",
@@ -801,11 +760,8 @@ def test_write_result_skips_failed(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-# --- CLI ---------------------------------------------------------------------------------------
-
-
 def test_cli_exits_2_on_a_bad_crawl_list_without_scraping(tmp_path, monkeypatch):
-    # Same fatal treatment as the Lambda: a bad list is a hard stop, not a zero-page run.
+    # Same as the Lambda: a bad list is a hard stop, not a zero-page run.
     def explode(*a, **kw):
         raise AssertionError("scrape_pages must not run when the crawl list is unusable")
 

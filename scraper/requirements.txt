@@ -1,12 +1,8 @@
-# Runtime deps for the scraper (pinned to match gav lib so the pulled shell and
-# its manylinux layer bundling work unmodified). boto3 comes from the runtime.
+# The scraper's runtime deps. boto3 comes from the Lambda runtime.
 httpx>=0.27
 trafilatura>=1.12
-# Already in the deps layer as trafilatura's own dependency; named here because scraper.py now
-# imports it directly for the template-aware supplement pass.
+# Named rather than inherited from trafilatura, because scraper.py imports it directly.
 lxml>=4.9
 PyYAML>=6.0
-# PDF text extraction. Pure Python and dependency-free, so the manylinux layer bundler's
-# --only-binary=:all: finds a py3-none-any wheel and nothing has to compile. Chosen over
-# pdfminer.six on measured output quality against this corpus - see the PDF section of scraper.py.
+# Pure Python, so the layer bundler's --only-binary=:all: finds a wheel and nothing compiles.
 pypdf>=5.1
