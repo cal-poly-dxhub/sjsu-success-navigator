@@ -1,7 +1,6 @@
 """The escalate-to-human draft: the model writes the words, the server addresses the mail.
 
-Nothing sends from here and an over-cap draft is dropped rather than trimmed; see
-docs/chat-service.md, Escalation.
+Nothing sends from here, and an over-cap draft is dropped rather than trimmed.
 """
 
 from __future__ import annotations
@@ -13,27 +12,25 @@ from settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# The one line the server adds to every draft: staff should know a machine helped write it.
+# Staff should know a machine helped write the draft.
 PROVENANCE_LINE = "I wrote this draft with the help of the SJSU Student Success Navigator."
 
-# Shown when a turn offers a draft and the block left no prose to introduce it.
+# Used when the block left no prose to introduce the draft.
 ESCALATION_FALLBACK_TEXT = (
     "This one is worth putting in front of a person. I've started a message you can send."
 )
 
 
 def escalation_available(settings: Settings) -> bool:
-    """Is there anywhere to send a draft? The recipient's presence is the whole gate."""
     return bool(_recipient(settings))
 
 
 def _recipient(settings: Settings) -> str:
-    """Return the configured address, stripped. Empty means the feature is off."""
+    """Empty means the feature is off."""
     return (settings.escalation_recipient or "").strip()
 
 
 def build_email_draft(prose: str | None, *, settings: Settings) -> EmailDraft | None:
-    """Build one block as a finished message, or None with a dropped-offer reason logged."""
     if prose is None:
         return None
 

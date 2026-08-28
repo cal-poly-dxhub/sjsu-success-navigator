@@ -1,8 +1,6 @@
 """The campus location card: the model names a place, the server owns where it is.
 
-An unlisted place yields no card, and no request ever leaves for a third party. Both
-tables are data/places.csv and data/buildings.csv, read at import; see
-docs/chat-service.md, Campus location cards.
+An unlisted place yields no card, and no request ever leaves for a third party.
 """
 
 from __future__ import annotations
@@ -23,14 +21,13 @@ _MAP_IMAGE_BASE = "/places/"
 
 @dataclass(frozen=True)
 class CampusBuilding:
-    """One building: its name, and the coordinate its committed map was rendered from."""
+    """The coordinate is the one its committed map was rendered from."""
 
     name: str
     lat: float
     lon: float
 
 
-# The buildings the catalogue points at, from data/buildings.csv, read at import.
 # scripts/render_place_maps.py renders one image per key in this table.
 _BUILDINGS_FILE = "buildings.csv"
 
@@ -52,8 +49,6 @@ CAMPUS_BUILDINGS: dict[str, CampusBuilding] = _load_buildings()
 
 @dataclass(frozen=True)
 class CampusPlace:
-    """One catalogue entry: what the card says, and which building it is inside."""
-
     name: str
     address: str
     building: str
@@ -61,8 +56,7 @@ class CampusPlace:
     when: str
 
 
-# The catalogue, from data/places.csv. `building` is a foreign key into data/buildings.csv;
-# `ground_truth_ids` and `note` are provenance for the next editor, so neither is loaded.
+# `building` is a foreign key into buildings.csv; `ground_truth_ids` and `note` are not read.
 _PLACES_FILE = "places.csv"
 
 
@@ -89,17 +83,14 @@ CAMPUS_PLACES: dict[str, CampusPlace] = _load_places()
 
 
 def place_roster_for_prompt() -> list[tuple[str, str]]:
-    """Return (key, when) pairs for the system prompt, in table order."""
     return [(key, place.when) for key, place in CAMPUS_PLACES.items()]
 
 
 def directions_url(place: CampusPlace) -> str:
-    """Build the keyless Google Maps directions link for one catalogue entry."""
     return _DIRECTIONS_BASE + quote_plus(place.directions_destination)
 
 
 def map_image_url(place: CampusPlace) -> str | None:
-    """The committed map for this place's building, or None if it has no entry."""
     building = CAMPUS_BUILDINGS.get(place.building)
     if building is None:
         logger.warning(
@@ -112,7 +103,6 @@ def map_image_url(place: CampusPlace) -> str | None:
 
 
 def resolve_place(key: str | None) -> PlaceCard | None:
-    """Resolve one model-emitted key into a card, or None with a reason logged."""
     if key is None:
         return None
 

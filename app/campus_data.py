@@ -1,8 +1,6 @@
 """The one reader of repo-root `data/`, and the one place a bad row stops the process.
 
-Every loader raises CampusDataError rather than returning a short list, because a partial
-read is indistinguishable from a small table. The files ship as a Lambda layer extracted to
-/opt, with the repo checkout as the fallback; see data/README.md.
+Every loader raises rather than returning a short list: a partial read reads as a small table.
 """
 
 from __future__ import annotations
@@ -10,22 +8,20 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-# /opt is where Lambda extracts layer content; the repo checkout is second, for tests, the
-# map renderer and any local run.
+# /opt is where Lambda extracts layer content; the checkout is the local fallback.
 _DATA_DIRS: tuple[Path, ...] = (
     Path("/opt"),
     Path(__file__).resolve().parents[1] / "data",
 )
 
 
-# csv.DictReader's overflow key and its filler for a row that ran out of cells. Sentinels,
-# because an empty optional cell is legitimate and has to stay distinguishable from no cell.
+# Sentinels: an empty optional cell is legitimate and must stay distinct from no cell.
 _EXTRA_CELLS = "__extra_cells__"
 _NO_CELL = object()
 
 
 class CampusDataError(RuntimeError):
-    """A data file is missing, malformed, or short. Fatal by design - see the module docstring."""
+    """A data file is missing, malformed, or short. Fatal by design."""
 
 
 def _data_file(name: str) -> Path:
@@ -43,11 +39,7 @@ def _data_file(name: str) -> Path:
 
 
 def load_rows(name: str, required: tuple[str, ...], *, optional: tuple[str, ...] = ()) -> list[dict[str, str]]:
-    """One data file as a list of row dicts, in file order. Raises rather than returning less.
-
-    Both `required` and `optional` columns must be in the header; only `required` must be
-    non-empty per row. Unknown extra columns are ignored, so a note beside a row is harmless.
-    """
+    """All named columns must be in the header; only `required` must be non-empty per row."""
     path = _data_file(name)
     try:
         with open(path, newline="", encoding="utf-8") as fh:
@@ -67,9 +59,7 @@ def load_rows(name: str, required: tuple[str, ...], *, optional: tuple[str, ...]
 
     rows: list[dict[str, str]] = []
     for line_number, raw in enumerate(raw_rows, start=2):  # line 1 is the header
-        # A row whose cell count is not the header's, in either direction: a decimal comma
-        # shifts every later cell, a part-way write drops the columns past it. Every cell
-        # this module could look at is well formed in both cases, so the shape is the tell.
+        # Every cell this module reads is well formed either way, so the shape is the tell.
         if _EXTRA_CELLS in raw:
             raise CampusDataError(
                 f"{name} line {line_number}: more cells than the header has columns "
@@ -127,7 +117,6 @@ def load_keyed(
 
 
 def parse_coordinate(value: str, *, name: str, key: str, column: str) -> float:
-    """One coordinate cell as a float, or a CampusDataError naming the row to fix."""
     try:
         return float(value)
     except ValueError as exc:

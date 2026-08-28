@@ -1,7 +1,6 @@
 """The Converse loop: retrieval primed on every turn, the tool as escape hatch, one exit.
 
-The model's text reply is the answer on every path, under an iteration cap and a
-wall-clock deadline; see docs/chat-service.md, The Converse loop.
+The model's text is the answer on every path, under an iteration cap and a wall clock.
 """
 
 from __future__ import annotations
@@ -39,8 +38,7 @@ from usage import TurnUsage
 
 logger = logging.getLogger(__name__)
 
-# The only hardcoded reply left on this path: the model produced no text at all before
-# the loop ran out. An admission that there is no answer, not a substitute for one.
+# An admission that there is no answer, not a substitute for one.
 _NO_OUTPUT_TEXT = (
     "I ran out of time putting that together. Ask me again and I'll take another run at it."
 )
@@ -68,10 +66,10 @@ def _bedrock_client(region: str):
 
 
 class StreamSink(Protocol):
-    """Where a streaming turn's PREVIEW goes. Implemented by app/preview.py."""
+    """Where a streaming turn's preview goes. Implemented by app/preview.py."""
 
     def status(self, stage: str) -> None:
-        """Something is happening that is not text arriving - a retrieval, say."""
+        """Something is happening that is not text arriving, a retrieval say."""
 
     def text(self, accumulated: str) -> None:
         """The reply as far as the model has written it."""
@@ -87,7 +85,6 @@ def run_chat(
     guardrail_config: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> ChatResponse:
-    """Run the Converse tool-use loop under an iteration cap and a wall-clock deadline."""
     client = _bedrock_client(settings.bedrock_region)
 
     if deadline is None:
@@ -103,7 +100,7 @@ def run_chat(
                         settings=settings, deadline=deadline, usage=usage, stream=stream)
 
     for iteration in range(settings.max_converse_iterations):
-        # Checked BEFORE the call: never start a request that cannot finish in time.
+        # Checked before the call: never start a request that cannot finish in time.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             logger.warning(
@@ -154,8 +151,7 @@ def run_chat(
             if "toolUse" in block
         ]
 
-        # `end_turn` with no tool call is the answer. A `tool_use` stop reason carrying no
-        # toolUse block is malformed, and there is nothing further to do with it either.
+        # `end_turn` is the answer, and a `tool_use` stop with no block is nothing to act on.
         if response.get("stopReason") != "tool_use" or not tool_uses:
             return _response_from_text(text, sources, request.query, settings)
 
@@ -174,8 +170,7 @@ def run_chat(
 
         messages.append({"role": "user", "content": tool_results})
 
-    # The cap was reached without the model ever ending its turn. Logged as the distinct
-    # event it is: otherwise it looks like a model that answered on its first call.
+    # Logged distinctly, or it reads as a model that answered on its first call.
     logger.warning(
         "Converse loop hit its %s-iteration cap without a final reply; answering from the "
         "text produced so far (%s chars). query=%r",
@@ -218,8 +213,7 @@ def _converse_streaming(
                     "toolUse": {
                         "toolUseId": tool_use.get("toolUseId"),
                         "name": tool_use.get("name"),
-                        # Accumulated as a STRING and parsed at the close: Bedrock streams
-                        # tool arguments as partial JSON, valid only once complete.
+                        # A string until the close: partial JSON is valid only once complete.
                         "_input_json": "",
                     }
                 }
@@ -255,7 +249,7 @@ def _converse_streaming(
             reported_usage = event["metadata"].get("usage")
             continue
 
-    # A block the stream never closed is kept, the same instinct the zero-card fallback has.
+    # A block the stream never closed is kept rather than dropped.
     for index in sorted(blocks):
         content.append(_finished_block(blocks[index]))
 
@@ -267,7 +261,7 @@ def _converse_streaming(
 
 
 def _finished_block(block: dict[str, Any]) -> dict[str, Any]:
-    """One assembled content block, in the shape Converse would have returned it."""
+    """In the shape Converse would have returned it."""
     if "toolUse" not in block:
         return {"text": block.get("text", "")}
 
@@ -292,7 +286,7 @@ def _prime_first_search(
     usage: TurnUsage | None = None,
     stream: StreamSink | None = None,
 ) -> None:
-    """Run the first retrieval server-side and append it as a completed tool exchange."""
+    """Appended as a tool exchange the model never had to ask for."""
     if time.monotonic() >= deadline:
         return
     query = request.query.strip()
@@ -341,7 +335,7 @@ def _prime_first_search(
 
 
 def _tell(stream: StreamSink | None, stage: str) -> None:
-    """Say what the turn is doing, when anybody is listening. Swallows its own failures."""
+    """Swallows its own failures: a status event cannot cost the turn."""
     if stream is None:
         return
     try:
@@ -391,7 +385,6 @@ def _build_converse_messages(
     settings: Settings,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Stored history plus this turn's message, in a shape Converse will accept."""
     messages: list[dict[str, Any]] = []
 
     for item in list(history)[-settings.max_history_messages :]:
@@ -408,8 +401,7 @@ def _build_converse_messages(
 
     messages = _merge_consecutive_roles(messages)
 
-    # Converse also requires the FIRST message to be a user turn, and a window can open on
-    # an assistant reply. The loop above always ends on a user message, so this cannot empty.
+    # Converse requires a user turn first, and a history window can open on an assistant one.
     while messages and messages[0]["role"] == "assistant":
         messages.pop(0)
 
@@ -438,7 +430,7 @@ def _merge_consecutive_roles(
 
 
 def _build_user_message(request: ChatRequest, now: datetime | None = None) -> str:
-    """The user turn handed to the model. It does NOT read `request.followup`."""
+    """The user turn handed to the model. It does not read `request.followup`."""
     time_line = campus_context_line(now)
     return (
         f"{time_line}\n\n" if time_line else ""
@@ -472,7 +464,7 @@ def _response_from_text(
     query: str,
     settings: Settings,
 ) -> ChatResponse:
-    """Parse one LIVE model reply into the wire response. The only place cards come from."""
+    """A live model reply as the wire response. The only place cards come from."""
     parsed = parse_model_response(text)
     escalation = (
         None
@@ -497,7 +489,7 @@ def replay_stored_reply(
     query: str,
     settings: Settings,
 ) -> ChatResponse:
-    """Render one STORED assistant reply through the code that rendered it live."""
+    """A stored reply through the same code that rendered it live."""
     return _assemble_response(
         parse_model_response(text),
         text=text,
@@ -517,9 +509,8 @@ def _assemble_response(
     settings: Settings,
     escalation: Any | None,
 ) -> ChatResponse:
-    """One parsed reply as the wire response, live or replayed. THE ONE EXIT."""
-    # Resolved here rather than beside the offer, because the key is IN THE REPLY, so a
-    # replayed turn needs no argument. The display read hands back its own recorded card.
+    """One parsed reply as the wire response, live or replayed. The one exit."""
+    # The key is in the reply, so a replayed turn needs no argument.
     place = None if parsed.needs_safety else resolve_place(parsed.place_key)
 
     if parsed.needs_safety:
@@ -531,8 +522,7 @@ def _assemble_response(
             logger.info(
                 "chat route=safety place=dropped (a safety turn carries no location card)"
             )
-        # A safety turn carries no cards by contract, so this must NOT take the zero-card
-        # fallback below, which would fold the card text back into the bubble.
+        # Not the zero-card fallback below: that would fold card text back into the bubble.
         cards = []
         prose = join_prose(parsed.prose, parsed.trailing_prose) or strip_card_tags(text)
         prose = prose or SAFETY_FALLBACK_TEXT
@@ -544,14 +534,12 @@ def _assemble_response(
             # The split survives only when there is a card group to split around.
             prose, trailing = parsed.prose, parsed.trailing_prose
         else:
-            # The zero-card fallback rebuilds the bubble from the COMPLETE reply, so there
-            # is no position left to preserve.
+            # Rebuilt from the whole reply, so there is no split position left to keep.
             prose, trailing = strip_card_tags(text), ""
 
     if not prose and not trailing:
         if escalation is not None:
-            # A reply that was NOTHING BUT an escalation block: its content is an email and
-            # is removed from the bubble, so there is no prose left to introduce the draft.
+            # A reply that was nothing but an escalation block: its words left with it.
             logger.warning(
                 "The model wrote an escalation block and no prose for query=%r; "
                 "introducing the draft with the server's own line.",
@@ -570,8 +558,7 @@ def _assemble_response(
         place=place,
         escalation=escalation,
         talkToPersonAvailable=True,
-        # The record is the model's own text. Empty only when the loop produced nothing,
-        # where the assembled prose IS what the student was shown.
+        # The model's own text, unless the loop produced none and the prose is all there was.
         raw_text=text or join_prose(prose, trailing),
         sources=cited_source_urls(cards, sources),
     )

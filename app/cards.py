@@ -1,7 +1,6 @@
 """Cards, parsed from the tags the model emits, not cut out of anybody's prose.
 
-The model cites a ref rather than a URL and the caps are runaway guards; see
-docs/cards-v2.md and docs/chat-service.md, Cards and the tag contract.
+The model cites a ref rather than a URL, and the caps are runaway guards.
 """
 
 from __future__ import annotations
@@ -35,12 +34,11 @@ _EN_DASH = "\u2013"
 _DIGIT_RANGE_EN_DASH_RE = re.compile(rf"(?<=\d){_EN_DASH}(?=\d)")
 _EM_EN_DASH_RE = re.compile(rf"\s*[{_EM_DASH}{_EN_DASH}]\s*")
 
-# Non-greedy, so two adjacent cards do not collapse into one. `ref` is read separately,
-# because a card with no ref is still a card.
+# Non-greedy, so two adjacent cards do not collapse into one.
 _CARD_BLOCK_RE = re.compile(r"<card\b([^>]*)>(.*?)</card\s*>", re.DOTALL | re.IGNORECASE)
 _REF_ATTR_RE = re.compile(r"\bref\s*=\s*[\"']?\s*(\d+)", re.IGNORECASE)
 _SAFETY_TAG_RE = re.compile(r"<safety\s*/?>", re.IGNORECASE)
-# A keyed safety block. The whole block leaves the prose: the keys address the server.
+# The whole block leaves the prose: the keys address the server, not the student.
 _SAFETY_BLOCK_RE = re.compile(r"<safety\s*>(.*?)</safety\s*>", re.DOTALL | re.IGNORECASE)
 _SAFETY_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
 # Prose only, no attribute group: a model-chosen recipient has nowhere to arrive.
@@ -74,7 +72,7 @@ _TAG_OPENINGS = tuple(
 
 
 def preview_safe_prefix(text: str) -> str:
-    """The leading run of a PARTIAL reply that is certainly outside this contract's tags."""
+    """The leading run of a partial reply that is certainly outside this contract's tags."""
     for index, character in enumerate(text):
         if character != "<":
             continue
@@ -87,7 +85,7 @@ def preview_safe_prefix(text: str) -> str:
 
 
 def card_block_started(text: str) -> bool:
-    """Has the model DEFINITELY begun writing cards? A <safety> anywhere takes it back to no."""
+    """A <safety> anywhere takes this back to no."""
     lowered = text.lower()
     if "<safety" in lowered:
         return False
@@ -96,7 +94,7 @@ def card_block_started(text: str) -> bool:
 
 @dataclass(frozen=True)
 class SourceOption:
-    """One retrieved source as the model sees it: an id, a title and text. No URL."""
+    """The model is shown the id, title and text; `source_url` never reaches it."""
 
     ref_id: int
     title: str
@@ -106,7 +104,7 @@ class SourceOption:
 
 
 class TurnSources:
-    """The id-to-source map for ONE turn, and the only thing that can produce a card's URL."""
+    """One turn's id-to-source map, and the only thing that can produce a card's URL."""
 
     def __init__(self) -> None:
         self._by_url: dict[str, SourceOption] = {}
@@ -114,7 +112,7 @@ class TurnSources:
         self._next_id = 1
 
     def add_chunks(self, chunks: list[RetrievedChunk], *, limit: int) -> list[SourceOption]:
-        """Register a retrieval result set and return what to show the model for THIS call."""
+        """Returns what to show the model for this call, not the whole turn's map."""
         options: list[SourceOption] = []
 
         for chunk in sorted(chunks, key=lambda c: c.score, reverse=True):
@@ -169,7 +167,7 @@ class TurnSources:
         return self._by_id.get(ref_id)
 
     def ref_for_url(self, url: str) -> int | None:
-        """The id this turn gave a URL, or None. The inverse of `resolve`."""
+        """The inverse of `resolve`."""
         option = self._by_url.get((url or "").strip())
         return None if option is None else option.ref_id
 
@@ -182,7 +180,7 @@ class TurnSources:
 
 @dataclass(frozen=True)
 class ParsedCard:
-    """One <card> block, exactly as written. Nothing resolved, nothing capped yet."""
+    """Exactly as written. Nothing resolved, nothing capped yet."""
 
     ref_id: int | None
     title: str
@@ -251,7 +249,6 @@ def _place_key_in(*parts: str) -> str | None:
         )
     keys = _PLACE_KEY_RE.findall(contents[0])
     if not keys:
-        # The model reached for the contract and wrote nothing usable.
         logger.warning("An empty place block; no location card.")
         return None
     if len(keys) > 1:
@@ -319,7 +316,7 @@ def _collapse_whitespace(text: str) -> str:
 
 
 def _collapse_keeping_line_breaks(text: str) -> str:
-    """The same collapse, except that the model's line breaks stay. Only <desc> needs it."""
+    """The same collapse, except that the model's line breaks stay."""
     lines = [
         _HORIZONTAL_WHITESPACE_RE.sub(" ", line).strip() for line in (text or "").splitlines()
     ]
@@ -351,7 +348,7 @@ def strip_card_tags(text: str) -> str:
 
 
 def truncate_to_cap(text: str, cap: int, *, keep_line_breaks: bool = False) -> str:
-    """Shorten to `cap` characters INCLUDING the ellipsis, breaking on a word boundary."""
+    """Shorten to `cap` characters including the ellipsis, breaking on a word boundary."""
     collapse = _collapse_keeping_line_breaks if keep_line_breaks else _collapse_whitespace
     normalized = collapse(text)
     if len(normalized) <= cap:
@@ -453,8 +450,7 @@ def cards_from_parsed(
                 id=_card_id(index, source),
                 title=title,
                 body=desc,
-                # Nothing renders this without a `source` action, so an unresolved ref
-                # yields a card with no link rather than a broken one.
+                # An unresolved ref yields a card with no link rather than a broken one.
                 sourceUrl=source.source_url if source is not None else "",
                 actions=actions,
             )
@@ -467,7 +463,7 @@ def cited_source_urls(
     cards: list[StatementCard],
     sources: TurnSources,
 ) -> dict[int, str]:
-    """The ref-to-URL pairs a FINISHED reply cited. What gets stored beside its text."""
+    """The ref-to-URL pairs a finished reply cited, stored beside its text."""
     urls: dict[int, str] = {}
     for card in cards:
         ref_id = sources.ref_for_url(card.source_url)
@@ -488,7 +484,7 @@ def _card_id(index: int, source: SourceOption | None) -> str:
 
 
 def source_options_for_tool(options: list[SourceOption]) -> list[dict[str, object]]:
-    """The retrieval tool result: id, title and the WHOLE chunk. No URL, deliberately."""
+    """id, title and the whole chunk. No URL, deliberately."""
     return [
         {
             "id": option.ref_id,

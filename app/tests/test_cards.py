@@ -1,8 +1,4 @@
-"""The card contract: what the model emits, and what the student gets.
-
-The ref scheme, the runaway-guard caps and the one split point are in docs/cards-v2.md
-and docs/chat-service.md, Cards and the tag contract.
-"""
+"""The card contract: what the model emits, and what the student gets."""
 
 import logging
 
@@ -61,9 +57,6 @@ def _sources(*chunks, limit=6):
     return turn
 
 
-# --- Well-formed output -------------------------------------------------------------------
-
-
 _WELL_FORMED = """Tutoring is free and you don't need a referral. Financial aid has its own
 office for the money side.
 
@@ -96,8 +89,7 @@ def test_well_formed_output_yields_cards_and_prose():
 
 
 def test_the_server_resolves_the_url_the_ref_pointed_at():
-    """The invariant the whole id scheme rests on: a map that resolves the WRONG url is worse
-    than one that resolves nothing."""
+    """A map that resolves the wrong url is worse than one that resolves nothing."""
     tutoring = _chunk()
     aid = _chunk(url="https://www.sjsu.edu/faso/index.php", title="Financial Aid", score=0.8)
     turn = _sources(tutoring, aid)
@@ -135,9 +127,6 @@ def test_the_followup_prompt_is_model_authored_not_derived_from_a_section():
     assert card.actions[-1].prompt == "Can I get help with Calc 2 specifically?"
 
 
-# --- Whitespace inside a card -------------------------------------------------------------
-
-
 _BULLETED_DESC = """Sammy here.
 
 <card ref="1">
@@ -150,8 +139,7 @@ _BULLETED_DESC = """Sammy here.
 
 
 def test_a_description_keeps_the_line_breaks_the_model_wrote():
-    """The whole point of this field's separate normalisation: the display parser keys on
-    line starts, so a flattened description loses the list with nothing on screen to say so."""
+    """The display parser keys on line starts, so a flattened description loses its list."""
     parsed = parse_model_response(_BULLETED_DESC)
     body = cards_from_parsed(parsed.cards, _sources(_chunk()), _SETTINGS)[0].body
 
@@ -243,9 +231,6 @@ def test_truncation_still_respects_the_cap_when_line_breaks_are_kept():
         assert len(result) <= cap, f"cap {cap} produced {len(result)} chars"
 
 
-# --- Where the cards sit in the reply -----------------------------------------------------
-
-
 _PROSE_ON_BOTH_SIDES = """Two offices handle this, and they are below.
 
 <card ref="1">
@@ -326,11 +311,8 @@ def test_joining_a_split_reply_puts_a_blank_line_between_the_halves():
     assert cards.join_prose("", "  ", None) == ""
 
 
-# --- Missing ref --------------------------------------------------------------------------
-
-
 def test_a_card_with_no_ref_keeps_its_text_and_loses_its_link(caplog):
-    """DECIDED AGAINST docs/cards-v2.md, which drops the card, for observability."""
+    """A linkless card is a visible symptom; a dropped one is nobody finding out."""
     turn = _sources(_chunk())
     parsed = parse_model_response(
         "<card><title>Tutoring</title><desc>Free help.</desc></card>"
@@ -346,9 +328,6 @@ def test_a_card_with_no_ref_keeps_its_text_and_loses_its_link(caplog):
     assert [action.type for action in card.actions] == []
     assert card.source_url == ""
     assert "did not resolve" in caplog.text
-
-
-# --- Unknown ref --------------------------------------------------------------------------
 
 
 def test_a_card_citing_an_unknown_id_keeps_its_text_and_loses_its_link(caplog):
@@ -380,12 +359,8 @@ def test_an_id_from_a_previous_turn_is_as_unresolvable_as_an_invented_one():
     assert card.source_url == ""
 
 
-# --- Over-cap text ------------------------------------------------------------------------
-
-
 def test_an_over_cap_description_is_shortened_at_a_word_boundary(caplog):
-    """Shortened where it can be measured, never hidden by the layout: v1 capped at 220 and
-    a CSS clamp swallowed the rest with nothing on screen to show it."""
+    """Shortened where it can be measured, rather than hidden by a CSS clamp."""
     settings = _settings(card_desc_max_chars=40)
     turn = _sources(_chunk())
 
@@ -427,7 +402,7 @@ def test_an_over_cap_title_is_shortened_the_same_way(caplog):
 
 
 def test_fields_within_their_caps_log_no_warning(caplog):
-    """The WARNING is the ellipsis-means-a-bug signal, so an ordinary response must not emit one."""
+    """The warning means the ellipsis is a bug, so an ordinary reply must not emit one."""
     turn = _sources(_chunk())
 
     with caplog.at_level("WARNING"):
@@ -448,8 +423,7 @@ def test_fields_within_their_caps_log_no_warning(caplog):
 
 
 def test_an_over_cap_followup_keeps_its_button_and_is_logged(caplog):
-    """A shortened question is a DIFFERENT question, so a follow-up is never truncated and
-    keeps its button; the overrun is logged because the cap guards a paid model input."""
+    """A shortened question is a different question, so it keeps its button and is logged."""
     settings = _settings(card_followup_max_chars=20)
     turn = _sources(_chunk())
     long_followup = "How do I book an appointment with a calculus tutor this week?"
@@ -488,9 +462,7 @@ def test_truncation_never_exceeds_the_cap_including_the_ellipsis():
         assert len(result) <= cap, f"cap {cap} produced {len(result)} chars"
 
 
-# --- Dash normalisation ---------------------------------------------------------------------
-
-# The dashes under test are written as escapes, so grepping the repo for one stays meaningful.
+# Written as escapes, so grepping the repo for a dash stays meaningful.
 _EM = "\u2014"
 _EN = "\u2013"
 
@@ -550,7 +522,7 @@ def test_dashes_are_normalised_before_the_cap_is_measured():
 
 
 def test_each_dash_substitution_is_logged(caplog):
-    """The INFO line per substitution is how the dash rate stays measurable from the logs."""
+    """One line per substitution is how the dash rate stays measurable from the logs."""
     with caplog.at_level("INFO"):
         cards.normalise_dashes(f"stress {_EM} sleep {_EN} both")
 
@@ -584,9 +556,6 @@ def test_card_ids_are_unique_even_when_two_cards_cite_one_source():
     assert len({card.id for card in result}) == 2
 
 
-# --- Zero cards ---------------------------------------------------------------------------
-
-
 def test_a_reply_with_no_cards_is_all_prose():
     parsed = parse_model_response("Glad that helped. Come back any time.")
 
@@ -596,7 +565,7 @@ def test_a_reply_with_no_cards_is_all_prose():
 
 
 def test_a_card_block_missing_its_title_or_desc_is_dropped(caplog):
-    """These two ARE the card. Everything else degrades instead of dropping."""
+    """These two are the card. Everything else degrades instead of dropping."""
     turn = _sources(_chunk())
 
     with caplog.at_level("WARNING"):
@@ -611,9 +580,6 @@ def test_a_card_block_missing_its_title_or_desc_is_dropped(caplog):
 
     assert result == []
     assert "no title" in caplog.text and "no description" in caplog.text
-
-
-# --- Unparseable output -------------------------------------------------------------------
 
 
 def test_an_unclosed_card_block_reaches_the_student_as_prose():
@@ -656,7 +622,7 @@ def test_no_safety_tag_means_no_safety_request():
 
 
 def test_a_keyed_safety_block_yields_its_keys_and_leaks_nothing_into_the_prose():
-    """The keys are instructions to the server, so the WHOLE block leaves the prose."""
+    """The keys are instructions to the server, so the whole block leaves the prose."""
     parsed = parse_model_response(
         "You're not alone, and help is close.\n\n<safety>crisis-988, caps</safety>"
     )
@@ -683,9 +649,6 @@ def test_the_fallback_scrub_removes_a_safety_block_whole():
     assert strip_card_tags(text) == "Support is below."
 
 
-# --- The place block ----------------------------------------------------------------------
-
-
 def test_a_place_block_yields_its_key_and_leaks_nothing_into_the_prose():
     """A catalogue key is addressed to the server, exactly as a safety key is."""
     parsed = parse_model_response(
@@ -708,8 +671,7 @@ def test_no_place_block_means_no_key():
 
 
 def test_a_place_block_under_the_cards_still_counts():
-    """Both sides of the split are read: the split point says where prose renders, not which
-    tags count."""
+    """The split point says where prose renders, not which tags count."""
     parsed = parse_model_response(
         '<card ref="1"><title>t</title><desc>d</desc></card>\n\n'
         "<place>spartan-food-pantry</place>"
@@ -753,9 +715,6 @@ def test_the_preview_stops_at_a_place_tag():
     assert cards.preview_safe_prefix("Head to Clark Hall. <place>career") == (
         "Head to Clark Hall. "
     )
-
-
-# --- The id map ---------------------------------------------------------------------------
 
 
 def test_the_model_is_never_shown_a_url():
@@ -814,9 +773,6 @@ def test_sources_are_offered_best_first():
     assert options[0].source_url.endswith("/high")
 
 
-# --- The batch ----------------------------------------------------------------------------
-
-
 def test_a_batch_carries_the_cards_and_the_query():
     turn = _sources(_chunk())
     result = cards_from_parsed(
@@ -848,9 +804,6 @@ def test_the_parser_tolerates_the_shapes_a_model_actually_writes(raw):
     assert parsed.cards[0].desc == "D"
 
 
-# --- preview_safe_prefix: a stop rule, not a parser ---------------------------------------
-
-
 def test_the_preview_is_everything_before_the_first_card_tag():
     """The model writes one text stream, so this is what makes a streamed preview safe."""
     text = 'Two places can help.\n\n<card ref="1"><title>Writing Center</title></card>'
@@ -864,7 +817,7 @@ def test_a_partial_tag_at_the_end_of_a_chunk_is_held_back():
 
 
 def test_a_less_than_sign_that_is_not_ours_streams_intact():
-    """The guarantee needed is only that OUR tags never surface."""
+    """The guarantee needed is only that this contract's own tags never surface."""
     for text in ("Take <15 units to stay part time.", "a < b", "5<6 and 7>6"):
         assert cards.preview_safe_prefix(text) == text
 
@@ -883,12 +836,9 @@ def test_the_prefix_only_ever_grows_as_the_reply_does():
     seen = ""
     for length in range(len(reply) + 1):
         prefix = cards.preview_safe_prefix(reply[:length])
-    # Each prefix EXTENDS the last: never shorter, never a rewrite of what was sent.
+    # Each prefix extends the last: never shorter, never a rewrite of what was sent.
         assert prefix.startswith(seen), (length, prefix, seen)
         seen = prefix
-
-
-# --- card_block_started: the one honest answer to "are cards coming?" ---------------------
 
 
 def test_a_card_opening_is_what_says_cards_are_coming():
@@ -940,9 +890,6 @@ def test_the_preview_does_not_cap_or_normalise_anything():
     assert cards.preview_safe_prefix("a — b") == "a — b"
 
 
-# --- the escalate-to-human block: prose only, so a chosen recipient is unrepresentable ----
-
-
 def test_the_escalation_block_is_parsed_and_never_rendered():
     parsed = parse_model_response(
         "That one needs a person.\n\n"
@@ -966,7 +913,7 @@ def test_no_escalation_tag_is_none_rather_than_an_empty_offer():
 
 
 def test_an_escalation_block_under_the_cards_still_counts():
-    """Read from BOTH sides of the split, like the safety tag."""
+    """Read from both sides of the split, like the safety tag."""
     raw = (
         "Here is what I found.\n\n"
         '<card ref="1"><title>Registrar</title><desc>Holds and enrolment.</desc></card>\n\n'
@@ -1018,8 +965,7 @@ def test_a_dash_in_a_draft_is_normalised_like_every_other_display_string():
 
 
 def test_the_fallback_scrub_removes_an_escalation_block_whole():
-    """The zero-card fallback rebuilds from the COMPLETE reply, so an unscrubbed block
-    would put an unsent email in front of the student."""
+    """The fallback rebuilds from the whole reply, so an unscrubbed block shows the email."""
     raw = (
         "Sorry, I do not have a page for that.\n"
         "<escalate_to_human>Hi, I am trying to find out about a fee.</escalate_to_human>"

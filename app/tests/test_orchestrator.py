@@ -1,7 +1,4 @@
-"""The Converse loop's two caps, and the wire contract the frontend depends on.
-
-See docs/chat-service.md, The Converse loop.
-"""
+"""The Converse loop's two caps, and the wire contract the frontend depends on."""
 
 import copy
 from datetime import datetime, timezone
@@ -38,7 +35,7 @@ class _FakeBedrock:
 
     def converse(self, **kwargs):
         self.calls += 1
-        # Deep-copied: the loop appends the assistant turn to the SAME list object.
+        # Deep-copied: the loop appends the assistant turn to the same list object.
         self.kwargs = copy.deepcopy(kwargs)
         if self._on_call is not None:
             self._on_call()
@@ -182,8 +179,7 @@ def _tutoring_retrieval(monkeypatch):
 
 
 def test_prose_written_after_the_cards_reaches_the_wire_below_them(monkeypatch):
-    """The acceptance case, end to end: prose on both sides of the cards arrives in two
-    fields, so the closing question renders under the answer rather than over it."""
+    """Two fields, so the closing question renders under the answer rather than over it."""
     _tutoring_retrieval(monkeypatch)
 
     fake = _FakeBedrock(
@@ -289,8 +285,7 @@ def test_a_hotline_named_under_the_cards_still_attaches_the_panel(monkeypatch):
 
 
 def test_an_unparseable_reply_becomes_one_bubble_with_the_tags_stripped(monkeypatch, no_retrieval):
-    """The regression that must never come back: v1 answered a broken reply with cards it
-    built out of retrieved page text."""
+    """No cards built out of retrieved page text: a broken reply is prose."""
     fake = _FakeBedrock(
         [_text_turn('Here is what I found.\n\n<card ref="1"><title>Tutoring</title><desc>Free help.')]
     )
@@ -354,8 +349,7 @@ def test_the_loop_stops_at_the_wall_clock_deadline(monkeypatch, no_retrieval, ca
 
 
 def test_the_deadline_path_does_not_retrieve_again(monkeypatch):
-    """v1's fallback made a fresh retrieval on the way out, which is the exact overrun the
-    deadline exists to prevent."""
+    """A fresh retrieval on the way out is the exact overrun the deadline exists to prevent."""
     clock = {"now": 500.0}
     monkeypatch.setattr(orchestrator.time, "monotonic", lambda: clock["now"])
 
@@ -417,8 +411,7 @@ def test_history_is_trimmed_to_the_configured_window(monkeypatch, no_retrieval):
 
 
 def test_the_model_is_never_handed_back_its_own_markup(monkeypatch, no_retrieval):
-    """A stored reply is the model's RAW text, so handing it back would teach the model that
-    a transcript is a place where tags appear, and a copied <safety> is a panel by imitation."""
+    """A copied <safety> would be a panel by imitation, so the tags come off first."""
     fake = _FakeBedrock([_text_turn("hi")])
     monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
 
@@ -438,7 +431,7 @@ def test_the_model_is_never_handed_back_its_own_markup(monkeypatch, no_retrieval
 
     sent = str(fake.kwargs["messages"])
     assert "<card" not in sent and "<safety" not in sent and "<title" not in sent
-    # The words survive; only the markup goes, on both sides of the card group.
+    # The words survive: only the markup goes, on both sides of the card group.
     assert "Two places can help." in sent
     assert "Which one?" in sent
 
@@ -460,8 +453,7 @@ def test_a_students_own_message_is_never_stripped_on_its_way_to_the_model(
 
 
 def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypatch, no_retrieval):
-    """The bug this pins: `followup: true` used to append a card-suppression note, so a
-    clicked question produced no cards while the same question typed by hand did."""
+    """A clicked question and the same question typed by hand reach the model identically."""
     moment = datetime(2026, 8, 12, 3, 14, tzinfo=timezone.utc)
     history = [
         stored("user", "where do I get tutoring?"),
@@ -486,16 +478,12 @@ def test_a_followup_click_sends_the_model_the_same_turn_as_typed_input(monkeypat
     assert "follow-up" not in str(clicked) and "no cards" not in str(clicked)
 
 
-# --- the role-alternation reef -----------------------------------------------------------
-
-
 def _roles(messages):
     return [message["role"] for message in messages]
 
 
 def test_a_history_ending_in_a_user_turn_does_not_break_alternation(monkeypatch, no_retrieval):
-    """THE REEF the doc names: a failed turn leaves a user message with no reply, and
-    Converse rejects two user messages in a row."""
+    """A failed turn leaves a user message with no reply, and Converse rejects two in a row."""
     fake = _FakeBedrock([_text_turn("Here's what I can tell you.")])
     monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
 
@@ -517,7 +505,7 @@ def test_a_history_ending_in_a_user_turn_does_not_break_alternation(monkeypatch,
 
 
 def test_a_window_that_opens_on_an_assistant_turn_drops_it(monkeypatch, no_retrieval):
-    """Converse also requires the FIRST message to be a user turn."""
+    """Converse also requires the first message to be a user turn."""
     fake = _FakeBedrock([_text_turn("ok")])
     monkeypatch.setattr(orchestrator, "_bedrock_client", lambda region: fake)
 
@@ -553,8 +541,7 @@ def test_consecutive_stored_messages_of_one_role_are_merged(monkeypatch, no_retr
 
 
 def test_the_first_search_is_primed_before_the_model_speaks(monkeypatch):
-    """The first retrieval is the server's move, not the model's: it lands as a completed
-    tool exchange, so the common case is one Converse call."""
+    """It lands as a completed tool exchange, so the common case is one Converse call."""
     monkeypatch.setattr(
         orchestrator,
         "retrieve_chunks",
@@ -630,9 +617,6 @@ def test_the_response_serialises_to_camps_camelcase_wire_contract(monkeypatch, n
     assert "statementBatches" in body
     assert "safetyHandoff" in body
     assert "talkToPersonAvailable" in body
-
-
-# --- the turn's billable tally (app/usage.py) -----------------------------------------
 
 
 def _billed(turn, input_tokens, output_tokens):
@@ -716,9 +700,6 @@ def test_the_loop_runs_unchanged_without_a_tally(monkeypatch, no_retrieval):
     assert response.usage is None, "the loop never attaches one; the handler does"
 
 
-# --- streaming: the same loop, one extra output ---------------------------------------
-
-
 class _RecordingSink:
     """A StreamSink that remembers what it was told, in order."""
 
@@ -749,7 +730,7 @@ class _FakeStreamingBedrock:
         index = min(self.calls - 1, len(self.script) - 1)
         return {"stream": iter(self.script[index])}
 
-    def converse(self, **kwargs):  # pragma: no cover - a streaming test must not call this
+    def converse(self, **kwargs):  # pragma: no cover (a streaming test must not call this)
         raise AssertionError("a streaming turn must not call Converse")
 
 
@@ -782,8 +763,7 @@ def _streaming_loop(monkeypatch, script, sink=None, **kwargs):
 
 
 def test_a_streamed_turn_and_a_buffered_turn_produce_the_same_response(monkeypatch):
-    """THE ACCEPTANCE CRITERION as a unit test: same model text, same finished response,
-    because both transports exit through the same parser."""
+    """Same model text, same finished response: both transports exit through one parser."""
     reply = (
         "Two places can help.\n\n"
         '<card ref="1"><title>Writing Center</title><desc>Drop-in help with any '
@@ -823,8 +803,7 @@ def test_a_streamed_turn_and_a_buffered_turn_produce_the_same_response(monkeypat
 
 
 def test_the_sink_sees_the_whole_reply_so_far_and_never_a_fragment(monkeypatch):
-    """The sink is handed the ACCUMULATED text every time, so it owns how much is safe to
-    show and how much has already been sent."""
+    """The sink is handed the accumulated text every time, so it owns what is safe to show."""
     sink = _RecordingSink()
     _streaming_loop(monkeypatch, [_text_events("abcdefghi", chunks=3)], sink=sink)
 
@@ -848,7 +827,7 @@ def test_token_usage_comes_from_the_streams_own_metadata(monkeypatch):
 
 
 def test_a_streamed_tool_call_reassembles_its_partial_json_arguments(monkeypatch):
-    """Bedrock streams tool arguments as JSON FRAGMENTS, none of which is valid alone."""
+    """Bedrock streams tool arguments as JSON fragments, none of which is valid alone."""
     tool_events = [
         {"messageStart": {"role": "assistant"}},
         {
@@ -957,7 +936,7 @@ def test_the_buffered_path_never_opens_a_stream(monkeypatch):
     """POST /chat is under a hard "keeps working unchanged" constraint."""
 
     class _StreamIsForbidden(_FakeBedrock):
-        def converse_stream(self, **kwargs):  # pragma: no cover - the assertion
+        def converse_stream(self, **kwargs):  # pragma: no cover (the assertion)
             raise AssertionError("the buffered path must not call ConverseStream")
 
     fake = _StreamIsForbidden([_text_turn("Buffered.")])
@@ -990,9 +969,7 @@ def test_the_guardrail_reaches_the_model_call_only_when_asked_and_only_in_sync_m
     assert "guardrailConfig" not in unscreened.kwargs
 
 
-# --- the campus clock ---------------------------------------------------------------------
-
-# 03:14 UTC on a Wednesday is 8:14pm the previous TUESDAY in San Jose.
+# 03:14 UTC on a Wednesday is 8:14pm the previous Tuesday in San Jose.
 _LAMBDA_UTC_INSTANT = datetime(2026, 8, 12, 3, 14, tzinfo=timezone.utc)
 _CAMPUS_READING = "Tuesday, August 11, 2026 at 8:14 PM PDT (America/Los_Angeles)"
 
@@ -1022,8 +999,7 @@ def test_the_model_is_told_the_campus_local_time(monkeypatch, no_retrieval):
 
 
 def test_every_model_call_in_the_turn_carries_the_same_time(monkeypatch):
-    """A turn that searches again makes a second Converse call, and one clock reading serves
-    both, so a long turn does not drift."""
+    """One clock reading serves both calls, so a long turn does not drift."""
     monkeypatch.setattr(orchestrator, "retrieve_chunks", lambda query, settings: [])
     fake = _FakeBedrock([_retrieval_turn(), _text_turn("Found it.")])
     seen = []
@@ -1091,8 +1067,6 @@ def test_an_absent_moment_is_read_from_the_clock(monkeypatch, no_retrieval):
     assert "(America/Los_Angeles)" in _user_turn(fake.kwargs["messages"])
 
 
-# --- the escalate-to-human offer ------------------------------------------------------
-
 _ESCALATION_SETTINGS = Settings(
     **{
         **_SETTINGS.__dict__,
@@ -1130,8 +1104,7 @@ def test_an_untagged_turn_carries_no_draft(monkeypatch, no_retrieval):
 
 
 def test_a_safety_turn_never_carries_an_offer(monkeypatch, no_retrieval):
-    """The panel is the handoff: a draft under it puts a message to write between the
-    student and a number that answers now."""
+    """A draft under the panel puts homework between the student and a number that answers."""
     fake = _FakeBedrock(
         [
             _text_turn(
@@ -1149,7 +1122,7 @@ def test_a_safety_turn_never_carries_an_offer(monkeypatch, no_retrieval):
 
 
 def test_a_crisis_line_in_the_prose_drops_the_offer_too(monkeypatch, no_retrieval):
-    """The OTHER way into a safety turn: no tag, but prose naming a crisis line."""
+    """The other way into a safety turn: no tag, but prose naming a crisis line."""
     fake = _FakeBedrock(
         [
             _text_turn(
@@ -1246,7 +1219,7 @@ def test_a_reply_that_is_only_an_offer_still_says_something(monkeypatch, no_retr
 
 
 def test_four_blocks_back_to_back_are_still_one_offer(monkeypatch, no_retrieval):
-    """The FIRST is the offer, the rest are logged and dropped: one turn makes one offer."""
+    """The first is the offer, the rest are logged and dropped: one turn makes one offer."""
     fake = _FakeBedrock(
         [
             _text_turn(
@@ -1264,9 +1237,6 @@ def test_four_blocks_back_to_back_are_still_one_offer(monkeypatch, no_retrieval)
     assert response.escalation.body.startswith("Draft number 1.")
     for n in range(1, 5):
         assert f"Draft number {n}" not in response.conversational_text
-
-
-# --- the campus location card ---------------------------------------------------------
 
 
 def test_a_named_place_reaches_the_response_as_a_resolved_card(monkeypatch, no_retrieval):
@@ -1289,7 +1259,7 @@ def test_a_named_place_reaches_the_response_as_a_resolved_card(monkeypatch, no_r
 
 
 def test_an_unlisted_place_yields_no_card_at_all(monkeypatch, no_retrieval):
-    """THE ACCEPTANCE CRITERION, end to end: not a guessed card and not a near-miss key."""
+    """Not a guessed card and not a near-miss key."""
     fake = _FakeBedrock(
         [_text_turn("Try the bowling alley.\n\n<place>student-union-bowling-alley</place>")]
     )
@@ -1324,7 +1294,7 @@ def test_a_safety_turn_never_carries_a_location(monkeypatch, no_retrieval):
 
 
 def test_a_location_is_dropped_from_an_untagged_crisis_reply(monkeypatch, no_retrieval):
-    """The OTHER route into a safety turn: prose naming crisis lines without the tag."""
+    """The other route into a safety turn: prose naming crisis lines without the tag."""
     fake = _FakeBedrock(
         [
             _text_turn(

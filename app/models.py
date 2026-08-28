@@ -1,7 +1,6 @@
 """The wire contract: camelCase aliases over what /chat and the read routes return.
 
-ChatRequest deliberately carries no history and no user id; see docs/chat-service.md,
-The request path.
+ChatRequest deliberately carries no history and no user id.
 """
 
 from typing import Annotated, Literal, Union
@@ -111,7 +110,6 @@ class ChatResponse(BaseModel):
     usage: TurnUsage | None = None
 
     # The storage projection, excluded from the wire.
-    # See docs/chat-service.md, What a turn writes.
     raw_text: str = Field(default="", exclude=True)
     sources: dict[int, str] = Field(default_factory=dict, exclude=True)
 
@@ -121,8 +119,6 @@ CONVERSATION_ID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"
 
 
 class ChatRequest(BaseModel):
-    """One turn as a client may describe it. There is deliberately no history field."""
-
     model_config = ConfigDict(populate_by_name=True)
 
     query: str = Field(min_length=1, max_length=4000)
@@ -135,7 +131,7 @@ class ChatRequest(BaseModel):
 
 
 class ConversationSummary(BaseModel):
-    """One row of GET /conversations: a stored header, as the sidebar lists it."""
+    """One row of GET /conversations."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -153,7 +149,7 @@ class ConversationListResponse(BaseModel):
 
 
 class ConversationMessage(BaseModel):
-    """One stored message on its way to the browser: the DISPLAY projection."""
+    """One stored message on its way to the browser, the display projection."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -177,7 +173,7 @@ class ConversationResponse(BaseModel):
 
 
 class ConversationRenameRequest(BaseModel):
-    """PATCH /conversations/{conversationId} - the one field a rename may carry."""
+    """PATCH /conversations/{conversationId}, the one field a rename may carry."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -185,7 +181,7 @@ class ConversationRenameRequest(BaseModel):
 
 
 class ConversationTitleResponse(BaseModel):
-    """The result of a rename: the id and the title as STORED, after normalisation."""
+    """The title as stored, after normalisation."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -194,7 +190,7 @@ class ConversationTitleResponse(BaseModel):
 
 
 class ConversationDeleteResponse(BaseModel):
-    """The result of a delete. `deletedMessages` is the count actually removed."""
+    """`deletedMessages` is the count actually removed."""
 
     model_config = ConfigDict(populate_by_name=True)
 

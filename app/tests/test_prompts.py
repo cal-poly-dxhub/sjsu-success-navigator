@@ -1,8 +1,4 @@
-"""The system prompt: the caps in it are the caps the server applies, and the examples obey
-them.
-
-What each section is shaped by is in docs/chat-service.md, The system prompt.
-"""
+"""The caps in the prompt are the caps the server applies, and the examples obey them."""
 
 import re
 
@@ -44,7 +40,7 @@ def _examples(prompt: str, field: str) -> list[str]:
 
 
 def test_the_prompt_states_the_caps_it_was_built_with():
-    """Not the default values - the values it was HANDED. This is the drift test."""
+    """The values it was handed, not the defaults. This is the drift test."""
     prompt = build_system_prompt(
         _settings(
             card_max_cards=3,
@@ -81,7 +77,7 @@ def test_every_canonical_example_sits_under_its_cap():
 
 
 def test_the_card_descriptions_in_the_examples_sit_in_the_stated_band():
-    """The examples teach a LENGTH, and the stated target has to move with them."""
+    """The examples teach a length, and the stated target has to move with them."""
     descs = _examples(build_system_prompt(_SETTINGS), "desc")
 
     for desc in descs:
@@ -93,7 +89,7 @@ def test_the_card_descriptions_in_the_examples_sit_in_the_stated_band():
 
 
 def test_the_cards_carry_the_majority_of_each_worked_reply():
-    """Shorter replies get shorter by moving text INTO the cards, not by thinning them."""
+    """Shorter replies get shorter by moving text into the cards, not by thinning them."""
     for block in _EXAMPLE_BLOCK_RE.findall(build_system_prompt(_SETTINGS)):
         reply = block.split("[your reply]", 1)[1]
         card_text = sum(
@@ -237,7 +233,7 @@ def test_the_prompt_draws_the_scope_line():
 
 
 def test_the_safety_roster_in_the_prompt_is_the_resolvers_table():
-    """Every key the model is taught resolves, because the roster IS the resolver's table."""
+    """Every key the model is taught resolves, because the roster is the resolver's table."""
     import safety
 
     prompt = build_system_prompt(_SETTINGS)
@@ -262,9 +258,6 @@ def test_the_prompt_tells_the_model_where_the_answer_goes():
     assert "When you emit no cards, the prose is the whole answer" in prompt
 
 
-# --- the student's language -------------------------------------------------------------
-
-
 def _language_section(prompt: str) -> str:
     """The Language block alone, so a carve-out asserted here cannot be satisfied elsewhere."""
     assert "Language:" in prompt
@@ -280,8 +273,7 @@ def test_the_reply_follows_the_language_of_the_latest_message():
 
 
 def test_the_language_rule_reaches_the_card_fields_by_name():
-    """THE REASON THE SECTION EXISTS: a model follows the rule readily in prose and much
-    less readily inside a <card> block, where the answer lives."""
+    """A model follows the rule readily in prose, less so inside a card, where the answer is."""
     section = _language_section(build_system_prompt(_SETTINGS))
 
     for field in ("<title>", "<desc>", "<followup>"):
@@ -289,7 +281,7 @@ def test_the_language_rule_reaches_the_card_fields_by_name():
 
 
 def test_the_language_rule_carves_out_what_a_translation_would_break():
-    """Three carve-outs and three distinct breakages, one of which the SERVER reads."""
+    """Three carve-outs and three distinct breakages, one of which the server reads."""
     section = _language_section(build_system_prompt(_SETTINGS))
 
     assert "Phone numbers, email addresses, and web addresses, character for character." in section
@@ -298,19 +290,15 @@ def test_the_language_rule_carves_out_what_a_translation_would_break():
 
 
 def test_the_safety_panel_does_not_move_with_the_language():
-    """The panel's contents are the server's either way, so what this pins is the INSTRUCTION."""
+    """The panel's contents are the server's either way, so this pins the instruction."""
     safety_section = build_system_prompt(_SETTINGS).split("Safety:")[1].split("Never:")[0]
 
     assert "word for word the same in every language" in safety_section
     assert "The keys you write stay in English." in safety_section
 
 
-# --- the escalation section -----------------------------------------------------------
-
-
 def test_the_escalation_section_is_absent_when_no_recipient_is_configured():
-    """ABSENT, not disabled: teaching a tag whose output the server would drop spends tokens
-    every turn to produce an offer no student can see."""
+    """Absent, not disabled: a taught tag the server would drop costs tokens every turn."""
     prompt = build_system_prompt(_SETTINGS)
 
     assert "escalate_to_human" not in prompt
@@ -348,14 +336,14 @@ def test_the_section_states_that_going_over_drops_the_offer():
 
 
 def test_the_section_bans_an_offer_on_a_safety_turn():
-    """Stated HERE, not with Safety's other exclusions, because this section is gated."""
+    """Stated here, not with Safety's other exclusions, because this section is gated."""
     prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
 
     assert "Never offer it on a turn where you emit a safety block." in prompt
 
 
 def test_the_section_names_all_three_triggers():
-    """CAPABILITY, SENSITIVITY, AND BEING ASKED. The first shipped alone and was too narrow."""
+    """Capability, sensitivity, and being asked. The first shipped alone and was too narrow."""
     prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
 
     assert "already tried the destinations you gave them" in prompt
@@ -364,13 +352,11 @@ def test_the_section_names_all_three_triggers():
 
 
 def test_the_draft_stays_english_when_the_reply_does_not():
-    """The one piece of model prose that does not follow the student's language: its reader
-    is staff, and a message nobody in that office can read waits."""
+    """The one piece of model prose that stays English: its reader is staff."""
     prompt = build_system_prompt(_settings(escalation_recipient="a@b.edu"))
 
     assert "WRITE THE DRAFT IN ENGLISH" in prompt
-    # And the student is not left holding a message they cannot read: the prose around it is
-    # in their own language.
+    # The prose around it is still in the student's own language.
     assert "in THEIR language, what the draft says and who it goes to" in prompt
 
 
@@ -388,7 +374,7 @@ def test_asking_for_a_person_also_points_at_the_pill():
 
 
 def test_the_place_roster_in_the_prompt_is_the_resolvers_table():
-    """The location keys are the model's whole vocabulary here, so the roster IS the table."""
+    """The location keys are the model's whole vocabulary here, so the roster is the table."""
     import places
 
     prompt = build_system_prompt(_SETTINGS)
@@ -399,21 +385,21 @@ def test_the_place_roster_in_the_prompt_is_the_resolvers_table():
 
 
 def test_the_prompt_shows_the_place_block_as_a_key_and_nothing_else():
-    """The shape the model copies: an attribute in the sketch is how an invented address gets in."""
+    """The shape the model copies: an attribute in the sketch lets an invented address in."""
     prompt = build_system_prompt(_SETTINGS)
     assert "<place>career-center</place>" in prompt
     assert "no address, no room, no map link, no attributes" in prompt
 
 
 def test_the_prompt_says_an_unlisted_place_gets_no_block():
-    """THE LOAD-BEARING SENTENCE: a nearest-key guess resolves, renders, and is wrong."""
+    """The load-bearing sentence: a nearest-key guess resolves, renders, and is wrong."""
     prompt = build_system_prompt(_SETTINGS)
     assert "write no block at all" in prompt
     assert "Not the nearest key" in prompt
 
 
 def test_the_safety_section_carries_every_safety_turn_exclusion():
-    """One list, in the Safety section: a safety turn drops the cards AND the location panel."""
+    """One list, in the Safety section: a safety turn drops the cards and the location panel."""
     safety_section = build_system_prompt(_SETTINGS).split("Safety:")[1].split("Never:")[0]
 
     assert "no cards and no location block" in safety_section

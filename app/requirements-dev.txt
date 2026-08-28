@@ -1,13 +1,7 @@
-# Dev/test deps for the chat Lambda's modules. Runtime deps are in requirements.txt
-# (pydantic, which the tests need too):
-#     python -m pip install -r requirements.txt -r requirements-dev.txt
-# Same pytest pin as infra/ and scraper/ so all three suites behave identically.
+# Install alongside requirements.txt, which the tests need too. Same pytest pin as infra/
+# and scraper/, so all three suites behave identically.
 pytest==8.4.2
 
-# PyJWT, because app/token_auth.py is the one module in app/ whose correctness IS a
-# security property and it cannot be tested against a stub: the suite mints RS256 tokens
-# with a keypair it generates and asserts what the verifier does with them, which needs the
-# real library on both sides. It is NOT in requirements.txt - the chat function's layer
-# must not grow a dependency for a function it does not run - so it is here, where it
-# reaches the suite and no deployed artifact.
+# Real RS256 on both sides: a stubbed library would pass the token tests while verifying
+# nothing. Here rather than requirements.txt, so no deployed artifact grows it.
 pyjwt[crypto]>=2.8,<3

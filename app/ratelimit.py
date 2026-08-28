@@ -1,7 +1,6 @@
-"""The per-user daily message cap: the one control that bounds what ONE account spends.
+"""The per-user daily message cap, the one control that bounds what one account spends.
 
-Attempts rather than answers, a fixed UTC day, and it fails open; see
-docs/chat-service.md, The daily message cap.
+It counts attempts rather than answers, on a fixed UTC day, and it fails open.
 """
 
 from __future__ import annotations
@@ -15,14 +14,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RateLimitWindow:
-    """One user's allowance period: which counter to touch, and when it lets go."""
-
     key: str
     reset_at: datetime
     expires_at: int
 
     def retry_after_seconds(self, now: datetime) -> int:
-        """Whole seconds until the allowance refills, rounded up and never below 1."""
         remaining = (self.reset_at - now).total_seconds()
         if remaining <= 1:
             return 1
@@ -30,7 +26,6 @@ class RateLimitWindow:
 
 
 def window_for(now: datetime) -> RateLimitWindow:
-    """Return the UTC calendar day `now` falls in. `now` is injected so it is testable."""
     now = now.astimezone(timezone.utc)
     reset_at = datetime.combine(
         now.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
@@ -44,20 +39,16 @@ def window_for(now: datetime) -> RateLimitWindow:
 
 @dataclass(frozen=True)
 class RateLimitRefusal:
-    """What a caller needs to refuse a turn: the cap, when it lifts, and how long that is."""
-
     limit: int
     reset_at: datetime
     retry_after_seconds: int
 
     @property
     def reset_at_iso(self) -> str:
-        """The reset instant as ISO 8601 UTC, the format every timestamp here uses."""
         return self.reset_at.isoformat(timespec="seconds").replace("+00:00", "Z")
 
     @property
     def message(self) -> str:
-        """The refusal as one plain sentence, for a caller with no clock of its own."""
         return (
             f"You have reached your daily limit of {self.limit} messages. "
             "Your limit resets at midnight UTC."

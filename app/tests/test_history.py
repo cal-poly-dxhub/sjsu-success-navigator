@@ -1,7 +1,4 @@
-"""The conversation store: the item shapes the doc fixes, and the one query a turn makes.
-
-See docs/accounts-and-storage.md and docs/chat-service.md, Storage.
-"""
+"""The conversation store: the item shapes, and the one query a turn makes."""
 
 import inspect
 import re
@@ -16,7 +13,7 @@ _CONV = "01J0000000000000000000000A"
 
 
 class _ClientError(Exception):
-    """Shaped like botocore's ClientError, because the error CODE is what the store reads."""
+    """Shaped like botocore's ClientError, because the error code is what the store reads."""
 
     def __init__(self, code):
         super().__init__(code)
@@ -99,9 +96,6 @@ def _item(role, text, sort_key):
     return {"sk": sort_key, "role": role, "text": text}
 
 
-# --- ids ---------------------------------------------------------------------------------
-
-
 def test_a_ulid_is_the_shape_a_conversation_id_is_validated_against():
     """The anti-drift pin between the two halves of the id contract: minted and accepted."""
     for _ in range(50):
@@ -133,9 +127,6 @@ def test_two_ids_minted_in_one_millisecond_still_increase(monkeypatch):
     assert len(set(ids)) == len(ids)
 
 
-# --- writes ------------------------------------------------------------------------------
-
-
 def test_a_message_is_one_item_with_the_docs_keys(table):
     sort_key = table.store.append_message(
         user_id=_SUB, conversation_id=_CONV, role="user", text="where do I get tutoring?"
@@ -160,7 +151,7 @@ def test_the_partition_key_is_built_from_the_sub_and_nothing_else(table):
 
 
 def test_an_assistant_message_is_stored_as_the_model_wrote_it(table):
-    """THE RECORD IS THE REPLY, not the halves it was rendered into."""
+    """The record is the reply, not the halves it was rendered into."""
     reply = 'Two places can help.\n\n<card ref="1"><title>Writing Center</title></card>\n\nWhich one?'
     table.store.append_message(
         user_id=_SUB,
@@ -195,7 +186,7 @@ def test_a_reply_that_cited_nothing_stores_no_sources_attribute(table):
 
 
 def test_a_message_never_carries_the_rendered_cards_any_more(table):
-    """The attribute is READ, for the rows already written with it, and never written."""
+    """The attribute is read, for the rows already holding it, and never written."""
     table.store.append_message(
         user_id=_SUB,
         conversation_id=_CONV,
@@ -252,8 +243,7 @@ def test_a_long_first_message_is_truncated_into_a_title(table):
 
 
 def test_a_header_failure_does_not_lose_the_message(table, caplog):
-    """The message is already durable when the counter is bumped, and a drifted count is
-    repairable from the messages while the messages are not repairable from anything."""
+    """A drifted count is repairable from the messages; the messages are repairable from nothing."""
     table.raises_on = "update_item"
 
     with caplog.at_level("ERROR"):
@@ -275,9 +265,6 @@ def test_a_failed_message_write_is_not_swallowed(table):
         )
 
 
-# --- the read ----------------------------------------------------------------------------
-
-
 def test_the_context_read_is_one_descending_limited_consistent_query(table):
     table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=12)
 
@@ -290,7 +277,7 @@ def test_the_context_read_is_one_descending_limited_consistent_query(table):
     assert query["KeyConditionExpression"] == "pk = :pk AND begins_with(sk, :prefix)"
     assert query["ScanIndexForward"] is False, "newest first, so the Limit is the window"
     assert query["Limit"] == 12
-    # Strongly consistent, and the case it covers is the PREVIOUS turn, not this one.
+    # Strongly consistent, and the case it covers is the previous turn, not this one.
     assert query["ConsistentRead"] is True
 
 
@@ -363,9 +350,6 @@ def test_a_zero_window_asks_dynamodb_nothing(table):
     assert table.queries == []
 
 
-# --- the display reads ----------------------------------------------------------------
-
-
 def _header(conversation_id, **attrs):
     item = {
         "sk": f"CONV#{conversation_id}",
@@ -389,7 +373,7 @@ def test_the_conversation_list_is_one_query_on_the_users_own_partition(table):
     assert query["ExpressionAttributeValues"][":prefix"] == "CONV#"
     assert query["KeyConditionExpression"] == "pk = :pk AND begins_with(sk, :prefix)"
     assert query["Limit"] == 40
-    # Newest FIRST, so the limit takes the newest conversations rather than the oldest.
+    # Newest first, so the limit takes the newest conversations rather than the oldest.
     assert query["ScanIndexForward"] is False
     # A student who sends a turn and reloads must see it.
     assert query["ConsistentRead"] is True
@@ -498,8 +482,7 @@ def test_an_unreadable_source_ref_costs_one_link_and_not_the_conversation(table,
 
 
 def test_the_display_read_comes_back_oldest_first(table):
-    """DynamoDB is asked for the newest `limit` descending, then reversed, because a long
-    conversation must show the end a student is returning to."""
+    """The newest `limit` descending, then reversed: a student returns to the end."""
     table.items = [
         _item("assistant", "second", f"MSG#{_CONV}#02"),
         _item("user", "first", f"MSG#{_CONV}#01"),
@@ -546,9 +529,6 @@ def test_a_zero_display_window_asks_dynamodb_nothing(table):
     assert table.queries == []
 
 
-# --- titling, renaming and deleting -------------------------------------------------------
-
-
 def test_a_generated_title_replaces_the_first_message_one(table):
     table.store.set_generated_title(
         user_id=_SUB, conversation_id=_CONV, title="Financial aid appeal deadline"
@@ -569,8 +549,7 @@ def test_a_generated_title_cannot_create_a_header(table):
 
 
 def test_a_generated_title_never_overwrites_a_student_chosen_name(table):
-    """The promise to a student who renamed a chat, written as a condition rather than left
-    to the ordering that happens to hold today."""
+    """A condition, not an ordering that happens to hold: the student named this chat."""
     table.store.set_generated_title(user_id=_SUB, conversation_id=_CONV, title="A title")
     condition = table.updates[0]["ConditionExpression"]
     assert "attribute_not_exists(#userTitled)" in condition
@@ -625,8 +604,7 @@ def test_a_delete_removes_every_message_before_the_header(table):
 
 
 def test_a_delete_that_fails_midway_leaves_the_header(monkeypatch):
-    """THE ORDERING IS THE WHOLE DESIGN: this leaves an empty but VISIBLE conversation, and
-    the other order leaves an orphaned transcript nothing can reach."""
+    """This leaves an empty but visible conversation; the other order orphans a transcript."""
     fake = _FakeTable(items=[{"sk": f"MSG#{_CONV}#01"}], raises_on="batch_delete")
     store = history.ConversationStore("chat-history-test")
     monkeypatch.setattr(store, "_table_resource", lambda: fake)
@@ -681,12 +659,8 @@ def test_the_title_cap_travels_with_the_store(monkeypatch):
     assert len(title) == 20 and title.endswith("…")
 
 
-# --- the rate-limit counter --------------------------------------------------------------
-
-
 def test_the_allowance_claim_is_one_atomic_conditional_write(table):
-    """THE WHOLE RACE GUARANTEE, in one request: the compare and the increment are the same
-    operation, and the condition is evaluated against the value the item holds then."""
+    """The whole race guarantee: the compare and the increment are the same operation."""
     assert (
         table.store.claim_message_allowance(
             user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
@@ -729,7 +703,7 @@ def test_the_counter_carries_the_tables_ttl_attribute(table):
 
 
 def test_count_goes_through_expression_attribute_names(table):
-    """`count` is a DynamoDB reserved word, and used bare it fails at RUNTIME."""
+    """`count` is a DynamoDB reserved word, and used bare it fails at runtime."""
     table.store.claim_message_allowance(
         user_id=_SUB, window_key="2026-08-12", limit=60, expires_at=1786579200
     )
@@ -762,21 +736,8 @@ def test_any_other_failure_on_the_allowance_write_still_raises(monkeypatch):
         )
 
 
-# --- the connection records that are gone (was app/streaming.py) --------------------------
-
-
 def test_the_store_has_no_connection_api_at_all():
-    """THE INVERSION OF FOUR TESTS THAT USED TO PIN THESE METHODS EXIST.
-
-    The WebSocket transport is gone, so the fourth sort-key prefix in this partition
-    (`CONN#<connectionId>`) has nothing to write it and nothing to read it. This is not a
-    tidy-up: a store that still offered `open_connection` would offer a way to put an item
-    in a student's partition that no read here will ever surface and no TTL policy was
-    re-argued for, and the next person to find the method would reasonably assume something
-    still consumed it.
-
-    Asserted on the CLASS rather than by grepping the file, so a method reintroduced under
-    any docstring fails."""
+    """Nothing writes or reads a `CONN#` item, so offering the method would be a trap."""
     assert not hasattr(history.ConversationStore, "open_connection")
     assert not hasattr(history.ConversationStore, "close_connection")
     assert "CONN#" not in inspect.getsource(history), (
@@ -785,9 +746,7 @@ def test_the_store_has_no_connection_api_at_all():
 
 
 def test_a_connection_record_is_invisible_to_every_read_in_the_module(table):
-    """KEPT UNCHANGED FROM WHEN THERE WERE CONNECTION RECORDS TO BE INVISIBLE TO. The
-    assertion is about the READS - that each one names its prefix rather than scanning the
-    partition - and that property outlives the item kind that made it worth writing down."""
+    """Each read names its prefix rather than scanning the partition."""
     table.store.list_conversations(user_id=_SUB, limit=10)
     table.store.conversation_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
     table.store.recent_messages(user_id=_SUB, conversation_id=_CONV, limit=10)
@@ -796,9 +755,6 @@ def test_a_connection_record_is_invisible_to_every_read_in_the_module(table):
         prefix = query["ExpressionAttributeValues"][":prefix"]
         assert prefix in ("CONV#", f"MSG#{_CONV}#")
         assert not prefix.startswith("CONN#")
-
-
-# --- the escalation draft --------------------------------------------------------------
 
 
 def test_an_assistant_message_carries_its_escalation_draft(table):
@@ -863,9 +819,6 @@ def test_a_stored_message_with_no_draft_reads_back_as_none(table):
     )
 
     assert messages[0].escalation is None
-
-
-# --- the location card --------------------------------------------------------------------
 
 
 def test_an_assistant_message_carries_its_location_card(table):

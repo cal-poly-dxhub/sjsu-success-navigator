@@ -1,7 +1,4 @@
-"""The campus clock. The zone is the assertion, because the zone is the bug.
-
-See docs/chat-service.md, The campus clock.
-"""
+"""The campus clock. The zone is the assertion, because the zone is the bug."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -18,7 +15,7 @@ def test_the_campus_zone_is_pinned_and_is_not_utc():
 
 
 def test_a_utc_instant_is_stated_in_campus_time_not_utc():
-    """THE BUG, driven end to end: 03:14 UTC on Wednesday is 8:14pm on TUESDAY in San Jose."""
+    """The bug, driven end to end: 03:14 UTC on Wednesday is 8:14pm on Tuesday in San Jose."""
     line = campus_time.campus_context_line(_utc(2026, 8, 12, 3, 14))
 
     assert "Tuesday, August 11, 2026" in line
@@ -68,8 +65,7 @@ def test_reading_the_clock_returns_an_aware_campus_datetime():
 def test_a_runtime_with_no_tz_database_costs_the_line_and_never_falls_back_to_utc(
     monkeypatch, caplog
 ):
-    """The one way this can fail, and the fallback is SILENCE. A UTC stamp would look like
-    a working clock and be wrong by seven or eight hours."""
+    """The fallback is silence: a UTC stamp reads as a working clock and is hours wrong."""
 
     def _no_tz_database(name):
         raise campus_time.ZoneInfoNotFoundError(name)

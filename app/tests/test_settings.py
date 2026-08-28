@@ -1,4 +1,4 @@
-"""Settings: identity has no defaults, behaviour does. See docs/chat-service.md, Settings."""
+"""Settings: identity has no defaults, behaviour does."""
 
 import pytest
 
@@ -56,7 +56,7 @@ def test_behavioural_knobs_default_to_camps_values(monkeypatch):
     assert settings.max_query_chars == 2000
     assert settings.max_converse_iterations == 6
     assert settings.max_history_messages == 12
-    # The read caps are NOT the model's window: they bound a browser read, not a token bill.
+    # The read caps are not the model's window: they bound a browser read, not a token bill.
     assert settings.max_conversations_listed == 40
     assert settings.max_conversation_messages == 60
     assert settings.converse_deadline_seconds == 22
@@ -82,8 +82,7 @@ def test_a_non_numeric_knob_raises_rather_than_silently_defaulting(monkeypatch):
 
 
 def test_the_daily_message_limit_defaults_to_disabled(monkeypatch):
-    """THE ONE BEHAVIOURAL DEFAULT THAT IS NOT config.yaml's VALUE, and deliberately so;
-    see docs/chat-service.md, Settings."""
+    """The one behavioural default that is not config.yaml's value, and deliberately so."""
     _set_identity(monkeypatch)
     monkeypatch.delenv("DAILY_MESSAGE_LIMIT", raising=False)
 
@@ -115,11 +114,8 @@ def test_the_exemption_list_takes_more_than_one_client(monkeypatch):
     )
 
 
-# --- the escalate-to-human path ---------------------------------------------------------
-
-
 def test_the_escalation_recipient_defaults_to_empty(monkeypatch):
-    """EMPTY IS THE GATE, the same shape as the daily limit's zero."""
+    """Empty is the gate, the same shape as the daily limit's zero."""
     _set_identity(monkeypatch)
     for key in ("ESCALATION_RECIPIENT", "ESCALATION_SUBJECT", "ESCALATION_MAX_CHARS"):
         monkeypatch.delenv(key, raising=False)
@@ -144,8 +140,7 @@ def test_the_escalation_wiring_is_read_from_the_environment(monkeypatch):
 
 
 def test_a_blank_subject_falls_back_rather_than_shipping_an_empty_line(monkeypatch):
-    """A deploy that set the address and dropped this would put an empty subject line in
-    front of a staff mailbox."""
+    """Otherwise a deploy could put an empty subject line in front of a staff mailbox."""
     _set_identity(monkeypatch)
     monkeypatch.setenv("ESCALATION_RECIPIENT", "sjsucares@sjsu.edu")
     monkeypatch.setenv("ESCALATION_SUBJECT", "   ")

@@ -1,50 +1,7 @@
-"""ONE TURN, with no transport in it.
+"""One turn, with no transport in it.
 
-WHAT THIS IS. Every step a student's question goes through between "the caller has been
-identified" and "there is a ChatResponse to send": the daily cap, the input guardrail, the
-student's message written, the previous messages read back, the agent loop, the reply
-written, and - on a conversation that did not exist a moment ago - the title. It was
-app/handler.py's, in the same order, and it is here now because it has a SECOND caller
-(the FastAPI app under the Lambda Web Adapter) and this repo already knew what a second
-copy of this sequence costs: the WebSocket transport held one across two functions, and
-every ordering argument below had to be re-made in its docstring until that went.
-
-THE ORDER IS THE WHOLE FILE, and each position was argued for:
-
-  1. rate limit - BEFORE the guardrail, so a refused turn spends one conditional DynamoDB
-     write and nothing billable, not even a guardrail text unit.
-  2. guardrail   - BEFORE the write, so a blocked message never becomes a turn. Storing it
-     would smuggle the attack text into the history the model reads on the NEXT turn, past
-     the screen that just caught it.
-  3. write the student's message - BEFORE the model call, so a disclosure that then times
-     out is still on record. That ordering is the whole reason this is not one write at the
-     end. A STREAMED turn announces the conversation id here, the instant the message is on
-     record under it and before the loop can emit a byte.
-  4. read the previous N back  - one descending, limited, strongly consistent query,
-     excluding the message just written (the orchestrator appends the current turn in
-     memory, so reading it back would say it twice).
-  5. the model.
-  6. write the reply.
-  7. on a NEW conversation only, name it - last, after the answer exists, on its own short
-     budget. A label can never be allowed to delay or fail a turn, and by this point the
-     fallback title is already on the header (app/history.py).
-
-WHY EVERY DEPENDENCY IS AN ARGUMENT. The store, the settings, the Bedrock client, the loop
-and the title generator all arrive as parameters rather than module globals, and that is
-not ceremony:
-
-  - it is what makes this transport-free. A caller supplies its own clients; nothing here
-    reads an environment variable or knows what an event looks like.
-  - it is what keeps app/handler.py's 80 existing tests running UNCHANGED. That suite's
-    seams are `handler.STORE`, `handler.SETTINGS`, `handler._bedrock_client`,
-    `handler.run_chat` and `handler.generate_title`, and handler.py passes each of those
-    module globals in by name at call time - so a monkeypatch on the handler still reaches
-    the step it has always reached.
-
-A STORAGE FAILURE DOES NOT DENY THE STUDENT AN ANSWER. Each step that touches DynamoDB is
-guarded on its own and logs at ERROR: a failed write costs the record of one message and a
-failed read costs the context, but refusing to answer would cost a student in front of a
-screen the answer itself. The log line is the alarm.
+Cap, guardrail, write, read, model, write, title: the order is argued for, and every
+dependency arrives as an argument.
 """
 
 from __future__ import annotations
@@ -66,18 +23,7 @@ logger.setLevel(logging.INFO)
 
 
 class TurnRefused(Exception):
-    """The daily cap is spent. This turn will not happen, and it is not an error.
-
-    AN EXCEPTION RATHER THAN A RETURN VALUE, because a refusal is the one exit from
-    `run_turn` that is not a ChatResponse: it carries a limit, a reset instant and a
-    retry-after, and each transport renders those its own way - POST /chat as a 429 with a
-    Retry-After header, the stream as an `error` frame. Folding it into the response model
-    would put a shape on the wire that no client asks for; returning a two-field result
-    object would make every caller unpack a tuple whose second half is almost always None.
-
-    NOTHING WAS WRITTEN AND NOTHING WAS BILLED when this is raised - not even a guardrail
-    text unit - which is exactly what the rate limit's position in the order buys.
-    """
+    """The daily cap is spent. Nothing was written and nothing was billed."""
 
     def __init__(self, refusal):
         super().__init__(refusal.message)
@@ -85,23 +31,7 @@ class TurnRefused(Exception):
 
 
 def apply_input_guardrail(query: str, *, settings: Settings, bedrock, usage=None):
-    """Screen the BARE student query with ApplyGuardrail(source=INPUT).
-
-    Returns the guardrail's replacement text when it blocks, or None to continue. The
-    query alone is screened - not the system prompt, not retrieved passages - because
-    PROMPT_ATTACK is about what the student sent.
-
-    A guardrail FAILURE is not a block: if the call itself errors, the request continues
-    to the loop rather than refusing a legitimate question over an infrastructure fault.
-    Bedrock is already the harder dependency behind it, and a student who hits a transient
-    guardrail outage should not be told their question was rejected.
-
-    `usage` is the turn's billable tally (app/usage.py). The text units are taken from the
-    guardrail's OWN reported usage rather than counted off the query length, because the
-    unit is 1,000 characters of whatever the service decided to screen - and a screen that
-    blocked is billed exactly like one that passed, which is why this records before the
-    intervention check below.
-    """
+    """The query alone, because PROMPT_ATTACK is about what the student sent."""
     try:
         result = bedrock.apply_guardrail(
             guardrailIdentifier=settings.input_guardrail_id,
@@ -126,25 +56,14 @@ def apply_input_guardrail(query: str, *, settings: Settings, bedrock, usage=None
 
 
 def stored_escalation(response: ChatResponse):
-    """This turn's email draft as it will be stored, or None.
-
-    Stored beside the cards and for the same reason: it is what the student was shown. A
-    reopened conversation re-renders these exact bytes rather than reassembling them from
-    today's config, so a recipient that changes next month does not rewrite what an old
-    turn offered.
-    """
+    """What the student was shown, so a recipient that changes cannot rewrite an old turn."""
     if response.escalation is None:
         return None
     return response.escalation.model_dump(by_alias=True)
 
 
 def stored_place(response: ChatResponse):
-    """This turn's location card as it will be stored, or None.
-
-    Stored rather than re-resolved from the key on the way out, for the reason the draft
-    beside it is stored: an office that moves next month must not silently rewrite where an
-    old turn said it was. What a reopened conversation shows is what the student was shown.
-    """
+    """What the student was shown, so an office that moves cannot rewrite an old turn."""
     if response.place is None:
         return None
     return response.place.model_dump(by_alias=True)
@@ -162,18 +81,7 @@ def name_new_conversation(
     make_title: Callable[..., Any] = generate_title,
     usage=None,
 ):
-    """Name a conversation the model just created. Returns the title, or None.
-
-    THE FALLBACK IS ALREADY WRITTEN when this runs. The first user message put a truncated
-    title on the header on its way past (app/history.py), so every path out of here that is
-    not a good title - the deadline, a Bedrock error, an unusable reply, a failed write -
-    leaves the conversation named rather than nameless. That is why this whole function can
-    swallow its failures at INFO instead of failing the turn: there is no state in which
-    doing nothing is worse than what was already there.
-
-    Runs AFTER the assistant's reply is written and the answer is in hand, so the title can
-    reflect what the conversation turned out to be about rather than only what was asked.
-    """
+    """The fallback title is already on the header, so every failure here is survivable."""
     try:
         title = make_title(
             question=question,
@@ -211,51 +119,8 @@ def run_turn(
     make_title: Callable[..., Any] = generate_title,
     stream: Any = None,
 ) -> ChatResponse:
-    """The whole turn, in the order this module's docstring fixes. Raises TurnRefused.
-
-    `user_id` and `client_id` are the CALLER'S to establish - both come out of a validated
-    token, never a request body, and nothing here re-checks them. This function trusts what
-    it is handed about identity precisely because there is no shape it could be handed that
-    would let it check.
-
-    `bedrock_client` is a zero-argument FACTORY rather than a client, so a turn refused by
-    the daily cap never builds one. That is the same instinct the rate limit's position has:
-    a refused turn should cost as close to nothing as the code can arrange.
-
-    `deadline` is a `time.monotonic()` timestamp the Converse loop must not start a call
-    after. `title_deadline_at` is called for the titling budget AFTER the model returns, and
-    it is a callable for that reason alone: both are `time.monotonic()` timestamps, so one
-    computed up here would already be in the past by the time the title needed it, and every
-    new conversation would silently keep its fallback name. A deadline means "from now", and
-    for the title, now is twenty seconds later than here.
-
-    `converse` and `make_title` are the agent loop and the titler. They are parameters so a
-    caller can hand in its own - which is what app/handler.py does with its own module
-    globals, keeping that suite's monkeypatches pointed at the steps they have always been
-    pointed at.
-
-    `stream` IS THE ONLY DIFFERENCE BETWEEN A STREAMED TURN AND A BUFFERED ONE, and it is
-    passed straight through to the loop, which is where orchestrator.run_chat's own docstring
-    explains what it costs: None runs `Converse`, a sink runs `ConverseStream` and pushes the
-    reply out as it is written, and everything after the model call - the tool loop, the
-    deadline, the iteration cap, and therefore every card, cap, dash and safety decision - is
-    the same code reading the same complete text.
-
-    IT IS ONLY PASSED ON WHEN IT IS SET, and that is not a micro-optimisation. `converse` is
-    an injected callable, and the handler's suite injects stand-ins with the signature
-    run_chat had before streaming existed; handing them a keyword they never accepted would
-    fail every one of those tests for a feature POST /chat does not use.
-
-    A sink is also the only thing STEP 3B needs. A client that is watching is told the
-    conversation id the moment the student's message is on record under it; a caller with no
-    sink is told the same thing by the response it is already waiting for, which is why that
-    step is the one position in the order a buffered turn passes straight through.
-    """
-    # STEP 1 - the per-user daily cap, before the guardrail screen and before the loop.
-    #
-    # NOTHING IS WRITTEN AND NO USAGE IS PRODUCED. A refused turn is not a turn - it made no
-    # model call, screened nothing, and left no message - so unlike a guardrail block, which
-    # billed a screen and reports it, there is genuinely nothing to meter.
+    """The whole turn, in order. `stream` is the only difference from a buffered one."""
+    # Step 1, the daily cap: ahead of the guardrail, so a refusal spends nothing billable.
     refusal = claim_turn(
         store=store,
         user_id=user_id,
@@ -265,15 +130,10 @@ def run_turn(
     if refusal is not None:
         raise TurnRefused(refusal)
 
-    # The turn's billable tally, opened before the first thing that spends anything and
-    # mutated in place from here down (app/usage.py). It rides out on the response so the
-    # cost panel can price the conversation in front of the student from what this
-    # conversation actually used, rather than from the sample average in config.yaml.
+    # Opened before the first thing that spends anything, and mutated in place from here down.
     usage = TurnUsage()
 
-    # STEP 2 - the guardrail screen. The conversation id is echoed unchanged, because no
-    # turn was recorded under it. The usage IS returned: a blocked screen was billed like
-    # any other, and a meter that only counts the turns that worked reads low under attack.
+    # Step 2, the guardrail: no turn is recorded, but the screen was billed, so usage returns.
     blocked_text = apply_input_guardrail(
         request.query, settings=settings, bedrock=bedrock_client(), usage=usage
     )
@@ -284,12 +144,11 @@ def run_turn(
             usage=usage,
         )
 
-    # A conversation the CLIENT could not name is one that did not exist a moment ago, and
-    # that - not a lookup, not a message count - is what makes this the turn that titles it.
+    # An unnamed conversation did not exist a moment ago, so this is the turn that titles it.
     is_new_conversation = request.conversation_id is None
     conversation_id = request.conversation_id or new_conversation_id()
 
-    # STEP 3 - the student's message, before the model call.
+    # Step 3, the student's message: before the model call, so a timeout still leaves a record.
     user_sort_key = None
     try:
         user_sort_key = store.append_message(
@@ -299,28 +158,14 @@ def run_turn(
             text=request.query.strip(),
         )
     except Exception:
-        # No sort key to exclude below. If this was the ambiguous kind of failure - the
-        # write landed and the response did not - the read picks the message up and the
-        # orchestrator's consecutive-role merge folds it into the copy it appends, so the
-        # worst case is one sentence said twice rather than a rejected Converse call.
+        # No sort key to exclude below; at worst the read picks the message up and merges it.
         logger.exception("Could not record the student's message; answering anyway")
 
-    # STEP 3b - the id, told to a client that is watching. AHEAD OF EVERY BYTE OF THE
-    # REPLY, because the server mints it and an absent one means a new conversation, so a
-    # browser on a fresh conversation has no other way to learn it in time to place the
-    # sidebar row or to address its next turn. It is sent on a continuing conversation too,
-    # echoing the id that arrived, so the client never has to know which case it is in.
-    #
-    # ONE METHOD ON THE SINK (app/preview.py), which is why this is one line rather than a
-    # wire format spelled out here. The frame's own argument lives there, so a second
-    # transport arriving later inherits it rather than re-deciding it.
-    #
-    # A BUFFERED TURN HAS NO SINK and sends nothing: POST /chat carries the id in the
-    # response, which for a caller that waits for the whole reply is the same instant.
+    # Step 3b, the id, ahead of every byte of the reply. A buffered turn has no sink.
     if stream is not None:
         stream.accepted(conversation_id)
 
-    # STEP 4 - the context read.
+    # Step 4, the context read.
     try:
         history = store.recent_messages(
             user_id=user_id,
@@ -332,7 +177,7 @@ def run_turn(
         logger.exception("Could not read conversation history; answering without it")
         history = []
 
-    # STEP 5 - the model. See the docstring on why `stream` is spread rather than named.
+    # Step 5, the model. Spread rather than named: an injected stand-in may not accept it.
     streaming_kwargs = {} if stream is None else {"stream": stream}
     response = converse(
         request,
@@ -343,22 +188,16 @@ def run_turn(
         **streaming_kwargs,
     )
 
-    # STEP 6 - the reply.
+    # Step 6, the reply.
     try:
         store.append_message(
             user_id=user_id,
             conversation_id=conversation_id,
             role="assistant",
-            # THE REPLY AS THE MODEL WROTE IT, tags and all, plus the pairs its cards
-            # resolved against. Between them they are the turn, so reopening this
-            # conversation re-parses it rather than reassembling it from halves - which is
-            # what used to lose the prose the model wrote UNDER its cards.
+            # As the model wrote it, tags and all, so reopening re-parses rather than rebuilds.
             text=response.raw_text,
             sources=response.sources,
-            # The location card is the exception the re-parse does not cover, and it is
-            # recorded for the reason the draft below it is: the `<place>` key survives in
-            # the text and would resolve again, but against TODAY'S catalogue. What the
-            # student was sent to is what comes back.
+            # Recorded, not re-resolved: the key survives the text but against today's table.
             place=stored_place(response),
             escalation=stored_escalation(response),
         )
@@ -367,7 +206,7 @@ def run_turn(
 
     response.conversation_id = conversation_id
 
-    # STEP 7 - the title, on a new conversation only.
+    # Step 7, the title, on a new conversation only.
     if is_new_conversation:
         response.title = name_new_conversation(
             user_id=user_id,
@@ -382,9 +221,6 @@ def run_turn(
         )
     response.usage = usage
 
-    # Replaces classify_response_mode, which collapsed a turn into one of three words by
-    # reading only the FIRST statement batch. The counts say strictly more and cannot go
-    # stale against the response shape.
     logger.info(
         "chat cards=%s safety=%s place=%s escalation=%s calls=%s in=%s out=%s",
         sum(len(batch.cards) for batch in (response.statement_batches or [])),

@@ -1,7 +1,4 @@
-"""Bedrock Knowledge Base retrieval: top-k, drop below the score floor, carry metadata out.
-
-The module-scope client and its retries are in docs/chat-service.md, The Converse loop.
-"""
+"""Bedrock Knowledge Base retrieval: top-k, drop below the score floor, carry metadata out."""
 
 from __future__ import annotations
 

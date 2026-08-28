@@ -1,8 +1,6 @@
 """The reader of repo-root data/: what it does when a file is wrong.
 
-One property, and every test here is a way of losing it: a bad data file raises, at import,
-rather than serving a table with rows missing. Each test writes one malformation into a
-tmp_path directory; see data/README.md.
+One property: a bad file raises at import rather than serving a table with rows missing.
 """
 
 import pytest
@@ -19,16 +17,13 @@ from campus_data import (
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
-    """A stand-in for repo-root data/, and the only place the reader will look."""
+    """The only place the reader will look."""
     monkeypatch.setattr(campus_data, "_DATA_DIRS", (tmp_path,))
     return tmp_path
 
 
 def _write(directory, name, text):
     (directory / name).write_text(text, encoding="utf-8")
-
-
-# --- the file itself ------------------------------------------------------------------------
 
 
 def test_a_missing_file_names_everywhere_it_looked(data_dir):
@@ -52,9 +47,6 @@ def test_the_first_directory_holding_the_file_wins(tmp_path, monkeypatch):
     assert load_rows("abbreviations.csv", ("abbreviation", "expansion"))[0]["expansion"] == (
         "Somewhere Else"
     )
-
-
-# --- the shape of the table -------------------------------------------------------------------
 
 
 def test_a_missing_column_is_named(data_dir):
@@ -119,9 +111,6 @@ def test_an_unreadable_file_is_reported_as_such(data_dir):
         load_rows("places.csv", ("key", "name"))
 
 
-# --- keys ---------------------------------------------------------------------------------------
-
-
 def test_a_duplicate_key_is_fatal_rather_than_the_last_one_winning(data_dir):
     """Overwriting would make the second row the address every student is given, silently."""
     _write(
@@ -136,9 +125,6 @@ def test_a_duplicate_key_is_fatal_rather_than_the_last_one_winning(data_dir):
 def test_keyed_rows_keep_file_order(data_dir):
     _write(data_dir, "places.csv", "key,name\nb,B\na,A\n")
     assert list(load_keyed("places.csv", "key", ("name",))) == ["b", "a"]
-
-
-# --- cells with a type ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("value", ["37.336178°", "37,336178", "north", ""])
@@ -164,15 +150,12 @@ def test_a_flag_reads_as_no(value):
 
 @pytest.mark.parametrize("value", ["y", "yes please", "maybe", "x"])
 def test_ANYTHING_ELSE_IN_A_FLAG_IS_FATAL(value):
-    """A typo quietly reading as "no" drops a contact off the panel, so a typo is fatal."""
+    """A typo quietly reading as "no" would drop a contact off the panel."""
     with pytest.raises(CampusDataError, match="Write yes or no"):
         parse_flag(value, name="contacts.csv", key="caps", column="in_default_panel")
 
 
-# --- the row's shape ----------------------------------------------------------------------------
-#
-# Both slipped through every check above, because every cell looked at was well formed: the
-# cells had simply moved, or stopped. The shape is the only tell.
+# Every cell looked at is well formed in both: the cells moved or stopped, so shape is the tell.
 
 
 def test_a_row_with_MORE_cells_than_the_header_is_fatal(data_dir):

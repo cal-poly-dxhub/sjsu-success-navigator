@@ -1,7 +1,6 @@
 """Sammy's system prompt, built from the card caps rather than restating them.
 
-One rule in one place, the worked examples are the contract, and several shapes here are
-measured rather than reasoned; see docs/chat-service.md, The system prompt.
+The worked examples are the contract, and several shapes here were measured, not reasoned.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from settings import Settings
 
 
 def build_system_prompt(settings: Settings) -> str:
-    """The system prompt, with this deployment's caps and rosters written into it."""
     roster = "\n".join(f"- {key}: when {when}" for key, when in safety_roster_for_prompt())
     places = "\n".join(f"- {key}: {when}" for key, when in place_roster_for_prompt())
     return _TEMPLATE.format(
@@ -33,25 +31,22 @@ def build_system_prompt(settings: Settings) -> str:
     )
 
 
-# The campus shorthand glossary, from data/abbreviations.csv: a flat list of facts about what
-# SJSU calls things, so somebody at Student Affairs can add a building code without a deploy.
+# Editable by Student Affairs without a deploy, which is why it is data and not prose here.
 _ABBREVIATIONS_FILE = "abbreviations.csv"
 
 
 def abbreviation_glossary() -> str:
-    """Return the shorthand list as the prompt's own lines, in file order."""
     return "\n".join(
         f"- {row['abbreviation']}: {row['expansion']}"
         for row in load_rows(_ABBREVIATIONS_FILE, ("abbreviation", "expansion"))
     )
 
 
-# Built at import, like places.py's and safety.py's tables, so a damaged glossary fails cold.
+# Built at import, so a damaged glossary fails the cold start.
 _ABBREVIATIONS = abbreviation_glossary()
 
 
-# Always interpolated. A key vocabulary, drawn from app/places.py's table, so a key the
-# model is taught always resolves. See docs/chat-service.md, The system prompt.
+# Drawn from places.py's table, so a key the model is taught always resolves.
 _PLACE_SECTION = """
 Showing a student where a place is:
 When a student is asking where a place is, and that place is in the list below, end your reply with one location block naming it:
@@ -74,8 +69,7 @@ At most one block in a turn.
 """
 
 
-# Interpolated or replaced by nothing at all: a deployment with no recipient must never
-# read a sentence about a tag it was not taught.
+# Dropped entirely when there is no recipient: never teach a tag that cannot be used.
 _ESCALATION_SECTION = """
 Offering to write to a person:
 Some turns should reach a human being rather than a page. Offer to write one when any of

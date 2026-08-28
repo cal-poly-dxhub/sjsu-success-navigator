@@ -1,8 +1,7 @@
 """What one turn actually consumed, counted from what Bedrock itself reports.
 
-One student message is not one model call, the turn calls two DIFFERENT models, and
-prompt-cache units are deliberately not counted; see docs/chat-service.md, What one turn
-cost.
+One message is not one model call, the two calls use different models, and prompt-cache
+units are deliberately not counted.
 """
 
 from __future__ import annotations
@@ -26,26 +25,17 @@ class TurnUsage(BaseModel):
     retrievals: int = Field(default=0, alias="retrievals")
 
     def record_model_call(self, response: Any) -> None:
-        """Fold one GENERATION Converse response's token usage in, counting the call either way."""
+        """The call counts even when the response reports no tokens."""
         self.model_calls += 1
         self._fold(response, "input_tokens", "output_tokens")
 
     def record_title_call(self, response: Any) -> None:
-        """Fold the titling Converse response in, into fields of its own.
-
-        THE TITLE IS WRITTEN BY A DIFFERENT MODEL, and a cheaper one: this stack answers on
-        Sonnet and names conversations on Haiku. Added to the generation totals - which is
-        what this did until it was audited against Bedrock's own usage blocks - those tokens
-        get priced at the generation rate, so every conversation's first turn is billed for
-        a call that never happened at that price. The call is still counted as a model call,
-        because it was still billed as one.
-        """
+        """Its own fields: a cheaper model writes the title, and would be overpriced."""
         self.model_calls += 1
         self._fold(response, "title_input_tokens", "title_output_tokens")
 
     def _fold(self, response: Any, input_field: str, output_field: str) -> None:
-        """Add one response's reported tokens to the named pair, or nothing if it reported
-        none. A response that arrives without its `usage` block still counted as a call."""
+        """A response with no `usage` block has already been counted as a call."""
         reported = response.get("usage") if isinstance(response, dict) else None
         if not isinstance(reported, dict):
             return
@@ -55,7 +45,6 @@ class TurnUsage(BaseModel):
                 setattr(self, field, getattr(self, field) + value)
 
     def record_guardrail(self, reported: Any) -> None:
-        """Fold one ApplyGuardrail response's content-policy units in."""
         if not isinstance(reported, dict):
             return
         value = reported.get("contentPolicyUnits")

@@ -1,7 +1,6 @@
-"""Runtime settings for the chat Lambda, read from the environment the stack sets.
+"""Runtime settings for the chat Lambda, read once at import from the stack's environment.
 
-Read once at import. Identity values raise when missing and behavioural knobs carry
-defaults; see docs/chat-service.md, Settings.
+Identity values raise when missing; behavioural knobs carry defaults.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from dataclasses import dataclass
 
 
 class SettingsError(RuntimeError):
-    """A required environment variable is missing or unusable. Raised at import."""
+    """A required environment variable is missing or unusable."""
 
 
 def _required(name: str) -> str:
@@ -36,7 +35,6 @@ def _int(name: str, default: int) -> int:
 
 
 def _id_set(name: str) -> frozenset[str]:
-    """Return a comma-separated id list from the environment as a set, empty when unset."""
     raw = os.environ.get(name) or ""
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
@@ -74,7 +72,7 @@ class Settings:
     title_max_chars: int = 80
     title_deadline_seconds: int = 3
 
-    # 0 disables the cap; see docs/chat-service.md, Settings.
+    # 0 disables the cap.
     daily_message_limit: int = 0
     rate_limit_exempt_client_ids: frozenset[str] = frozenset()
 
@@ -84,14 +82,13 @@ class Settings:
     card_desc_max_chars: int = 600
     card_followup_max_chars: int = 120
 
-    # Empty disables the escalation path; see docs/chat-service.md, Settings.
+    # Empty disables the escalation path.
     escalation_recipient: str = ""
     escalation_subject: str = "A student would like to talk with someone"
     escalation_max_chars: int = 1200
 
 
 def load_settings() -> Settings:
-    """Build Settings from the environment. Raises SettingsError on missing identity."""
     return Settings(
         knowledge_base_id=_required("KNOWLEDGE_BASE_ID"),
         generation_model_id=_required("GENERATION_MODEL_ID"),
