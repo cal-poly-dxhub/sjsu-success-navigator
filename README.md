@@ -97,6 +97,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt -r requirements-dev.txt
 
+cdk bootstrap
 cdk synth          # offline apart from Docker, no AWS credentials needed
 python -m pytest   # unit tests, no live AWS
 cdk deploy         # needs credentials and a bootstrapped account
