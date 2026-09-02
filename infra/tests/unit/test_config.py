@@ -42,6 +42,11 @@ from infra.config import (
 )
 
 
+# Federation ships OFF, so every test that needs a provider turns one on with this. Not a real
+# org: a metadata URL is a trust anchor, and the repo should not carry somebody's tenant.
+_EXAMPLE_METADATA_URL = "https://example.okta.com/app/exampleappid/sso/saml/metadata"
+
+
 @pytest.fixture
 def config():
     """A fresh deep copy of the real config.yaml per test, so mutations do not leak."""
@@ -905,15 +910,30 @@ def test_a_non_integer_limit_is_rejected(bad):
             resolve_rate_limit(config)
 
 
-def test_the_committed_config_federates_okta_under_the_role_name(config):
-    """The committed file carries a metadata URL, so the provider is on, and it resolves to the role name, never an org's."""
+def test_the_committed_config_ships_no_identity_provider(config):
+    """Off by default. A metadata URL is a trust anchor Cognito fetches and believes, so a shipped one would have every install federating against an org its operator does not own."""
+    from infra.config import resolve_okta
+
+    assert config["okta"]["metadata_url"] == "", (
+        "config.yaml must ship an empty metadata_url - filling it in is the deployer's "
+        "deliberate act, never a default they inherit"
+    )
+    assert resolve_okta(config) is None
+    # The key stays, because an empty slot with the default claim name beside it is what
+    # tells a deployer what to fill in; a missing block is the same stack but no instruction.
+    assert config["okta"]["email_attribute"] == "email"
+
+
+def test_a_metadata_url_federates_under_the_role_name(config):
+    """Turned on, it resolves to the role name, never an org's."""
     from infra.config import OKTA_PROVIDER_NAME, resolve_okta
 
+    config["okta"]["metadata_url"] = _EXAMPLE_METADATA_URL
     okta = resolve_okta(config)
     assert okta is not None
     assert okta["provider_name"] == "Okta" == OKTA_PROVIDER_NAME
+    assert okta["metadata_url"] == _EXAMPLE_METADATA_URL
     assert okta["metadata_url"].startswith("https://")
-    assert okta["metadata_url"].endswith("/sso/saml/metadata")
     assert okta["email_attribute"] == "email"
 
 
@@ -921,6 +941,7 @@ def test_the_provider_name_is_not_reachable_from_config(config):
     """Renaming mints new `sub` values, which are partition keys, and orphans every conversation."""
     from infra.config import resolve_okta
 
+    config["okta"]["metadata_url"] = _EXAMPLE_METADATA_URL
     config["okta"]["provider_name"] = "SJSU"
     config["okta"]["name"] = "SJSU"
     assert resolve_okta(config)["provider_name"] == "Okta"
@@ -948,7 +969,7 @@ def test_a_plain_http_metadata_url_fails_at_synth(config):
     """Cognito fetches this document itself and trusts the signing certificate inside it, so http would be a forgeable trust anchor for every assertion."""
     from infra.config import resolve_okta
 
-    config["okta"]["metadata_url"] = "http://integrator-6509951.okta.com/sso/saml/metadata"
+    config["okta"]["metadata_url"] = _EXAMPLE_METADATA_URL.replace("https://", "http://")
     with pytest.raises(ValueError, match="https"):
         resolve_okta(config)
 
@@ -957,6 +978,7 @@ def test_the_okta_side_attribute_name_is_configurable_but_never_blank(config):
     """Orgs spell the email claim differently, a SAML namespace URI, `emailAddress`, so the name is config."""
     from infra.config import resolve_okta
 
+    config["okta"]["metadata_url"] = _EXAMPLE_METADATA_URL
     config["okta"]["email_attribute"] = (
         "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
     )
