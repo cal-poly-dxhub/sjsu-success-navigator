@@ -81,8 +81,8 @@ hand. Two pages: a system overview, and the query path through one turn. Open it
 
 ## Deployment
 
-**[`docs/install.md`](docs/install.md) is the install guide**: model access, the one config
-value to set first, `cdk deploy`, and issuing the accounts. Read it before you deploy.
+**[`docs/install.md`](docs/install.md) is the install guide**: model access, `cdk deploy`,
+issuing the first account, signing in to check it, and connecting Okta afterwards.
 
 **Prerequisites:** AWS credentials for a bootstrapped account and region, Bedrock model access
 for Claude Sonnet 4.6, Claude Haiku 4.5 and Titan Text Embeddings v2, Python 3.13 (the Lambda
@@ -112,9 +112,9 @@ ingestion during the deploy, so the corpus is indexed by the time it finishes. C
 what students said, so a destroy then redeploy collides on its name until the leftover table is
 renamed or removed by hand.
 
-**Issue accounts.** Self-signup is off, so every account is created by an administrator. The
-stack prints the exact commands as outputs; the install guide says which to run and in what
-order. Federating an IdP replaces them wholesale and costs no application change.
+**Issue accounts.** Self-signup is off and no identity provider ships, so every account is
+created by an administrator: one command to create it, one to set its password. The stack
+prints both as outputs and the install guide walks through them with worked examples.
 
 **Other outputs worth keeping:** `SiteUrl` is the app. `ChatApiUrl` and `ConversationsApiUrl`
 are the gated REST routes. `ChatWebClientId` and `ChatEvalClientId` are the pool's two app

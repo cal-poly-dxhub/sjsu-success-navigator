@@ -44,6 +44,21 @@ def _template() -> Template:
     return Template.from_stack(stack)
 
 
+# Federation ships OFF, so the provider tests build their own stack. Not a real org: a
+# metadata URL is a trust anchor, and the repo should not carry somebody's tenant.
+_EXAMPLE_METADATA_URL = "https://example.okta.com/app/exampleappid/sso/saml/metadata"
+
+
+@functools.lru_cache(maxsize=1)
+def _okta_template() -> Template:
+    """The synthesized template with federation configured, built once per session."""
+    config = copy.deepcopy(load_config())
+    config["okta"]["metadata_url"] = _EXAMPLE_METADATA_URL
+    return Template.from_stack(
+        NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config)
+    )
+
+
 def _resource(template: Template, type_name: str) -> dict:
     """The one resource of a type, with its raw template entry (DependsOn included)."""
     found = template.find_resources(type_name)
@@ -1164,13 +1179,15 @@ def test_the_eval_client_is_password_auth_with_no_oauth():
 
 
 def test_the_okta_provider_is_saml_over_a_metadata_url_and_sp_initiated_only():
-    """The provider the committed config.yaml turns on, pinned property by property."""
+    """The provider a configured metadata URL turns on, pinned property by property."""
     from infra.config import resolve_okta
 
-    okta = resolve_okta(load_config())
-    assert okta is not None, "the committed config.yaml is expected to carry a metadata URL"
+    config = copy.deepcopy(load_config())
+    config["okta"]["metadata_url"] = _EXAMPLE_METADATA_URL
+    okta = resolve_okta(config)
+    assert okta is not None
 
-    idp = _resource(_template(), "AWS::Cognito::UserPoolIdentityProvider")["Properties"]
+    idp = _resource(_okta_template(), "AWS::Cognito::UserPoolIdentityProvider")["Properties"]
     assert idp["ProviderName"] == "Okta"
     assert idp["ProviderType"] == "SAML"
     assert idp["ProviderDetails"]["MetadataURL"] == okta["metadata_url"]
@@ -1181,13 +1198,13 @@ def test_the_okta_provider_is_saml_over_a_metadata_url_and_sp_initiated_only():
     # not an omission, Cognito derives the username from the SAML NameID and rejects a mapping for it outright.
     assert "username" not in idp["AttributeMapping"]
     assert json.dumps(idp["UserPoolId"]) == json.dumps(
-        {"Ref": _logical_id(_template(), "AWS::Cognito::UserPool")}
+        {"Ref": _logical_id(_okta_template(), "AWS::Cognito::UserPool")}
     )
 
 
 def test_only_the_human_client_offers_okta_and_it_waits_for_the_provider():
     """Two halves, and both are load-bearing."""
-    template = _template()
+    template = _okta_template()
     web = _resource_named(
         template, "AWS::Cognito::UserPoolClient", "ChatUserPoolChatWebClient"
     )
@@ -1205,14 +1222,9 @@ def test_only_the_human_client_offers_okta_and_it_waits_for_the_provider():
     assert idp_logical_id in (web.get("DependsOn") or []), web.get("DependsOn")
 
 
-def test_no_identity_provider_exists_without_a_metadata_url():
-    """The other direction, and the one that has to keep working: with no `okta` block the stack must synthesize the local-accounts-only pool it has today, no identity provider at all, and the human client back to COGNITO alone."""
-    config = copy.deepcopy(load_config())
-    del config["okta"]
-
-    template = Template.from_stack(
-        NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config)
-    )
+def test_the_committed_config_synthesizes_no_identity_provider():
+    """What a fresh install actually gets: the local-accounts-only pool, no identity provider at all, and the human client on COGNITO alone. This is the shipped default, not a variant."""
+    template = _template()
     assert template.find_resources("AWS::Cognito::UserPoolIdentityProvider") == {}
 
     web = _resource_named(
@@ -1220,10 +1232,25 @@ def test_no_identity_provider_exists_without_a_metadata_url():
     )
     assert web["Properties"]["SupportedIdentityProviders"] == ["COGNITO"]
     assert web.get("DependsOn") is None
-    # The rest of the auth wiring is untouched: turning federation off is not a different stack, it is the same one without a provider.
+    # The rest of the auth wiring is untouched: federation off is not a different stack, it is the same one without a provider.
     assert web["Properties"]["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]
     assert len(template.find_resources("AWS::Cognito::UserPoolClient")) == 2
     assert "Okta" not in json.dumps(template.to_json())
+
+
+def test_an_empty_url_and_a_missing_block_are_the_same_stack():
+    """Two ways to say off, and they must not diverge: a deployer who deletes the block gets what the shipped empty string already gave them."""
+    config = copy.deepcopy(load_config())
+    del config["okta"]
+
+    template = Template.from_stack(
+        NavigatorStack(cdk.App(), "SjsuNavigatorStack", config=config)
+    )
+    assert template.find_resources("AWS::Cognito::UserPoolIdentityProvider") == {}
+    assert "Okta" not in json.dumps(template.to_json())
+    assert json.dumps(template.to_json(), sort_keys=True) == json.dumps(
+        _template().to_json(), sort_keys=True
+    )
 
 
 def test_the_managed_login_domain_exists_and_names_no_account():

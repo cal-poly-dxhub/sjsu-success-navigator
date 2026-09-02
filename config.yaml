@@ -131,9 +131,9 @@ streaming:
 # The absence of a URL is the gate: no identity provider, and the local accounts keep working.
 # The provider's name is a constant, because renaming it orphans every stored conversation.
 okta:
-  # A URL rather than a file, so a certificate rotation is not an outage. https only, because
-  # this document carries the certificate every assertion is verified against.
-  metadata_url: "https://integrator-6509951.okta.com/app/exk16bohofxDxsJS4698/sso/saml/metadata"
+  # Empty ships no identity provider. To federate, set your own tenant's SAML metadata URL,
+  # https only. Example: https://YOUR-ORG.okta.com/app/YOUR-APP-ID/sso/saml/metadata
+  metadata_url: ""
   # Config because orgs spell it differently. Omit the key for the default; never blank it.
   email_attribute: email
 
